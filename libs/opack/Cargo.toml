@@ -1,0 +1,11 @@
+[package]
+name = "opack"
+version = "0.1.0"
+edition = "2024"
+authors = ["Christoperh Kellar"]
+description = "Best-effort OPACK (Apple internal) serializer/deserializer for common types."
+license = "MIT"
+
+[dependencies]
+thiserror = "1.0"
+byteorder = "1.4"

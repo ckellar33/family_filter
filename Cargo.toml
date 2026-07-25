@@ -1,0 +1,27 @@
+[package]
+name = "family_filter"
+version = "0.1.0"
+edition = "2024"
+authot = ["Christopher Kellar"]
+
+[dependencies]
+tlv8 = { path = "./libs/tlv8" }
+opack = { path = "./libs/opack" }
+clap = "4.5.47"
+mdns = "3.0.0"
+srp = "0.6.0"
+anyhow = "1.0.99"
+zeroconf = "0.15.1"
+futures = "0.3.31"
+bytes = "1.10.1"
+tokio = { version = "1.38", features = ["rt-multi-thread", "macros", "net", "io-util", "time"] }
+# Crypto pieces used by HAP / Companion
+hkdf = "0.12"
+sha2 = "0.10"
+ed25519-dalek = { version = "2.2.0", features = ["rand_core"] }
+chacha20poly1305 = { version = "0.10.1", features = ["alloc"] }
+aes-gcm = "0.10"
+num-bigint = "0.4"
+gethostname = "0.2"
+rand = "0.8.5"
+x25519-dalek = "2.0.1"

@@ -1,0 +1,22 @@
+[package]
+name = "tlv8"
+version = "0.1.0"
+edition = "2024"
+description = "A small TLV8 encoder/decoder (works with std or no_std+alloc)."
+license = "MIT OR Apache-2.0"
+authors = ["Christopher Kellar"]
+
+[features]
+default = ["std"]
+std = []
+alloc = []         # enables alloc-only support for no_std environments
+serde = ["serde_crate"]
+
+[dependencies]
+# serde optional (renamed to avoid crate name collision with std feature)
+serde_crate = { package = "serde", version = "1.0", optional = true, features = ["derive"] }
+bytes = "1.10.1"
+anyhow = "1.0.99"
+
+[dev-dependencies]
+# nothing special
