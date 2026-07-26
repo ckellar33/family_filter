@@ -17,6 +17,9 @@ pub enum T {
     Permissions = 0x0B,
     FragmentData = 0x0C,
     FragmentLast = 0x0D,
+    /// Companion / Apple-internal: OPACK device info in Pair-Setup M5.
+    Name = 0x11,
+    Flags = 0x13,
     Separator = 0xFF,
 }
 
@@ -37,6 +40,8 @@ impl From<u8> for T {
             0x0B => T::Permissions,
             0x0C => T::FragmentData,
             0x0D => T::FragmentLast,
+            0x11 => T::Name,
+            0x13 => T::Flags,
             0xFF => T::Separator,
             _ => T::Separator,
         }
