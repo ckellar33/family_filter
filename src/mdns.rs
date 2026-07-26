@@ -33,7 +33,7 @@ pub async fn find_companion(timeout: Duration) -> Result<Vec<Discovered>, &'stat
     }
 
     let mut results = Vec::new();
-    while let Ok(Some(discovered)) = rx.try_next() {
+    while let Ok(discovered) = rx.try_recv() {
         results.push(discovered);
     }
 

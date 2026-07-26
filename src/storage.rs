@@ -78,7 +78,7 @@ pub fn load_pairing() -> Result<Option<SavedDevice>> {
             pairing_id: pairing_id.ok_or_else(|| Error::msg("missing pairing_id"))?,
             accessory_id: accessory_id.ok_or_else(|| Error::msg("missing accessory_id"))?,
             accessory_ltpk: VerifyingKey::from_bytes(&ltpk_bytes)?,
-            our_ltpk: our_ltsk.verifying_key(),
+            _our_ltpk: our_ltsk.verifying_key(),
             our_ltsk,
         },
     }))
