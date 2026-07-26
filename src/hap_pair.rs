@@ -5,8 +5,9 @@ use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::TcpStream};
 use x25519_dalek::{EphemeralSecret, PublicKey};
 use tlv8::{Tlv8, T, State, Method, Error as HapError};
 use opack::{Value, decode, encode};
-use crate::srp::AppleTvSrp;
+use log::debug;
 
+use crate::srp::AppleTvSrp;
 use crate::crypto::{hap_nonce, hkdf_512, AeadCipher};
 
 pub struct PairingResult {
@@ -15,7 +16,7 @@ pub struct PairingResult {
     /// Accessory pairing identifier (from M6).
     pub accessory_id: Vec<u8>,
     pub accessory_ltpk: VerifyingKey,
-    pub our_ltpk: VerifyingKey,
+    pub _our_ltpk: VerifyingKey,
     pub our_ltsk: SigningKey,
 }
 
@@ -329,7 +330,7 @@ pub async fn pair_m5(stream: &mut TcpStream, pairing_id: &str, session_key: &[u8
         pairing_id: pairing_id.to_string(),
         accessory_id: acc_id,
         accessory_ltpk: acc_ltpk,
-        our_ltpk: ltpk,
+        _our_ltpk: ltpk,
         our_ltsk: ltsk,
     })
 }
@@ -492,7 +493,7 @@ pub fn process_response(buf: &[u8]) -> Result<Vec<(T, Vec<u8>)>> {
     while pos < end {
         match decode(&buf[pos..end]) {
             Ok((value, consumed)) => {
-                println!("value: {:?}", value);
+                debug!("value: {:?}", value);
                 if consumed == 0 {
                     return Err(Error::msg("opack decode made no progress"));
                 }
@@ -505,7 +506,7 @@ pub fn process_response(buf: &[u8]) -> Result<Vec<(T, Vec<u8>)>> {
                         };
                         if key == "_pd" || key.is_empty() {
                             let result = Tlv8::decode(&bytes)?;
-                            println!("decoded: {:?}", result);
+                            debug!("decoded: {:?}", result);
                             out.extend(result);
                         }
                     }
