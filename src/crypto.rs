@@ -1,7 +1,7 @@
 use hkdf::Hkdf;
 use sha2::Sha512;
 use chacha20poly1305::{
-    aead::{Aead, KeyInit},
+    aead::{Aead, KeyInit, Payload},
     ChaCha20Poly1305, Key, Nonce,
 };
 
@@ -20,6 +20,13 @@ pub fn hap_nonce(label: &[u8; 8]) -> [u8; 12] {
     nonce
 }
 
+/// Companion session nonce: 12-byte little-endian counter.
+pub fn companion_nonce(counter: u64) -> [u8; 12] {
+    let mut nonce = [0u8; 12];
+    nonce[..8].copy_from_slice(&counter.to_le_bytes());
+    nonce
+}
+
 pub struct AeadCipher(ChaCha20Poly1305);
 
 impl AeadCipher {
@@ -33,9 +40,38 @@ impl AeadCipher {
             .expect("AEAD encrypt")
     }
 
+    pub fn seal_with_aad(&self, nonce: &[u8; 12], plaintext: &[u8], aad: &[u8]) -> Vec<u8> {
+        self.0
+            .encrypt(
+                Nonce::from_slice(nonce),
+                Payload {
+                    msg: plaintext,
+                    aad,
+                },
+            )
+            .expect("AEAD encrypt")
+    }
+
     pub fn open(&self, nonce: &[u8; 12], ciphertext: &[u8]) -> anyhow::Result<Vec<u8>> {
         self.0
             .decrypt(Nonce::from_slice(nonce), ciphertext)
+            .map_err(|_| anyhow::Error::msg("AEAD decrypt failed"))
+    }
+
+    pub fn open_with_aad(
+        &self,
+        nonce: &[u8; 12],
+        ciphertext: &[u8],
+        aad: &[u8],
+    ) -> anyhow::Result<Vec<u8>> {
+        self.0
+            .decrypt(
+                Nonce::from_slice(nonce),
+                Payload {
+                    msg: ciphertext,
+                    aad,
+                },
+            )
             .map_err(|_| anyhow::Error::msg("AEAD decrypt failed"))
     }
 }
