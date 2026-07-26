@@ -119,7 +119,7 @@ fn encode_into<W: Write>(w: &mut W, v: &Value) -> Result<(), Error> {
             }
             w.write_all(bv.as_slice())?;
         },
-        Value::ByteArray(byte_array) => {
+        Value::ByteArray(_byte_array) => {
 
         },
         Value::List(arr) => {

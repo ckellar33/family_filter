@@ -1,12 +1,6 @@
-use std::pin;
 use std::collections::HashMap;
 use anyhow::{Context, Error, Result};
-use bytes::BytesMut;
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
-use rand::RngCore;
-use srp::client::SrpClient;
-use sha2::{Sha512, Digest};
-use srp::groups::G_3072;
 use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::TcpStream};
 use x25519_dalek::{EphemeralSecret, PublicKey};
 use tlv8::{Tlv8, T, State, Method, Error as HapError};
@@ -16,9 +10,37 @@ use crate::srp::AppleTvSrp;
 use crate::crypto::{hap_nonce, hkdf_512, AeadCipher};
 
 pub struct PairingResult {
+    /// Our controller pairing identifier (sent in M5 / Pair-Verify M3).
+    pub pairing_id: String,
+    /// Accessory pairing identifier (from M6).
+    pub accessory_id: Vec<u8>,
     pub accessory_ltpk: VerifyingKey,
     pub our_ltpk: VerifyingKey,
     pub our_ltsk: SigningKey,
+}
+
+/// Session keys derived after successful Pair-Verify (Companion encryption).
+pub struct VerifyResult {
+    /// HKDF info `ClientEncrypt-main` — encrypt outgoing frames.
+    pub client_encrypt_key: Vec<u8>,
+    /// HKDF info `ServerEncrypt-main` — decrypt incoming frames.
+    pub server_encrypt_key: Vec<u8>,
+}
+
+fn write_opack_frame(frame_type: u8, dict: HashMap<String, Value>) -> Vec<u8> {
+    let content = encode(&Value::Dict(dict)).unwrap();
+    let content_len = u32::to_be_bytes(content.len() as u32);
+    [vec![frame_type], content_len[1..4].to_vec(), content].concat()
+}
+
+async fn read_frame(stream: &mut TcpStream) -> Result<Vec<u8>> {
+    let mut buf = vec![0u8; 8192];
+    let read_size = stream
+        .read(&mut buf)
+        .await
+        .map_err(|_| Error::msg("failed to read response"))?;
+    buf.truncate(read_size);
+    Ok(buf)
 }
 
 fn normalize_pin(pin: &str) -> String {
@@ -304,9 +326,155 @@ pub async fn pair_m5(stream: &mut TcpStream, pairing_id: &str, session_key: &[u8
     );
 
     Ok(PairingResult {
+        pairing_id: pairing_id.to_string(),
+        accessory_id: acc_id,
         accessory_ltpk: acc_ltpk,
         our_ltpk: ltpk,
         our_ltsk: ltsk,
+    })
+}
+
+/// Pair-Verify on a fresh Companion connection using saved long-term keys (HAP §5.7).
+///
+/// Frame types: M1 = `PV_Start` (0x05), M2–M4 = `PV_Next` (0x06).
+/// M1 also carries `_auTy: 4` (Companion auth type).
+pub async fn pair_verify(
+    stream: &mut TcpStream,
+    creds: &PairingResult,
+) -> Result<VerifyResult> {
+    // M1: ephemeral X25519 public key
+    let eph = EphemeralSecret::random_from_rng(rand::rngs::OsRng);
+    let our_eph_pub = PublicKey::from(&eph);
+
+    let m1 = Tlv8::new()
+        .add_u8(T::SeqNum, State::M1 as u8)
+        .add(T::PublicKey, our_eph_pub.as_bytes().to_vec())
+        .encode();
+    let mut dict = HashMap::new();
+    dict.insert("_pd".to_string(), Value::Bytes(m1.to_vec()));
+    dict.insert("_auTy".to_string(), Value::Decimal(4u8));
+    let bytes = write_opack_frame(0x05, dict); // PV_Start
+    println!("PV M1 bytes: {:x?}", bytes);
+    stream.write_all(&bytes).await?;
+
+    // M2: accessory ephemeral pub + encrypted (AccessoryID, Signature)
+    let buf = read_frame(stream).await?;
+    println!("Read PV M2 Response: {:x?}", buf.as_slice());
+    if buf.first().copied() != Some(0x06) {
+        println!("Expected PV_Next (0x06) for M2");
+    }
+    let result = process_response(buf.as_slice())?;
+    check_tlv_error(&result)?;
+
+    let mut acc_eph_bytes = None;
+    let mut enc_data = None;
+    for (t, bytes) in result {
+        match t {
+            T::PublicKey => acc_eph_bytes = Some(bytes),
+            T::EncryptedData => enc_data = Some(bytes),
+            _ => {}
+        }
+    }
+    let acc_eph_bytes =
+        acc_eph_bytes.ok_or_else(|| Error::msg("PV M2 missing accessory public key"))?;
+    let enc_data = enc_data.ok_or_else(|| Error::msg("PV M2 missing encrypted data"))?;
+
+    let acc_eph = PublicKey::from(
+        <[u8; 32]>::try_from(acc_eph_bytes.as_slice())
+            .map_err(|_| Error::msg("accessory ephemeral public key is not 32 bytes"))?,
+    );
+    let shared = eph.diffie_hellman(&acc_eph);
+
+    let pv_key = hkdf_512(
+        shared.as_bytes(),
+        b"Pair-Verify-Encrypt-Salt",
+        b"Pair-Verify-Encrypt-Info",
+        32,
+    );
+    let aead = AeadCipher::new(&pv_key);
+    let plain = aead.open(&hap_nonce(b"PV-Msg02"), &enc_data)?;
+    let sub_tlv = Tlv8::decode(&plain)?;
+
+    let mut acc_id = None;
+    let mut acc_sig_bytes = None;
+    for (t, bytes) in sub_tlv {
+        match t {
+            T::Identifier => acc_id = Some(bytes),
+            T::Signature => acc_sig_bytes = Some(bytes),
+            _ => {}
+        }
+    }
+    let acc_id = acc_id.ok_or_else(|| Error::msg("PV M2 sub-TLV missing identifier"))?;
+    let acc_sig_bytes =
+        acc_sig_bytes.ok_or_else(|| Error::msg("PV M2 sub-TLV missing signature"))?;
+
+    if acc_id != creds.accessory_id {
+        return Err(Error::msg("PV M2 accessory id does not match saved pairing"));
+    }
+
+    let acc_sig = Signature::from_bytes(
+        acc_sig_bytes
+            .as_slice()
+            .try_into()
+            .map_err(|_| Error::msg("accessory signature is not 64 bytes"))?,
+    );
+
+    // Companion / pyatv: AccessoryEphPub || AccessoryID || ControllerEphPub
+    let mut verify_material =
+        Vec::with_capacity(32 + acc_id.len() + 32);
+    verify_material.extend_from_slice(acc_eph.as_bytes());
+    verify_material.extend_from_slice(&acc_id);
+    verify_material.extend_from_slice(our_eph_pub.as_bytes());
+    creds
+        .accessory_ltpk
+        .verify_strict(&verify_material, &acc_sig)
+        .context("PV M2 accessory signature invalid")?;
+
+    // M3: ControllerEphPub || ControllerID || AccessoryEphPub
+    let mut sign_material =
+        Vec::with_capacity(32 + creds.pairing_id.len() + 32);
+    sign_material.extend_from_slice(our_eph_pub.as_bytes());
+    sign_material.extend_from_slice(creds.pairing_id.as_bytes());
+    sign_material.extend_from_slice(acc_eph.as_bytes());
+    let sig = creds.our_ltsk.sign(&sign_material);
+
+    let sub = Tlv8::new()
+        .add(T::Identifier, creds.pairing_id.as_bytes())
+        .add(T::Signature, sig.to_bytes().to_vec())
+        .encode();
+    let enc = aead.seal(&hap_nonce(b"PV-Msg03"), &sub);
+
+    let m3 = Tlv8::new()
+        .add_u8(T::SeqNum, State::M3 as u8)
+        .add(T::EncryptedData, enc)
+        .encode();
+    let mut dict = HashMap::new();
+    dict.insert("_pd".to_string(), Value::Bytes(m3.to_vec()));
+    let bytes = write_opack_frame(0x06, dict); // PV_Next
+    println!("PV M3 bytes: {:x?}", bytes);
+    stream.write_all(&bytes).await?;
+
+    // M4: State only (or error)
+    let buf = read_frame(stream).await?;
+    println!("Read PV M4 Response: {:x?}", buf.as_slice());
+    if buf.first().copied() != Some(0x06) {
+        println!("Expected PV_Next (0x06) for M4");
+    }
+    let result = process_response(buf.as_slice())?;
+    check_tlv_error(&result)?;
+
+    // Companion session keys (empty salt)
+    let client_encrypt_key = hkdf_512(shared.as_bytes(), b"", b"ClientEncrypt-main", 32);
+    let server_encrypt_key = hkdf_512(shared.as_bytes(), b"", b"ServerEncrypt-main", 32);
+    println!(
+        "Pair-Verify OK; client_key len={}, server_key len={}",
+        client_encrypt_key.len(),
+        server_encrypt_key.len()
+    );
+
+    Ok(VerifyResult {
+        client_encrypt_key,
+        server_encrypt_key,
     })
 }
 

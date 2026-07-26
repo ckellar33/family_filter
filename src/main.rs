@@ -1,16 +1,11 @@
-// mod storage;
 mod mdns;
-// mod tlv8;
 mod crypto;
-// mod pair_setup;
-// mod pair_verify;
 mod hap_pair;
 mod srp;
+mod storage;
 
-// use storage::{load_store, save_device, Creds};
 use tokio::net::TcpStream;
 use std::io::{self, Write};
-// use mdns::find_companion;
 
 #[derive(Clone)]
 pub struct Device { pub host: String, pub port: u16 }
@@ -58,23 +53,53 @@ async fn pair_flow() -> Result<(), &'static str> {
         return Ok(());
     }
 
-    // Connect
-    let mut stream = TcpStream::connect(format!("{}:{}", devices[device].host, devices[device].port)).await.unwrap();
+    let host = devices[device].host.clone();
+    let port = devices[device].port;
+    let mut stream = TcpStream::connect(format!("{host}:{port}")).await.unwrap();
 
-    // Send initial pair request
-    let (salt, public_key) = hap_pair::initial_pair_m1(&mut stream).await.map_err(|_| "Failed to send initial pair request")?;
+    let (salt, public_key) = hap_pair::initial_pair_m1(&mut stream)
+        .await
+        .map_err(|_| "Failed to send initial pair request")?;
 
     print!("Enter PIN on Apple TV: "); io::stdout().flush().unwrap();
     let mut pin = String::new(); io::stdin().read_line(&mut pin).unwrap();
     let pin = pin.trim();
 
     let pairing_id = format!("rust-{}", gethostname::gethostname().to_string_lossy());
-    let session_key = hap_pair::pair_m3(&mut stream, pin, &salt, &public_key).await.unwrap();
-    let result = hap_pair::pair_m5(&mut stream, &pairing_id, &session_key).await;
-    if result.is_ok() {
-        println!("✅ Paired; long-term keys exchanged.");
-    } else {
-        println!("❌ Pairing failed.");
+    let session_key = hap_pair::pair_m3(&mut stream, pin, &salt, &public_key)
+        .await
+        .unwrap();
+    match hap_pair::pair_m5(&mut stream, &pairing_id, &session_key).await {
+        Ok(result) => {
+            storage::save_pairing(&host, port, &result).unwrap();
+            println!("✅ Paired; credentials saved to pairing.store");
+        }
+        Err(e) => println!("❌ Pairing failed: {e}"),
+    }
+    Ok(())
+}
+
+async fn verify_flow() -> Result<(), &'static str> {
+    let saved = match storage::load_pairing() {
+        Ok(Some(s)) => s,
+        Ok(None) => {
+            println!("No saved pairing. Run option 1 first.");
+            return Ok(());
+        }
+        Err(e) => {
+            println!("Failed to load pairing.store: {e}");
+            return Ok(());
+        }
+    };
+
+    println!("Connecting to {}:{} …", saved.host, saved.port);
+    let mut stream = TcpStream::connect(format!("{}:{}", saved.host, saved.port))
+        .await
+        .map_err(|_| "Failed to connect")?;
+
+    match hap_pair::pair_verify(&mut stream, &saved.creds).await {
+        Ok(_keys) => println!("✅ Pair-Verify OK; session encryption keys derived."),
+        Err(e) => println!("❌ Pair-Verify failed: {e}"),
     }
     Ok(())
 }
