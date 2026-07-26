@@ -2,7 +2,7 @@ use std::pin;
 use std::collections::HashMap;
 use anyhow::{Context, Error, Result};
 use bytes::BytesMut;
-use ed25519_dalek::{SigningKey, VerifyingKey, Signer};
+use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use rand::RngCore;
 use srp::client::SrpClient;
 use sha2::{Sha512, Digest};
@@ -13,7 +13,7 @@ use tlv8::{Tlv8, T, State, Method, Error as HapError};
 use opack::{Value, decode, encode};
 use crate::srp::AppleTvSrp;
 
-use crate::crypto::{hkdf_512, AeadCipher};
+use crate::crypto::{hap_nonce, hkdf_512, AeadCipher};
 
 pub struct PairingResult {
     pub accessory_ltpk: VerifyingKey,
@@ -133,7 +133,7 @@ pub async fn initial_pair_m1(stream: &mut TcpStream) -> Result<(Vec<u8>, Vec<u8>
     }
 }
 
-pub async fn pair_m3(stream: &mut TcpStream, pin: &str, salt: &[u8], public_key: &[u8]) -> Result<()> {
+pub async fn pair_m3(stream: &mut TcpStream, pin: &str, salt: &[u8], public_key: &[u8]) -> Result<Vec<u8>> {
     let (a_pub, proof, srp) = generate_srp_proof(pin, salt, public_key)?;
 
     let m3 = Tlv8::new()
@@ -174,11 +174,140 @@ pub async fn pair_m3(stream: &mut TcpStream, pin: &str, salt: &[u8], public_key:
         }
         let server_proof = server_proof.ok_or_else(|| Error::msg("M4 missing server proof"))?;
         srp.verify_server(&server_proof)?;
-        println!("M4 server proof verified; session key len={}", srp.session_key()?.len());
+        let session_key = srp.session_key()?.to_vec();
+        println!("M4 server proof verified; session key len={}", session_key.len());
+        Ok(session_key)
     } else {
-        return Err(Error::msg("Failed to read M4 response."))
+        Err(Error::msg("Failed to read M4 response."))
     }
-    Ok(())
+}
+
+/// Pair-Setup M5/M6: exchange long-term Ed25519 keys (HAP §5.6.5–5.6.6).
+pub async fn pair_m5(stream: &mut TcpStream, pairing_id: &str, session_key: &[u8]) -> Result<PairingResult> {
+    let mut csprng = rand::rngs::OsRng;
+    let ltsk = SigningKey::generate(&mut csprng);
+    let ltpk = ltsk.verifying_key();
+
+    // DeviceX = HKDF(SRP K, Pair-Setup-Controller-Sign-*)
+    let device_x = hkdf_512(
+        session_key,
+        b"Pair-Setup-Controller-Sign-Salt",
+        b"Pair-Setup-Controller-Sign-Info",
+        32,
+    );
+    let mut sign_material = Vec::with_capacity(32 + pairing_id.len() + 32);
+    sign_material.extend_from_slice(&device_x);
+    sign_material.extend_from_slice(pairing_id.as_bytes());
+    sign_material.extend_from_slice(ltpk.as_bytes());
+    let signature = ltsk.sign(&sign_material);
+
+    let sub = Tlv8::new()
+        .add(T::Identifier, pairing_id.as_bytes())
+        .add(T::PublicKey, ltpk.as_bytes().to_vec())
+        .add(T::Signature, signature.to_bytes().to_vec())
+        .encode();
+
+    let enc_key = hkdf_512(
+        session_key,
+        b"Pair-Setup-Encrypt-Salt",
+        b"Pair-Setup-Encrypt-Info",
+        32,
+    );
+    let aead = AeadCipher::new(&enc_key);
+    let ciphertext = aead.seal(&hap_nonce(b"PS-Msg05"), &sub);
+
+    let m5 = Tlv8::new()
+        .add_u8(T::SeqNum, State::M5 as u8)
+        .add(T::EncryptedData, ciphertext)
+        .encode();
+    println!("M5 TLV: {:?}", m5);
+
+    let mut dict = HashMap::new();
+    dict.insert("_pd".to_string(), Value::Bytes(m5.to_vec()));
+    dict.insert("_pwTy".to_string(), Value::Decimal(1u8));
+    let mut bytes: Vec<u8> = vec![];
+    bytes.push(0x04); // PS_Next
+    let content = encode(&opack::Value::Dict(dict)).unwrap();
+    let content_len = u32::to_be_bytes(content.len() as u32);
+    bytes = [bytes, content_len[1..4].to_vec(), content].concat();
+    println!("M5 bytes: {:x?}", bytes);
+
+    stream.write_all(&bytes).await?;
+
+    /* Read M6: encrypted accessory identifier + LTPK + signature */
+    let mut buf = vec![0u8; 8192];
+    let read_size = stream.read(&mut buf).await.map_err(|_| Error::msg("Failed to read M6 response."))?;
+    buf.truncate(read_size);
+    println!("Read M6 Response: {:x?}", buf.as_slice());
+    if buf.first().copied() != Some(0x4) {
+        println!("Failed to receive M6: Pair-Setup Next");
+    }
+
+    let result = process_response(buf.as_slice())?;
+    check_tlv_error(&result)?;
+    let enc = result
+        .into_iter()
+        .find_map(|(t, bytes)| (t == T::EncryptedData).then_some(bytes))
+        .ok_or_else(|| Error::msg("M6 missing encrypted data"))?;
+
+    let plain = aead.open(&hap_nonce(b"PS-Msg06"), &enc)?;
+    let sub_tlv = Tlv8::decode(&plain)?;
+
+    let mut acc_id = None;
+    let mut acc_ltpk_bytes = None;
+    let mut acc_sig_bytes = None;
+    for (t, bytes) in sub_tlv {
+        match t {
+            T::Identifier => acc_id = Some(bytes),
+            T::PublicKey => acc_ltpk_bytes = Some(bytes),
+            T::Signature => acc_sig_bytes = Some(bytes),
+            _ => {}
+        }
+    }
+    let acc_id = acc_id.ok_or_else(|| Error::msg("M6 sub-TLV missing identifier"))?;
+    let acc_ltpk_bytes =
+        acc_ltpk_bytes.ok_or_else(|| Error::msg("M6 sub-TLV missing accessory LTPK"))?;
+    let acc_sig_bytes =
+        acc_sig_bytes.ok_or_else(|| Error::msg("M6 sub-TLV missing signature"))?;
+
+    let acc_ltpk = VerifyingKey::from_bytes(
+        acc_ltpk_bytes
+            .as_slice()
+            .try_into()
+            .map_err(|_| Error::msg("accessory LTPK is not 32 bytes"))?,
+    )?;
+    let acc_sig = Signature::from_bytes(
+        acc_sig_bytes
+            .as_slice()
+            .try_into()
+            .map_err(|_| Error::msg("accessory signature is not 64 bytes"))?,
+    );
+
+    // AccessoryX = HKDF(SRP K, Pair-Setup-Accessory-Sign-*)
+    let accessory_x = hkdf_512(
+        session_key,
+        b"Pair-Setup-Accessory-Sign-Salt",
+        b"Pair-Setup-Accessory-Sign-Info",
+        32,
+    );
+    let mut verify_material = Vec::with_capacity(32 + acc_id.len() + 32);
+    verify_material.extend_from_slice(&accessory_x);
+    verify_material.extend_from_slice(&acc_id);
+    verify_material.extend_from_slice(acc_ltpk.as_bytes());
+    acc_ltpk
+        .verify_strict(&verify_material, &acc_sig)
+        .context("M6 accessory signature invalid")?;
+
+    println!(
+        "M6 verified; accessory id={}",
+        String::from_utf8_lossy(&acc_id)
+    );
+
+    Ok(PairingResult {
+        accessory_ltpk: acc_ltpk,
+        our_ltpk: ltpk,
+        our_ltsk: ltsk,
+    })
 }
 
 pub fn process_response(buf: &[u8]) -> Result<Vec<(T, Vec<u8>)>> {

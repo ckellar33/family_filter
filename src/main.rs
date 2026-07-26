@@ -68,18 +68,14 @@ async fn pair_flow() -> Result<(), &'static str> {
     let mut pin = String::new(); io::stdin().read_line(&mut pin).unwrap();
     let pin = pin.trim();
 
-    // SRP Pair Setup placeholder: you'd implement the full SRP flow here
     let pairing_id = format!("rust-{}", gethostname::gethostname().to_string_lossy());
-    hap_pair::pair_m3(&mut stream, pin, &salt, &public_key).await.unwrap();
-    // hap_pair::pair_and_verify(&mut stream, &pairing_id, pin).await.unwrap();
-    // let creds = Creds {
-    //     pairing_id,
-    //     ltsk: "FAKE-LTSK-32BYTESHEX".into(),
-    //     ltpk: "FAKE-LTPK-32BYTESHEX".into(),
-    //     accessory_ltpk: "FAKE-ACCESSORY-LTPK-32BYTESHEX".into(),
-    // };
-    // save_device(&dev.host, creds)?;
-    println!("✅ Paired (placeholder) and saved credentials.");
+    let session_key = hap_pair::pair_m3(&mut stream, pin, &salt, &public_key).await.unwrap();
+    let result = hap_pair::pair_m5(&mut stream, &pairing_id, &session_key).await;
+    if result.is_ok() {
+        println!("✅ Paired; long-term keys exchanged.");
+    } else {
+        println!("❌ Pairing failed.");
+    }
     Ok(())
 }
 
