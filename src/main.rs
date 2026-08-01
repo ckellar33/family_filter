@@ -68,11 +68,24 @@ async fn pair_flow() -> Result<(), &'static str> {
     let mut pin = String::new(); io::stdin().read_line(&mut pin).unwrap();
     let pin = pin.trim();
 
-    let pairing_id = format!("rust-{}", gethostname::gethostname().to_string_lossy());
+    // pyatv uses a random UUID as the controller pairing identifier.
+    let pairing_id = {
+        let mut b = [0u8; 16];
+        rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut b);
+        // RFC 4122 version 4 / variant 1
+        b[6] = (b[6] & 0x0f) | 0x40;
+        b[8] = (b[8] & 0x3f) | 0x80;
+        format!(
+            "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+            b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
+            b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]
+        )
+    };
+    let display_name = "family-filter";
     let session_key = hap_pair::pair_m3(&mut stream, pin, &salt, &public_key)
         .await
         .unwrap();
-    match hap_pair::pair_m5(&mut stream, &pairing_id, &session_key).await {
+    match hap_pair::pair_m5(&mut stream, &pairing_id, &session_key, display_name).await {
         Ok(result) => {
             storage::save_pairing(&host, port, &result).unwrap();
             println!("✅ Paired; credentials saved to pairing.store");
@@ -138,6 +151,9 @@ async fn control_flow() -> Result<(), &'static str> {
 
     let mut session = companion::CompanionSession::new(stream, keys);
     if let Err(e) = session.bootstrap(&saved.creds.pairing_id).await {
+        for cause in e.chain() {
+            println!("  caused by: {cause}");
+        }
         println!("❌ Session bootstrap failed: {e}");
         return Ok(());
     }

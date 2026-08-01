@@ -18,13 +18,23 @@ const AUTH_TAG_LEN: usize = 16;
 const HEADER_LEN: usize = 4;
 const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(5);
 
-const MCC_GET_VOLUME: i64 = 5;
-const MCC_SET_VOLUME: i64 = 6;
 const MCC_SKIP_BY: i64 = 7;
+
+const HID_VOLUME_UP: i64 = 8;
+const HID_VOLUME_DOWN: i64 = 9;
 
 const MSG_EVENT: i64 = 1;
 const MSG_REQUEST: i64 = 2;
 const MSG_RESPONSE: i64 = 3;
+
+/// Number of simulated volume-down presses used to mute. _mcc SetVolume only
+/// changes tvOS's internal "now playing" volume, not the real CEC-driven TV
+/// volume the physical remote controls; HID VolumeUp/VolumeDown is the only
+/// channel confirmed to reach the TV. There's no read-back of the TV's actual
+/// CEC volume level, so unmute just replays the same number of presses in
+/// reverse rather than restoring an exact level.
+const MUTE_PRESS_COUNT: u32 = 25;
+const VOLUME_PRESS_INTERVAL: Duration = Duration::from_millis(10);
 
 fn map_of(entries: &[(&str, Value)]) -> HashMap<String, Value> {
     entries
@@ -41,12 +51,17 @@ pub struct CompanionSession {
     in_counter: u64,
     xid: i64,
     read_buf: Vec<u8>,
-    /// Volume level (0.0–1.0) captured before the last mute.
-    pre_mute_volume: Option<f64>,
+    /// Number of HID VolumeDown presses sent by the last mute, so unmute can
+    /// replay the same count of VolumeUp presses.
+    muted_presses: Option<u32>,
 }
 
 impl CompanionSession {
     pub fn new(stream: TcpStream, keys: VerifyResult) -> Self {
+        // Nagle's algorithm can hold back small writes for tens to hundreds
+        // of milliseconds waiting to coalesce; that's fatal for a burst of
+        // rapid-fire HID button presses like mute.
+        let _ = stream.set_nodelay(true);
         let mut rng = rand::thread_rng();
         Self {
             stream,
@@ -56,7 +71,7 @@ impl CompanionSession {
             in_counter: 0,
             xid: rng.gen_range(0..0xFFFF),
             read_buf: Vec::new(),
-            pre_mute_volume: None,
+            muted_presses: None,
         }
     }
 
@@ -85,6 +100,25 @@ impl CompanionSession {
             .await
             .context("_systemInfo failed")?;
 
+        // Real Apple TVs require a touch session before _sessionStart will
+        // succeed; fake_device doesn't enforce this ordering (pyatv api.py
+        // calls _touch_start() between system_info() and _session_start()).
+        let touch_start = map_of(&[
+            ("_i", Value::Str("_touchStart".into())),
+            ("_t", Value::Int(MSG_REQUEST)),
+            (
+                "_c",
+                Value::Dict(map_of(&[
+                    ("_height", Value::Float(1000.0)),
+                    ("_tFl", Value::Int(0)),
+                    ("_width", Value::Float(1000.0)),
+                ])),
+            ),
+        ]);
+        self.exchange_opack(touch_start)
+            .await
+            .context("_touchStart failed")?;
+
         let local_sid: i64 = rand::thread_rng().gen_range(0..i64::from(u32::MAX));
         let session_start = map_of(&[
             ("_i", Value::Str("_sessionStart".into())),
@@ -110,6 +144,31 @@ impl CompanionSession {
             }
         }
 
+        // Best-effort: not all devices support a TV Remote Client session.
+        let tv_rc_session_start = map_of(&[
+            ("_i", Value::Str("TVRCSessionStart".into())),
+            ("_t", Value::Int(MSG_REQUEST)),
+            (
+                "_c",
+                Value::Dict(map_of(&[(
+                    "ProtocolVersionKey",
+                    Value::Str("1.2".into()),
+                )])),
+            ),
+        ]);
+        if let Err(e) = self.exchange_opack(tv_rc_session_start).await {
+            println!("TVRCSessionStart not supported: {e}");
+        }
+
+        let text_input_start = map_of(&[
+            ("_i", Value::Str("_tiStart".into())),
+            ("_t", Value::Int(MSG_REQUEST)),
+            ("_c", Value::Dict(HashMap::new())),
+        ]);
+        self.exchange_opack(text_input_start)
+            .await
+            .context("_tiStart failed")?;
+
         // Interest is an event (_t=1); no response is expected.
         let interest = map_of(&[
             ("_i", Value::Str("_interest".into())),
@@ -129,83 +188,69 @@ impl CompanionSession {
         Ok(())
     }
 
-    /// Current volume as 0.0–1.0 from GetVolume.
-    pub async fn get_volume(&mut self) -> Result<f64> {
-        let msg = map_of(&[
-            ("_i", Value::Str("_mcc".into())),
-            ("_t", Value::Int(MSG_REQUEST)),
-            (
-                "_c",
-                Value::Dict(map_of(&[("_mcc", Value::Int(MCC_GET_VOLUME))])),
-            ),
-        ]);
-        let resp = self
-            .exchange_opack(msg)
-            .await
-            .context("GetVolume failed")?;
-        let vol = resp
-            .get("_c")
-            .and_then(|c| match c {
-                Value::Dict(d) => d.get("_vol"),
-                _ => None,
-            })
-            .and_then(|v| match v {
-                Value::Float(f) => Some(*f),
-                Value::Int(i) => Some(*i as f64),
-                _ => None,
-            })
-            .ok_or_else(|| Error::msg("GetVolume response missing _vol"))?;
-        Ok(vol)
-    }
-
-    /// Save the current volume (if non-zero) and set volume to 0.
+    /// Mute by simulating repeated presses of the remote's volume-down
+    /// button (HID), the only channel confirmed to reach the TV over CEC.
     pub async fn mute(&mut self) -> Result<()> {
-        match self.get_volume().await {
-            Ok(vol) if vol > 0.0 => {
-                self.pre_mute_volume = Some(vol);
-                println!("Saved volume {:.0}% before mute", vol * 100.0);
-            }
-            Ok(_) => {
-                // Already muted; keep any previously saved level.
-            }
-            Err(e) => {
-                // Still mute; unmute may fall back if nothing was saved.
-                println!("Could not read volume before mute: {e}");
-            }
-        }
-        self.set_volume(0.0).await
-    }
-
-    /// Restore volume saved by the last mute.
-    pub async fn unmute(&mut self) -> Result<()> {
-        let Some(vol) = self.pre_mute_volume.take() else {
-            return Err(Error::msg(
-                "no saved volume to restore (mute first while audio is playing)",
-            ));
-        };
-        self.set_volume(vol).await?;
-        println!("Restored volume to {:.0}%", vol * 100.0);
+        let start = std::time::Instant::now();
+        self.press_volume(HID_VOLUME_DOWN, MUTE_PRESS_COUNT)
+            .await
+            .context("mute failed")?;
+        println!("mute: press_volume took {:?}", start.elapsed());
+        self.muted_presses = Some(MUTE_PRESS_COUNT);
         Ok(())
     }
 
-    pub async fn set_volume(&mut self, level: f64) -> Result<()> {
-        // Companion expects 0.0–1.0; callers may pass 0.0–100.0 percent.
-        let vol = if level > 1.0 { level / 100.0 } else { level };
+    /// Restore volume by replaying the same number of volume-up presses
+    /// used by the last mute. This is an approximation, not an exact
+    /// restore: Apple TV doesn't expose the TV's real CEC volume level.
+    pub async fn unmute(&mut self) -> Result<()> {
+        let Some(presses) = self.muted_presses.take() else {
+            return Err(Error::msg("no active mute to restore (mute first)"));
+        };
+        self.press_volume(HID_VOLUME_UP, presses)
+            .await
+            .context("unmute failed")?;
+        Ok(())
+    }
+
+    /// Send a single HID button press or release (`_hidC`), e.g. the volume
+    /// buttons on the physical remote. Fire-and-forget: waiting for a
+    /// request/response round trip on every press would make a burst of
+    /// clicks take seconds, and we don't need per-press confirmation.
+    async fn hid_command(&mut self, down: bool, command: i64) -> Result<()> {
         let msg = map_of(&[
-            ("_i", Value::Str("_mcc".into())),
+            ("_i", Value::Str("_hidC".into())),
             ("_t", Value::Int(MSG_REQUEST)),
             (
                 "_c",
                 Value::Dict(map_of(&[
-                    ("_mcc", Value::Int(MCC_SET_VOLUME)),
-                    ("_vol", Value::Float(vol)),
+                    ("_hBtS", Value::Int(if down { 1 } else { 2 })),
+                    ("_hidC", Value::Int(command)),
                 ])),
             ),
         ]);
-        let _ = self
-            .exchange_opack(msg)
-            .await
-            .context("SetVolume failed")?;
+        self.send_opack(msg).await.context("HID command failed")?;
+        Ok(())
+    }
+
+    /// Press and release a HID volume button `times` times, spaced out like
+    /// discrete remote clicks rather than one continuous hold.
+    async fn press_volume(&mut self, command: i64, times: u32) -> Result<()> {
+        for i in 0..times {
+            let t0 = std::time::Instant::now();
+            self.hid_command(true, command).await?;
+            let t1 = std::time::Instant::now();
+            self.hid_command(false, command).await?;
+            let t2 = std::time::Instant::now();
+            tokio::time::sleep(VOLUME_PRESS_INTERVAL).await;
+            let t3 = std::time::Instant::now();
+            println!(
+                "press {i}: down={:?} up={:?} sleep={:?}",
+                t1 - t0,
+                t2 - t1,
+                t3 - t2
+            );
+        }
         Ok(())
     }
 
@@ -243,11 +288,14 @@ impl CompanionSession {
             let frame = timeout(remaining, self.recv_frame())
                 .await
                 .map_err(|_| Error::msg("timed out waiting for OPACK response"))??;
-            let (value, _) =
-                decode(&frame).map_err(|e| Error::msg(format!("opack decode: {e}")))?;
+            // println!("exchange_opack frame: {:?}", frame);
+            let (value, _) = decode(&frame).map_err(|e| Error::msg(format!("opack decode: {e}")))?;
+            // println!("decoded frame: {value:?}");
             let Value::Dict(dict) = value else {
                 continue;
             };
+            // println!("  _t={:?} _i={:?} _x={:?}", dict.get("_t"), dict.get("_i"), dict.get("_x"));
+
             match dict.get("_t") {
                 Some(Value::Int(t)) if *t == MSG_EVENT => continue,
                 Some(Value::Int(t)) if *t == MSG_RESPONSE => {
@@ -271,6 +319,7 @@ impl CompanionSession {
         }
         let payload =
             encode(&Value::Dict(data)).map_err(|e| Error::msg(format!("opack encode: {e}")))?;
+        // println!("{:?}", payload);
         self.send_frame(FRAME_E_OPACK, &payload).await
     }
 
@@ -287,9 +336,13 @@ impl CompanionSession {
             plaintext.len() + AUTH_TAG_LEN
         };
         let mut header = [0u8; HEADER_LEN];
-        header[0] = frame_type;
-        let len_be = (cipher_len as u32).to_be_bytes();
-        header[1..4].copy_from_slice(&len_be[1..4]);
+        // header[0] = frame_type;
+        // let len_be = (cipher_len as u32).to_be_bytes();
+        // header[1..4].copy_from_slice(&len_be[1..4]);
+        header[0] = frame_type; // 0x08 for OPACK
+        header[1] = ((cipher_len >> 16) & 0xFF) as u8;
+        header[2] = ((cipher_len >> 8) & 0xFF) as u8;
+        header[3] = (cipher_len & 0xFF) as u8;
 
         let body = if plaintext.is_empty() {
             Vec::new()
@@ -331,6 +384,7 @@ impl CompanionSession {
                 .read(&mut tmp)
                 .await
                 .map_err(|_| Error::msg("connection closed while reading frame"))?;
+            println!("raw read: {} bytes: {:x?}", n, &tmp[..n]);
             if n == 0 {
                 return Err(Error::msg("connection closed while reading frame"));
             }

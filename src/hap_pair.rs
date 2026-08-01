@@ -53,16 +53,32 @@ fn check_tlv_error(tlv: &[(T, Vec<u8>)]) -> Result<()> {
         if *t == T::Error {
             let code = bytes.first().copied().unwrap_or(0);
             let msg = match code {
-                c if c == HapError::Authentication as u8 => "authentication failed (wrong PIN or bad SRP proof)",
+                c if c == HapError::Authentication as u8 => {
+                    "authentication failed (wrong PIN, bad SRP proof, or M5 decrypt/signature failed)"
+                }
                 c if c == HapError::Busy as u8 => "accessory is busy",
                 c if c == HapError::MaxTries as u8 => "max pairing attempts exceeded",
-                c if c == HapError::Unknown as u8 => "unknown pairing error",
+                // Real Apple TVs often return Unknown when Companion M5 lacks the
+                // Name (0x11) OPACK device-info TLV that pyatv always sends.
+                c if c == HapError::Unknown as u8 => {
+                    "unknown pairing error (real Apple TV often rejects M5 without Name TLV 0x11)"
+                }
                 other => return Err(Error::msg(format!("pairing error code {other}"))),
             };
             return Err(Error::msg(msg));
         }
     }
     Ok(())
+}
+
+/// OPACK device-info blob for Companion Pair-Setup M5 (TLV type 0x11 / Name).
+///
+/// pyatv sends `opack.pack({"name": display_name})`. Fake devices ignore it;
+/// real Apple TVs require it and otherwise reply with Error=Unknown at M6.
+fn companion_device_info_opack(display_name: &str) -> Result<Vec<u8>> {
+    let mut dict = HashMap::new();
+    dict.insert("name".to_string(), Value::Str(display_name.to_string()));
+    encode(&Value::Dict(dict)).map_err(|e| Error::msg(format!("opack encode name: {e}")))
 }
 
 /// Generates the SRP proof for HomeKit / Companion pairing.
@@ -206,7 +222,16 @@ pub async fn pair_m3(stream: &mut TcpStream, pin: &str, salt: &[u8], public_key:
 }
 
 /// Pair-Setup M5/M6: exchange long-term Ed25519 keys (HAP §5.6.5–5.6.6).
-pub async fn pair_m5(stream: &mut TcpStream, pairing_id: &str, session_key: &[u8]) -> Result<PairingResult> {
+///
+/// For Companion (Apple TV), the encrypted M5 sub-TLV must also include
+/// `T::Name` (0x11) with an OPACK `{"name": ...}` dict — same as pyatv.
+/// Without it, real devices return Error=Unknown at M6 while fake_device still succeeds.
+pub async fn pair_m5(
+    stream: &mut TcpStream,
+    pairing_id: &str,
+    session_key: &[u8],
+    display_name: &str,
+) -> Result<PairingResult> {
     let mut csprng = rand::rngs::OsRng;
     let ltsk = SigningKey::generate(&mut csprng);
     let ltpk = ltsk.verifying_key();
@@ -224,10 +249,13 @@ pub async fn pair_m5(stream: &mut TcpStream, pairing_id: &str, session_key: &[u8
     sign_material.extend_from_slice(ltpk.as_bytes());
     let signature = ltsk.sign(&sign_material);
 
+    // Companion requires Name (0x11) inside the encrypted payload (pyatv step3).
+    let name_opack = companion_device_info_opack(display_name)?;
     let sub = Tlv8::new()
         .add(T::Identifier, pairing_id.as_bytes())
         .add(T::PublicKey, ltpk.as_bytes().to_vec())
         .add(T::Signature, signature.to_bytes().to_vec())
+        .add(T::Name, name_opack)
         .encode();
 
     let enc_key = hkdf_512(

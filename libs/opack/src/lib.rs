@@ -47,17 +47,23 @@ mod tag {
     pub const BOOL_TRUE: u8 = 0x01;
     pub const BOOL_FALSE: u8 = 0x02;
     pub const NIL: u8 = 0x04;
+    pub const UUID: u8 = 0x05;
+    pub const MACH_TIME: u8 = 0x06;
+    pub const NEG_ONE: u8 = 0x07;
     pub const SMALL_INT: u8 = 0x08;
     pub const INT_1: u8 = 0x30;
     pub const INT_2: u8 = 0x31;
     pub const INT_4: u8 = 0x32;
     pub const INT_8: u8 = 0x33;
+    pub const FLOAT32: u8 = 0x35;
     pub const FLOAT64: u8 = 0x36;
     pub const STR: u8 = 0x40;
     pub const BYTES: u8 = 0x70;
     pub const BYTE_ARRAY: u8 = 0x90;
     pub const LIST: u8 = 0xd0;
+    pub const LIST_TERM: u8 = 0xdf;
     pub const DICT: u8 = 0xe0;
+    pub const DICT_TERM: u8 = 0xef;
 }
 
 /// Encode a Value into OPACK bytes
@@ -168,35 +174,65 @@ fn encode_into<W: Write>(w: &mut W, v: &Value) -> Result<(), Error> {
 
 /// Decode OPACK bytes into a Value
 pub fn decode(data: &[u8]) -> Result<(Value, usize), Error> {
-    let mut cur = Cursor::new(data);
-    let val = decode_from(&mut cur)?;
-    let pos = cur.position() as usize;
-    Ok((val, pos))
+    let mut cursor = Cursor::new(data);
+    let mut table = Vec::new();
+    let value = decode_from(&mut cursor, &mut table)?;
+    Ok((value, cursor.position() as usize))
 }
 
-fn decode_from<R: Read>(r: &mut R) -> Result<Value, Error> {
+fn decode_from<R: Read>(r: &mut R, table: &mut Vec<Value>) -> Result<Value, Error> {
     let mut tag_buf = [0u8; 1];
     if r.read_exact(&mut tag_buf).is_err() {
         return Err(Error::Eof);
     }
-    let tag = tag_buf[0];
+    decode_tagged(tag_buf[0], r, table)
+}
+
+fn decode_tagged<R: Read>(tag: u8, r: &mut R, table: &mut Vec<Value>) -> Result<Value, Error> {
+    // Small helper: record an indexable leaf value, then return it.
+    macro_rules! indexed {
+        ($v:expr) => {{
+            let v = $v;
+            table.push(v.clone());
+            Ok(v)
+        }};
+    }
+
     match tag {
+        // --- not indexed: single-byte encodings ---
         tag::NIL => Ok(Value::Nil),
         tag::BOOL_TRUE => Ok(Value::Bool(true)),
         tag::BOOL_FALSE => Ok(Value::Bool(false)),
         0x08..=0x2F => Ok(Value::Int((tag - tag::SMALL_INT) as i64)),
-        tag::INT_1 => Ok(Value::Int(r.read_u8()? as i64)),
-        tag::INT_2 => Ok(Value::Int(r.read_u16::<LittleEndian>()? as i64)),
-        tag::INT_4 => Ok(Value::Int(r.read_u32::<LittleEndian>()? as i64)),
-        tag::INT_8 => Ok(Value::Int(r.read_i64::<LittleEndian>()?)),
-        tag::FLOAT64 => Ok(Value::Float(r.read_f64::<LittleEndian>()?)),
+        tag::NEG_ONE => Ok(Value::Int(-1)), // 0x07
+
+        // --- indexed leaf values ---
+        tag::INT_1 => indexed!(Value::Int(r.read_u8()? as i64)),
+        tag::INT_2 => indexed!(Value::Int(r.read_u16::<LittleEndian>()? as i64)),
+        tag::INT_4 => indexed!(Value::Int(r.read_u32::<LittleEndian>()? as i64)),
+        tag::INT_8 => indexed!(Value::Int(r.read_i64::<LittleEndian>()?)),
+        tag::FLOAT64 => indexed!(Value::Float(r.read_f64::<LittleEndian>()?)),
+        tag::FLOAT32 => indexed!(Value::Float(r.read_f32::<LittleEndian>()? as f64)),
+
+        tag::UUID => { // 0x05: 16 raw bytes, big-endian -> formatted UUID string
+            let mut buf = [0u8; 16];
+            r.read_exact(&mut buf)?;
+            let s = format!(
+                "{:02X}{:02X}{:02X}{:02X}-{:02X}{:02X}-{:02X}{:02X}-{:02X}{:02X}-{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}",
+                buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7],
+                buf[8], buf[9], buf[10], buf[11], buf[12], buf[13], buf[14], buf[15]
+            );
+            indexed!(Value::Str(s))
+        }
+        tag::MACH_TIME => indexed!(Value::Int(r.read_i64::<LittleEndian>()?)), // 0x06
+
         0x40..=0x60 => {
             let len = (tag - tag::STR) as usize;
             let mut buf = vec![0u8; len];
             r.read_exact(&mut buf)?;
             let s = String::from_utf8(buf)
                 .map_err(|e| Error::InvalidData(format!("invalid utf8 string: {}", e)))?;
-            Ok(Value::Str(s))
+            indexed!(Value::Str(s))
         }
         0x61..=0x64 => {
             let nbytes = (tag & 0x0F) as usize;
@@ -209,13 +245,13 @@ fn decode_from<R: Read>(r: &mut R) -> Result<Value, Error> {
             r.read_exact(&mut buf)?;
             let s = String::from_utf8(buf)
                 .map_err(|e| Error::InvalidData(format!("invalid utf8 string: {}", e)))?;
-            Ok(Value::Str(s))
+            indexed!(Value::Str(s))
         }
         0x70..=0x90 => {
             let len = (tag - tag::BYTES) as usize;
             let mut buf = vec![0u8; len];
             r.read_exact(&mut buf)?;
-            Ok(Value::Bytes(buf))
+            indexed!(Value::Bytes(buf))
         }
         0x91..=0x94 => {
             let nbytes = 1usize << ((tag & 0x0F) - 1);
@@ -226,13 +262,27 @@ fn decode_from<R: Read>(r: &mut R) -> Result<Value, Error> {
             let len = u64::from_le_bytes(padded) as usize;
             let mut buf = vec![0u8; len];
             r.read_exact(&mut buf)?;
-            Ok(Value::ByteArray(buf))
+            indexed!(Value::ByteArray(buf))
         }
+
+        // --- containers: recurse with the same table, but don't index the container itself ---
         0xD0..=0xDE => {
             let count = (tag - tag::LIST) as usize;
             let mut items = Vec::with_capacity(count);
             for _ in 0..count {
-                items.push(decode_from(r)?);
+                items.push(decode_from(r, table)?);
+            }
+            Ok(Value::List(items))
+        }
+        tag::LIST_TERM => { // 0xDF
+            let mut items = Vec::new();
+            loop {
+                let mut next = [0u8; 1];
+                r.read_exact(&mut next)?;
+                if next[0] == 0x03 {
+                    break;
+                }
+                items.push(decode_tagged(next[0], r, table)?);
             }
             Ok(Value::List(items))
         }
@@ -240,20 +290,56 @@ fn decode_from<R: Read>(r: &mut R) -> Result<Value, Error> {
             let count = (tag - tag::DICT) as usize;
             let mut map = HashMap::with_capacity(count);
             for _ in 0..count {
-                let key = decode_from(r)?;
+                let key = decode_from(r, table)?;
                 let key_str = match key {
-                    Value::Str(key_str) => key_str,
-                    _ => {
-                        return Err(Error::InvalidData(
-                            "Failed to get dictionary key".to_string(),
-                        ))
-                    }
+                    Value::Str(s) => s,
+                    _ => return Err(Error::InvalidData("Failed to get dictionary key".to_string())),
                 };
-                let value = decode_from(r)?;
+                let value = decode_from(r, table)?;
                 map.insert(key_str, value);
             }
             Ok(Value::Dict(map))
         }
+        tag::DICT_TERM => { // 0xEF
+            let mut map = HashMap::new();
+            loop {
+                let mut next = [0u8; 1];
+                r.read_exact(&mut next)?;
+                if next[0] == 0x03 {
+                    break;
+                }
+                let key = decode_tagged(next[0], r, table)?;
+                let key_str = match key {
+                    Value::Str(s) => s,
+                    _ => return Err(Error::InvalidData("Failed to get dictionary key".to_string())),
+                };
+                let value = decode_from(r, table)?;
+                map.insert(key_str, value);
+            }
+            Ok(Value::Dict(map))
+        }
+
+        // --- pointers ---
+        0xA0..=0xC0 => {
+            let idx = (tag - 0xA0) as usize;
+            table
+                .get(idx)
+                .cloned()
+                .ok_or_else(|| Error::InvalidData(format!("pointer index {idx} out of range")))
+        }
+        0xC1..=0xC4 => {
+            let nbytes = (tag & 0x0F) as usize;
+            let mut len_buf = vec![0u8; nbytes];
+            r.read_exact(&mut len_buf)?;
+            let mut padded = [0u8; 8];
+            padded[..nbytes].copy_from_slice(&len_buf);
+            let idx = u64::from_le_bytes(padded) as usize;
+            table
+                .get(idx)
+                .cloned()
+                .ok_or_else(|| Error::InvalidData(format!("pointer index {idx} out of range")))
+        }
+
         other => Err(Error::InvalidData(format!("unknown tag byte: 0x{:02x}", other))),
     }
 }
