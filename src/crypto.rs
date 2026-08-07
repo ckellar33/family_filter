@@ -20,10 +20,21 @@ pub fn hap_nonce(label: &[u8; 8]) -> [u8; 12] {
     nonce
 }
 
-/// Companion session nonce: 12-byte little-endian counter.
+/// Companion session nonce: 12-byte little-endian counter, no padding
+/// (`chacha20.Chacha20Cipher(..., nonce_length=12)` in pyatv).
 pub fn companion_nonce(counter: u64) -> [u8; 12] {
     let mut nonce = [0u8; 12];
     nonce[..8].copy_from_slice(&counter.to_le_bytes());
+    nonce
+}
+
+/// HAP-channel session nonce (control/event/data channels, and standalone
+/// MRP): four zero bytes *followed by* the little-endian 8-byte counter —
+/// the opposite order from `companion_nonce` despite looking similar
+/// (`chacha20.Chacha20Cipher8byteNonce` in pyatv, which pads on the left).
+pub fn hap_channel_nonce(counter: u64) -> [u8; 12] {
+    let mut nonce = [0u8; 12];
+    nonce[4..12].copy_from_slice(&counter.to_le_bytes());
     nonce
 }
 

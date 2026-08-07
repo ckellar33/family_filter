@@ -48,7 +48,7 @@ fn normalize_pin(pin: &str) -> String {
     pin.chars().filter(|c| c.is_ascii_digit()).collect()
 }
 
-fn check_tlv_error(tlv: &[(T, Vec<u8>)]) -> Result<()> {
+pub(crate) fn check_tlv_error(tlv: &[(T, Vec<u8>)]) -> Result<()> {
     for (t, bytes) in tlv {
         if *t == T::Error {
             let code = bytes.first().copied().unwrap_or(0);

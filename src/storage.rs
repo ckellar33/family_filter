@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use anyhow::{Context, Error, Result};
@@ -6,28 +7,109 @@ use crate::hap_pair::PairingResult;
 
 const STORE_PATH: &str = "pairing.store";
 
-/// Persist pairing credentials so Pair-Verify can run on a later connection.
-pub fn save_pairing(host: &str, port: u16, result: &PairingResult) -> Result<()> {
-    let body = format!(
-        "host={host}\n\
-         port={port}\n\
-         pairing_id={}\n\
-         accessory_id={}\n\
-         our_ltsk={}\n\
-         accessory_ltpk={}\n",
-        result.pairing_id,
-        hex::encode(&result.accessory_id),
-        hex::encode(result.our_ltsk.to_bytes()),
-        hex::encode(result.accessory_ltpk.as_bytes()),
-    );
+/// One protocol's saved pairing: its own host (mDNS instance host strings
+/// differ per protocol/service even for the same physical device — see
+/// `main.rs::prompt_device_selection`), port, and credentials.
+pub struct Pairing {
+    pub host: String,
+    pub port: u16,
+    pub creds: PairingResult,
+}
+
+fn pairing_fields(prefix: &str, pairing: &Pairing) -> String {
+    format!(
+        "{prefix}host={}\n\
+         {prefix}port={}\n\
+         {prefix}pairing_id={}\n\
+         {prefix}accessory_id={}\n\
+         {prefix}our_ltsk={}\n\
+         {prefix}accessory_ltpk={}\n",
+        pairing.host,
+        pairing.port,
+        pairing.creds.pairing_id,
+        hex::encode(&pairing.creds.accessory_id),
+        hex::encode(pairing.creds.our_ltsk.to_bytes()),
+        hex::encode(pairing.creds.accessory_ltpk.as_bytes()),
+    )
+}
+
+/// Persist Companion (and, if present, standalone-MRP and/or AirPlay)
+/// pairing credentials so Pair-Verify can run on a later connection. Each is
+/// an independent pairing ceremony (its own on-screen PIN, and often its own
+/// resolvable host), so all but Companion's are optional here. AirPlay is
+/// what tvOS 15+ actually needs for live playback position (see
+/// `mrp/tunnel.rs`); standalone MRP only still works on older tvOS / the
+/// local fake device.
+pub fn save_pairing(companion: &Pairing, mrp: Option<&Pairing>, airplay: Option<&Pairing>) -> Result<()> {
+    let mut body = pairing_fields("", companion);
+    if let Some(mrp) = mrp {
+        body.push_str(&pairing_fields("mrp_", mrp));
+    }
+    if let Some(airplay) = airplay {
+        body.push_str(&pairing_fields("airplay_", airplay));
+    }
     fs::write(STORE_PATH, body).context("failed to write pairing.store")?;
     Ok(())
 }
 
 pub struct SavedDevice {
-    pub host: String,
-    pub port: u16,
-    pub creds: PairingResult,
+    pub companion: Pairing,
+    pub mrp: Option<Pairing>,
+    pub airplay: Option<Pairing>,
+}
+
+/// Parse the `{prefix}host` / `{prefix}port` / ... fields for one credential
+/// set. Returns `Ok(None)` if the host field is entirely absent (i.e. this
+/// pairing was never performed), so MRP/AirPlay can be optional while
+/// Companion's remain required.
+fn parse_pairing(fields: &HashMap<String, String>, prefix: &str) -> Result<Option<Pairing>> {
+    let key = |name: &str| format!("{prefix}{name}");
+    let Some(host) = fields.get(&key("host")) else {
+        return Ok(None);
+    };
+    let host = host.clone();
+    let port: u16 = fields
+        .get(&key("port"))
+        .ok_or_else(|| Error::msg(format!("missing {prefix}port")))?
+        .parse()
+        .context("bad port")?;
+
+    let field_hex = |name: &str| -> Result<Vec<u8>> {
+        let raw = fields
+            .get(&key(name))
+            .ok_or_else(|| Error::msg(format!("missing {prefix}{name}")))?;
+        hex::decode(raw).with_context(|| format!("bad {prefix}{name}"))
+    };
+
+    let pairing_id = fields
+        .get(&key("pairing_id"))
+        .cloned()
+        .ok_or_else(|| Error::msg(format!("missing {prefix}pairing_id")))?;
+    let accessory_id = field_hex("accessory_id")?;
+    let our_ltsk = field_hex("our_ltsk")?;
+    let accessory_ltpk = field_hex("accessory_ltpk")?;
+
+    let ltsk_bytes: [u8; 32] = our_ltsk
+        .as_slice()
+        .try_into()
+        .map_err(|_| Error::msg("our_ltsk must be 32 bytes"))?;
+    let ltpk_bytes: [u8; 32] = accessory_ltpk
+        .as_slice()
+        .try_into()
+        .map_err(|_| Error::msg("accessory_ltpk must be 32 bytes"))?;
+    let our_ltsk = SigningKey::from_bytes(&ltsk_bytes);
+
+    Ok(Some(Pairing {
+        host,
+        port,
+        creds: PairingResult {
+            pairing_id,
+            accessory_id,
+            accessory_ltpk: VerifyingKey::from_bytes(&ltpk_bytes)?,
+            _our_ltpk: our_ltsk.verifying_key(),
+            our_ltsk,
+        },
+    }))
 }
 
 pub fn load_pairing() -> Result<Option<SavedDevice>> {
@@ -35,51 +117,15 @@ pub fn load_pairing() -> Result<Option<SavedDevice>> {
         return Ok(None);
     }
     let text = fs::read_to_string(STORE_PATH).context("failed to read pairing.store")?;
-    let mut host = None;
-    let mut port = None;
-    let mut pairing_id = None;
-    let mut accessory_id = None;
-    let mut our_ltsk = None;
-    let mut accessory_ltpk = None;
+    let fields: HashMap<String, String> = text
+        .lines()
+        .filter_map(|line| line.split_once('='))
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
 
-    for line in text.lines() {
-        let Some((k, v)) = line.split_once('=') else {
-            continue;
-        };
-        match k {
-            "host" => host = Some(v.to_string()),
-            "port" => port = Some(v.parse::<u16>().context("bad port")?),
-            "pairing_id" => pairing_id = Some(v.to_string()),
-            "accessory_id" => accessory_id = Some(hex::decode(v).context("bad accessory_id")?),
-            "our_ltsk" => our_ltsk = Some(hex::decode(v).context("bad our_ltsk")?),
-            "accessory_ltpk" => {
-                accessory_ltpk = Some(hex::decode(v).context("bad accessory_ltpk")?)
-            }
-            _ => {}
-        }
-    }
+    let companion = parse_pairing(&fields, "")?.ok_or_else(|| Error::msg("missing Companion pairing fields"))?;
+    let mrp = parse_pairing(&fields, "mrp_")?;
+    let airplay = parse_pairing(&fields, "airplay_")?;
 
-    let ltsk_bytes: [u8; 32] = our_ltsk
-        .ok_or_else(|| Error::msg("missing our_ltsk"))?
-        .as_slice()
-        .try_into()
-        .map_err(|_| Error::msg("our_ltsk must be 32 bytes"))?;
-    let ltpk_bytes: [u8; 32] = accessory_ltpk
-        .ok_or_else(|| Error::msg("missing accessory_ltpk"))?
-        .as_slice()
-        .try_into()
-        .map_err(|_| Error::msg("accessory_ltpk must be 32 bytes"))?;
-
-    let our_ltsk = SigningKey::from_bytes(&ltsk_bytes);
-    Ok(Some(SavedDevice {
-        host: host.ok_or_else(|| Error::msg("missing host"))?,
-        port: port.ok_or_else(|| Error::msg("missing port"))?,
-        creds: PairingResult {
-            pairing_id: pairing_id.ok_or_else(|| Error::msg("missing pairing_id"))?,
-            accessory_id: accessory_id.ok_or_else(|| Error::msg("missing accessory_id"))?,
-            accessory_ltpk: VerifyingKey::from_bytes(&ltpk_bytes)?,
-            _our_ltpk: our_ltsk.verifying_key(),
-            our_ltsk,
-        },
-    }))
+    Ok(Some(SavedDevice { companion, mrp, airplay }))
 }

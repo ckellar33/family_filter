@@ -12,7 +12,19 @@ pub struct Discovered {
 }
 
 pub async fn find_companion(timeout: Duration) -> Result<Vec<Discovered>, &'static str> {
-    let service_type = ServiceType::with_sub_types(&"companion-link", &"tcp", vec![]).expect("invalid service type");
+    find_service("companion-link", timeout, "No _companion-link._tcp service found").await
+}
+
+pub async fn find_mrp(timeout: Duration) -> Result<Vec<Discovered>, &'static str> {
+    find_service("mediaremotetv", timeout, "No _mediaremotetv._tcp service found").await
+}
+
+pub async fn find_airplay(timeout: Duration) -> Result<Vec<Discovered>, &'static str> {
+    find_service("airplay", timeout, "No _airplay._tcp service found").await
+}
+
+async fn find_service(name: &str, timeout: Duration, not_found_msg: &'static str) -> Result<Vec<Discovered>, &'static str> {
+    let service_type = ServiceType::with_sub_types(&name, &"tcp", vec![]).expect("invalid service type");
 
     let mut browser = MdnsBrowser::new(service_type);
 
@@ -40,7 +52,7 @@ pub async fn find_companion(timeout: Duration) -> Result<Vec<Discovered>, &'stat
     if !results.is_empty() {
         return Ok(results);
     } else {
-        return Err("No _companion-link._tcp service found");
+        return Err(not_found_msg);
     }
 }
 

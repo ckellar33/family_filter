@@ -1,0 +1,10 @@
+[package]
+name = "protobuf_lite"
+version = "0.1.0"
+edition = "2024"
+authors = ["Christopher Kellar"]
+description = "Minimal schema-less protobuf (proto2) wire encoder/decoder for a handful of known field numbers, used for Apple's MRP protocol."
+license = "MIT"
+
+[dependencies]
+thiserror = "1.0"

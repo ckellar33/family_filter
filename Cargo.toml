@@ -7,6 +7,7 @@ authot = ["Christopher Kellar"]
 [dependencies]
 tlv8 = { path = "./libs/tlv8" }
 opack = { path = "./libs/opack" }
+protobuf_lite = { path = "./libs/protobuf_lite" }
 clap = "4.5.47"
 mdns = "3.0.0"
 srp = "0.6.0"
@@ -14,7 +15,7 @@ anyhow = "1.0.99"
 zeroconf = "0.15.1"
 futures = "0.3.31"
 bytes = "1.10.1"
-tokio = { version = "1.38", features = ["rt-multi-thread", "macros", "net", "io-util", "time"] }
+tokio = { version = "1.38", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync"] }
 # Crypto pieces used by HAP / Companion
 hkdf = "0.12"
 sha2 = "0.10"
@@ -27,3 +28,4 @@ rand = "0.8.5"
 x25519-dalek = "2.0.1"
 hex = "0.4"
 log = "0.4.33"
+plist = "1.10.0"

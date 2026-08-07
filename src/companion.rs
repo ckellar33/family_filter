@@ -20,21 +20,9 @@ const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(5);
 
 const MCC_SKIP_BY: i64 = 7;
 
-const HID_VOLUME_UP: i64 = 8;
-const HID_VOLUME_DOWN: i64 = 9;
-
 const MSG_EVENT: i64 = 1;
 const MSG_REQUEST: i64 = 2;
 const MSG_RESPONSE: i64 = 3;
-
-/// Number of simulated volume-down presses used to mute. _mcc SetVolume only
-/// changes tvOS's internal "now playing" volume, not the real CEC-driven TV
-/// volume the physical remote controls; HID VolumeUp/VolumeDown is the only
-/// channel confirmed to reach the TV. There's no read-back of the TV's actual
-/// CEC volume level, so unmute just replays the same number of presses in
-/// reverse rather than restoring an exact level.
-const MUTE_PRESS_COUNT: u32 = 25;
-const VOLUME_PRESS_INTERVAL: Duration = Duration::from_millis(10);
 
 fn map_of(entries: &[(&str, Value)]) -> HashMap<String, Value> {
     entries
@@ -51,9 +39,6 @@ pub struct CompanionSession {
     in_counter: u64,
     xid: i64,
     read_buf: Vec<u8>,
-    /// Number of HID VolumeDown presses sent by the last mute, so unmute can
-    /// replay the same count of VolumeUp presses.
-    muted_presses: Option<u32>,
 }
 
 impl CompanionSession {
@@ -71,7 +56,6 @@ impl CompanionSession {
             in_counter: 0,
             xid: rng.gen_range(0..0xFFFF),
             read_buf: Vec::new(),
-            muted_presses: None,
         }
     }
 
@@ -185,72 +169,6 @@ impl CompanionSession {
             .await
             .context("_interest failed")?;
 
-        Ok(())
-    }
-
-    /// Mute by simulating repeated presses of the remote's volume-down
-    /// button (HID), the only channel confirmed to reach the TV over CEC.
-    pub async fn mute(&mut self) -> Result<()> {
-        let start = std::time::Instant::now();
-        self.press_volume(HID_VOLUME_DOWN, MUTE_PRESS_COUNT)
-            .await
-            .context("mute failed")?;
-        println!("mute: press_volume took {:?}", start.elapsed());
-        self.muted_presses = Some(MUTE_PRESS_COUNT);
-        Ok(())
-    }
-
-    /// Restore volume by replaying the same number of volume-up presses
-    /// used by the last mute. This is an approximation, not an exact
-    /// restore: Apple TV doesn't expose the TV's real CEC volume level.
-    pub async fn unmute(&mut self) -> Result<()> {
-        let Some(presses) = self.muted_presses.take() else {
-            return Err(Error::msg("no active mute to restore (mute first)"));
-        };
-        self.press_volume(HID_VOLUME_UP, presses)
-            .await
-            .context("unmute failed")?;
-        Ok(())
-    }
-
-    /// Send a single HID button press or release (`_hidC`), e.g. the volume
-    /// buttons on the physical remote. Fire-and-forget: waiting for a
-    /// request/response round trip on every press would make a burst of
-    /// clicks take seconds, and we don't need per-press confirmation.
-    async fn hid_command(&mut self, down: bool, command: i64) -> Result<()> {
-        let msg = map_of(&[
-            ("_i", Value::Str("_hidC".into())),
-            ("_t", Value::Int(MSG_REQUEST)),
-            (
-                "_c",
-                Value::Dict(map_of(&[
-                    ("_hBtS", Value::Int(if down { 1 } else { 2 })),
-                    ("_hidC", Value::Int(command)),
-                ])),
-            ),
-        ]);
-        self.send_opack(msg).await.context("HID command failed")?;
-        Ok(())
-    }
-
-    /// Press and release a HID volume button `times` times, spaced out like
-    /// discrete remote clicks rather than one continuous hold.
-    async fn press_volume(&mut self, command: i64, times: u32) -> Result<()> {
-        for i in 0..times {
-            let t0 = std::time::Instant::now();
-            self.hid_command(true, command).await?;
-            let t1 = std::time::Instant::now();
-            self.hid_command(false, command).await?;
-            let t2 = std::time::Instant::now();
-            tokio::time::sleep(VOLUME_PRESS_INTERVAL).await;
-            let t3 = std::time::Instant::now();
-            println!(
-                "press {i}: down={:?} up={:?} sleep={:?}",
-                t1 - t0,
-                t2 - t1,
-                t3 - t2
-            );
-        }
         Ok(())
     }
 
