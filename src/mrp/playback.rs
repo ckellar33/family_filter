@@ -18,14 +18,11 @@
 //! overwrite the state of whatever was actually playing.
 
 use std::collections::HashMap;
+use std::time::Instant;
 
 use protobuf_lite::{all_fields, decode, last_field, WireValue};
 
 use super::messages;
-
-/// Seconds between the Unix epoch (1970-01-01) and the Cocoa epoch
-/// (2001-01-01), which is what `elapsedTimeTimestamp` is measured against.
-const COCOA_EPOCH_OFFSET: f64 = 978_307_200.0;
 
 // SetStateMessage field numbers.
 const FIELD_PLAYBACK_STATE: u32 = 6;
@@ -44,7 +41,6 @@ const FIELD_META_TITLE: u32 = 1;
 const FIELD_META_DURATION: u32 = 14;
 const FIELD_META_ELAPSED_TIME: u32 = 35;
 const FIELD_META_PLAYBACK_RATE: u32 = 39;
-const FIELD_META_ELAPSED_TIMESTAMP: u32 = 74;
 
 // PlayerPath field numbers (`PlayerPath.proto`): origin=1, client=2, player=3.
 const FIELD_PLAYER_PATH_CLIENT: u32 = 2;
@@ -93,11 +89,22 @@ impl PlaybackStateKind {
 struct PlayerSnapshot {
     title: Option<String>,
     duration: Option<f64>,
+    /// The most recently known-good position, and the local monotonic
+    /// instant at which it was accurate. Anchored to *our own* clock rather
+    /// than the device's `elapsedTimeTimestamp` compared against our wall
+    /// clock — the latter is vulnerable to any clock skew between this
+    /// machine and the Apple TV, which showed up as a several-second
+    /// position error in practice even after the stale-anchor bug (transition
+    /// re-anchoring, below) was fixed. This only ever depends on one clock
+    /// agreeing with itself.
     elapsed_time: Option<f64>,
-    /// Cocoa-epoch seconds at which `elapsed_time` was accurate.
-    elapsed_timestamp: Option<f64>,
+    anchored_at: Option<Instant>,
     playback_rate: Option<f32>,
     playback_state: PlaybackStateKind,
+    /// Current index into the playback queue, so an active refresh
+    /// (`PlaybackState::active_queue_location`) knows which item to
+    /// re-request instead of guessing `0`.
+    queue_location: Option<i64>,
 }
 
 impl PlayerSnapshot {
@@ -107,7 +114,33 @@ impl PlayerSnapshot {
     /// timing fields we already know, matching pyatv's `handle_set_state`.
     fn apply_set_state(&mut self, set_state_fields: &[(u32, WireValue)]) {
         if let Some(v) = last_field(set_state_fields, FIELD_PLAYBACK_STATE).and_then(WireValue::as_i32) {
-            self.playback_state = PlaybackStateKind::from_i32(v);
+            let new_state = PlaybackStateKind::from_i32(v);
+            if new_state != self.playback_state {
+                // Confirmed directly against a real device: a hardware-remote
+                // pause/resume arrives as its own SetStateMessage with
+                // hasPlaybackState=true but hasQueue=false — no fresh
+                // elapsedTime/playbackRate alongside it. Re-anchor to
+                // whatever we'd have extrapolated a moment ago, computed
+                // under the *old* state/rate before either changes below, so
+                // a transition never regresses to a stale elapsed_time and a
+                // resume doesn't silently count the paused interval as
+                // elapsed playback. A message that *does* carry a fresh
+                // playbackQueue overrides this immediately below anyway.
+                if let Some(pos) = self.position_now() {
+                    self.elapsed_time = Some(pos);
+                    self.anchored_at = Some(Instant::now());
+                }
+                // Same gap for playbackRate: a resume with no accompanying
+                // rate update (or one left at ~0 from an earlier pause)
+                // would otherwise permanently wedge `position_now()` in its
+                // static branch even though the device just said Playing.
+                if new_state == PlaybackStateKind::Playing
+                    && self.playback_rate.map(|r| r.abs() <= f32::EPSILON).unwrap_or(true)
+                {
+                    self.playback_rate = Some(1.0);
+                }
+            }
+            self.playback_state = new_state;
         }
 
         let Some(queue_bytes) = last_field(set_state_fields, FIELD_PLAYBACK_QUEUE).and_then(WireValue::as_bytes)
@@ -119,11 +152,13 @@ impl PlayerSnapshot {
         };
         let location = last_field(&queue_fields, FIELD_QUEUE_LOCATION)
             .and_then(WireValue::as_i64)
-            .unwrap_or(0) as usize;
+            .unwrap_or(0);
+        let same_item = self.queue_location == Some(location);
+        self.queue_location = Some(location);
         let items: Vec<&[u8]> = all_fields(&queue_fields, FIELD_QUEUE_CONTENT_ITEMS)
             .filter_map(WireValue::as_bytes)
             .collect();
-        let Some(item_bytes) = items.get(location) else {
+        let Some(item_bytes) = items.get(location as usize) else {
             return;
         };
         let Ok(item_fields) = decode(item_bytes) else {
@@ -142,32 +177,48 @@ impl PlayerSnapshot {
         if let Some(v) = last_field(&meta_fields, FIELD_META_DURATION).and_then(WireValue::as_f64) {
             self.duration = Some(v);
         }
+        // `elapsedTimeTimestamp` (the device's own capture-time stamp) is
+        // deliberately not read: anchoring extrapolation to our own receipt
+        // time instead avoids depending on this machine's wall clock
+        // agreeing with the Apple TV's, at the cost of the (much smaller,
+        // LAN-scale) delay between the device capturing this value and us
+        // processing it.
         if let Some(v) = last_field(&meta_fields, FIELD_META_ELAPSED_TIME).and_then(WireValue::as_f64) {
-            self.elapsed_time = Some(v);
+            // A metadata refresh for the *same* item, while still Playing,
+            // can lag behind what we've already correctly extrapolated —
+            // confirmed directly: an active `refresh_position` poll
+            // returned an elapsedTime a couple of seconds *behind* our
+            // running extrapolation, visibly stepping the displayed timer
+            // backward. That "fresh" request draws from the same throttled
+            // internal state as passive pushes, not a truly live read, so
+            // only accept a value that doesn't regress unless it's for a
+            // genuinely different item (new episode, seek, etc.), where a
+            // lower value is completely legitimate.
+            let regresses = same_item
+                && self.playback_state == PlaybackStateKind::Playing
+                && self.position_now().is_some_and(|now| v < now);
+            if !regresses {
+                self.elapsed_time = Some(v);
+                self.anchored_at = Some(Instant::now());
+            }
         }
         if let Some(v) = last_field(&meta_fields, FIELD_META_PLAYBACK_RATE).and_then(WireValue::as_f32) {
             self.playback_rate = Some(v);
-        }
-        if let Some(v) = last_field(&meta_fields, FIELD_META_ELAPSED_TIMESTAMP).and_then(WireValue::as_f64) {
-            self.elapsed_timestamp = Some(v);
         }
     }
 
     /// Current playback position, extrapolated locally for 1s-and-better
     /// accuracy without asking the device again — mirrors pyatv's
-    /// `build_playing_instance.position()`.
+    /// `build_playing_instance.position()`, but anchored to our own
+    /// monotonic clock (see `anchored_at`'s doc comment) rather than pyatv's
+    /// wall-clock-vs-device-timestamp comparison.
     fn position_now(&self) -> Option<f64> {
-        let elapsed_timestamp = self.elapsed_timestamp?;
+        let anchored_at = self.anchored_at?;
         let elapsed_time = self.elapsed_time.unwrap_or(0.0);
         let playback_rate = self.playback_rate.unwrap_or(0.0);
 
         if self.playback_state == PlaybackStateKind::Playing && playback_rate.abs() > f32::EPSILON {
-            let event_unix = elapsed_timestamp + COCOA_EPOCH_OFFSET;
-            let now_unix = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs_f64();
-            Some(elapsed_time + (now_unix - event_unix))
+            Some(elapsed_time + anchored_at.elapsed().as_secs_f64())
         } else {
             Some(elapsed_time)
         }
@@ -246,6 +297,13 @@ impl PlaybackState {
 
     pub fn position_now(&self) -> Option<f64> {
         self.active().and_then(PlayerSnapshot::position_now)
+    }
+
+    /// Queue index of the active player's current item, for an active
+    /// `PlaybackQueueRequestMessage` refresh to target (falls back to `0`,
+    /// the common case, if we've never seen a `playbackQueue` push at all).
+    pub fn active_queue_location(&self) -> i64 {
+        self.active().and_then(|p| p.queue_location).unwrap_or(0)
     }
 
     /// Feed one received `ProtocolMessage` envelope in. Irrelevant types are

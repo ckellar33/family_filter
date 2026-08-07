@@ -24,6 +24,7 @@ pub const TYPE_SET_CONNECTION_STATE_MESSAGE: i64 = 38;
 pub const TYPE_SET_NOW_PLAYING_CLIENT_MESSAGE: i64 = 46;
 pub const TYPE_SET_NOW_PLAYING_PLAYER_MESSAGE: i64 = 47;
 pub const TYPE_SEND_HID_EVENT_MESSAGE: i64 = 8;
+pub const TYPE_PLAYBACK_QUEUE_REQUEST_MESSAGE: i64 = 32;
 
 // Extension field numbers on ProtocolMessage for each sub-message.
 pub const FIELD_DEVICE_INFO_MESSAGE: u32 = 20;
@@ -34,6 +35,7 @@ pub const FIELD_SET_STATE_MESSAGE: u32 = 9;
 pub const FIELD_SET_NOW_PLAYING_CLIENT_MESSAGE: u32 = 50;
 pub const FIELD_SET_NOW_PLAYING_PLAYER_MESSAGE: u32 = 51;
 pub const FIELD_SEND_HID_EVENT_MESSAGE: u32 = 13;
+pub const FIELD_PLAYBACK_QUEUE_REQUEST_MESSAGE: u32 = 37;
 
 /// USB HID Consumer-page usage codes `SendHIDEventMessage` accepts.
 /// `HID_USAGE_MUTE` is a real toggle control, unlike Volume
@@ -187,6 +189,26 @@ fn hid_event_data(usage_page: u16, usage: u16, down: bool) -> Vec<u8> {
 /// for here either.
 pub fn send_hid_event_message(usage_page: u16, usage: u16, down: bool) -> Vec<u8> {
     MessageBuilder::new().bytes(1, &hid_event_data(usage_page, usage, down)).encode()
+}
+
+/// `PlaybackQueueRequestMessage` sub-message bytes: an *active* request for
+/// a fresh copy of one queue item's metadata, instead of only ever waiting
+/// on the app's own (possibly throttled/stale) `SetStateMessage` pushes.
+/// Transcribed from pyatv's `messages.playback_queue_request`
+/// (`protocols/mrp/messages.py`, used there for on-demand artwork fetching
+/// — `PlaybackQueueRequestMessage.proto`'s `location`/`length` fields are
+/// what matter here; `includeMetadata` isn't in pyatv's version at all, but
+/// is added explicitly here since metadata, not artwork, is the point).
+/// The device replies with an ordinary `SetStateMessage` (confirmed by
+/// pyatv's artwork fetch reading `extract_inner(resp).playbackQueue` off
+/// the response), matched via the standard `identifier` echo like any other
+/// request.
+pub fn playback_queue_request_message(location: i64) -> Vec<u8> {
+    MessageBuilder::new()
+        .varint(1, location) // location
+        .varint(2, 1) // length: just the one item
+        .bool(3, true) // includeMetadata
+        .encode()
 }
 
 pub fn set_connection_state_connected() -> Vec<u8> {

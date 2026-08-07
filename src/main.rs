@@ -393,6 +393,15 @@ impl LiveSession {
             LiveSession::Tunneled(s) => s.unmute().await,
         }
     }
+
+    /// Actively re-request the current item's metadata rather than only
+    /// waiting on the app's own pushes — see `MrpSession::refresh_position`.
+    async fn refresh_position(&mut self) -> anyhow::Result<()> {
+        match self {
+            LiveSession::Standalone(s) => s.refresh_position().await,
+            LiveSession::Tunneled(s) => s.refresh_position().await,
+        }
+    }
 }
 
 /// Print an anyhow error's full causal chain, not just the outermost
@@ -441,11 +450,19 @@ async fn connect_live_session(saved: &storage::SavedDevice) -> Option<LiveSessio
     None
 }
 
-/// Print the extrapolated playback position every second until the user
-/// presses Enter or the connection drops. Position comes from local
-/// extrapolation (see `mrp::playback::PlaybackState::position_now`), not by
-/// asking the device again each tick — the device only pushes updates when
-/// something actually changes.
+/// How many 1-second display ticks between active `refresh_position()`
+/// calls. Passive extrapolation alone measurably left `elapsedTime` a few
+/// seconds stale in practice (apps don't always push a fresh value on every
+/// change); an occasional active re-request closes that gap without
+/// hammering the device every single tick.
+const POSITION_REFRESH_EVERY_TICKS: u32 = 3;
+
+/// Print the playback position every second until the user presses Enter or
+/// the connection drops. Most ticks just extrapolate locally (see
+/// `mrp::playback::PlaybackState::position_now`), but every few ticks
+/// actively re-requests the current item's metadata
+/// (`LiveSession::refresh_position`) rather than only ever trusting however
+/// stale the app's own last push happened to be.
 async fn show_live_position(session: &mut LiveSession) {
     println!("Live playback position (press Enter to stop) …");
 
@@ -457,9 +474,16 @@ async fn show_live_position(session: &mut LiveSession) {
     });
 
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
+    let mut tick_count: u32 = 0;
     loop {
         tokio::select! {
             _ = interval.tick() => {
+                tick_count += 1;
+                if tick_count % POSITION_REFRESH_EVERY_TICKS == 0 {
+                    if let Err(e) = session.refresh_position().await {
+                        println!("(position refresh failed, showing extrapolated value: {e})");
+                    }
+                }
                 let playback = session.playback();
                 match playback.position_now() {
                     Some(pos) => {

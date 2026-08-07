@@ -164,4 +164,24 @@ impl TunneledMrpSession {
     pub async fn unmute(&mut self) -> Result<()> {
         self.press_key(messages::HID_USAGE_MUTE).await
     }
+
+    /// Actively request a fresh copy of the current queue item's metadata
+    /// instead of only ever waiting on the app's own (possibly throttled)
+    /// `SetStateMessage` pushes — the passive-only approach measurably left
+    /// `elapsedTime` a few seconds stale in practice. Mirrors pyatv's
+    /// artwork-fetch use of `PlaybackQueueRequestMessage`
+    /// (`protocols/mrp/__init__.py::_fetch_remote_artwork`), repurposed here
+    /// for its metadata rather than its artwork bytes.
+    pub async fn refresh_position(&mut self) -> Result<()> {
+        let location = self.playback.active_queue_location();
+        let playback = &mut self.playback;
+        Self::send_and_expect(
+            &mut self.data_channel,
+            messages::TYPE_PLAYBACK_QUEUE_REQUEST_MESSAGE,
+            Some((messages::FIELD_PLAYBACK_QUEUE_REQUEST_MESSAGE, messages::playback_queue_request_message(location))),
+            playback,
+        )
+        .await
+        .context("PlaybackQueueRequestMessage failed")
+    }
 }
