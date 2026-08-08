@@ -107,6 +107,27 @@
     return p.filter_cues.find((c) => c.enabled && (p.position == null || c.end > p.position)) ?? null;
   });
 
+  // The currently-matched title's cues, grouped by category, for the
+  // categories-as-a-tree view -- each category is expandable to show (and
+  // individually toggle) just its own cues.
+  let cuesByCategory = $derived.by(() => {
+    const grouped: Record<string, Cue[]> = {};
+    for (const cue of playback?.filter_cues ?? []) {
+      (grouped[cue.category] ??= []).push(cue);
+    }
+    return grouped;
+  });
+
+  // Which categories are expanded in the tree. Absent means "default" --
+  // expanded whenever there's something to show, so the tree opens up
+  // ready-to-read rather than making you click through every category
+  // after loading a file or matching a new title.
+  let expandedCategories = $state<Record<string, boolean>>({});
+
+  function toggleExpanded(category: string) {
+    expandedCategories = { ...expandedCategories, [category]: !(expandedCategories[category] ?? true) };
+  }
+
   let step = $state<Step>("companion");
   let devices = $state<Device[]>([]);
   let scanning = $state(false);
@@ -505,43 +526,56 @@
             </label>
 
             {#if filterSummary.categories.length > 0}
-              <p class="hint">Categories</p>
+              <p class="hint">
+                Categories
+                {#if playback?.filter_match}-- expand one to see (and individually toggle) its cues for "{playback.filter_match}"{/if}
+              </p>
               <ul class="categories">
                 {#each filterSummary.categories as category (category)}
+                  {@const cues = cuesByCategory[category] ?? []}
+                  {@const isExpanded = expandedCategories[category] ?? true}
                   <li>
-                    <label class="row">
-                      <input
-                        type="checkbox"
-                        checked={categoryEnabled[category] ?? true}
-                        onchange={() => toggleCategory(category)}
-                      />
-                      {category}
-                    </label>
-                  </li>
-                {/each}
-              </ul>
-            {/if}
+                    <div class="category-row">
+                      <button
+                        type="button"
+                        class="disclosure"
+                        onclick={() => toggleExpanded(category)}
+                        disabled={cues.length === 0}
+                        aria-expanded={isExpanded}
+                        aria-label={`${isExpanded ? "Collapse" : "Expand"} ${category}`}
+                      >
+                        {cues.length > 0 ? (isExpanded ? "▾" : "▸") : "·"}
+                      </button>
+                      <label class="row">
+                        <input
+                          type="checkbox"
+                          checked={categoryEnabled[category] ?? true}
+                          onchange={() => toggleCategory(category)}
+                        />
+                        {category}
+                        {#if cues.length > 0}<span class="hint">({cues.length})</span>{/if}
+                      </label>
+                    </div>
 
-            {#if playback && playback.filter_cues.length > 0}
-              <p class="hint">
-                Cue schedule for "{playback.filter_match}" -- uncheck to skip an individual cue even while its
-                category is on
-              </p>
-              <ul class="cues">
-                {#each playback.filter_cues as cue (cue.index)}
-                  <li
-                    class="cue"
-                    class:cue-past={playback.position != null && playback.position >= cue.end}
-                    class:cue-active={playback.position != null &&
-                      playback.position >= cue.start &&
-                      playback.position < cue.end}
-                  >
-                    <label class="cue-row">
-                      <input type="checkbox" checked={cue.enabled} onchange={() => toggleCue(cue)} />
-                      <span class="cue-time">{fmtTime(cue.start)}–{fmtTime(cue.end)}</span>
-                      <span class="cue-action">{cue.action === "mute" ? "🔇 mute" : "⏭️ skip"}</span>
-                      <span class="cue-category">{cue.category}</span>
-                    </label>
+                    {#if isExpanded && cues.length > 0}
+                      <ul class="cues">
+                        {#each cues as cue (cue.index)}
+                          <li
+                            class="cue"
+                            class:cue-past={playback?.position != null && playback.position >= cue.end}
+                            class:cue-active={playback?.position != null &&
+                              playback.position >= cue.start &&
+                              playback.position < cue.end}
+                          >
+                            <label class="cue-row">
+                              <input type="checkbox" checked={cue.enabled} onchange={() => toggleCue(cue)} />
+                              <span class="cue-time">{fmtTime(cue.start)}–{fmtTime(cue.end)}</span>
+                              <span class="cue-action">{cue.action === "mute" ? "🔇 mute" : "⏭️ skip"}</span>
+                            </label>
+                          </li>
+                        {/each}
+                      </ul>
+                    {/if}
                   </li>
                 {/each}
               </ul>
@@ -751,10 +785,36 @@ h1 {
   gap: 0.35em;
 }
 
+.category-row {
+  display: flex;
+  align-items: center;
+  gap: 0.3em;
+}
+
+/* Reset the global button styling (background/border/shadow/padding) down
+   to a plain inline glyph -- this is a disclosure triangle, not a button. */
+.disclosure {
+  all: unset;
+  width: 1.25em;
+  flex-shrink: 0;
+  text-align: center;
+  cursor: pointer;
+  color: #666;
+}
+
+.disclosure:disabled {
+  cursor: default;
+  opacity: 0.35;
+}
+
+/* Nested under its category, indented past the disclosure triangle above. */
+.categories .cues {
+  margin: 0.35em 0 0 1.65em;
+}
+
 .cues {
   list-style: none;
   padding: 0;
-  margin: 0.5em 0 1em;
   display: flex;
   flex-direction: column;
   gap: 0.35em;
@@ -781,11 +841,6 @@ h1 {
   font-variant-numeric: tabular-nums;
   font-weight: 600;
   min-width: 8em;
-}
-
-.cue-category {
-  color: #666;
-  margin-left: auto;
 }
 
 .cue-active {
@@ -847,7 +902,7 @@ button {
     background: #0f0f0f98;
   }
 
-  .cue-category {
+  .disclosure {
     color: #aaa;
   }
 
