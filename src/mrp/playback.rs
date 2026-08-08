@@ -320,19 +320,6 @@ impl PlaybackState {
                         .and_then(|b| decode(b).ok())
                         .map(|pp| parse_player_path(&pp))
                         .unwrap_or_default();
-                    // Diagnostic: a SetStateMessage only reaches the display
-                    // if its playerPath matches the currently-active
-                    // (bundle_id, player_id) — a hardware-remote-originated
-                    // pause routed through a different playerPath (e.g. a
-                    // system player instead of the app's own) would silently
-                    // update the wrong entry and never surface.
-                    let is_active = self.active_key().as_ref() == Some(&key);
-                    let has_playback_state = last_field(&inner, FIELD_PLAYBACK_STATE).is_some();
-                    let has_queue = last_field(&inner, FIELD_PLAYBACK_QUEUE).is_some();
-                    println!(
-                        "MRP: SetStateMessage playerPath=({:?}, {:?}) active={is_active} hasPlaybackState={has_playback_state} hasQueue={has_queue}",
-                        key.bundle_id, key.player_id,
-                    );
                     self.players.entry(key).or_default().apply_set_state(&inner);
                 }
                 true
@@ -344,7 +331,6 @@ impl PlaybackState {
                         .and_then(|b| decode(b).ok())
                         .and_then(|cf| last_field(&cf, FIELD_NOW_PLAYING_CLIENT_BUNDLE_ID).and_then(WireValue::as_string))
                     {
-                        println!("MRP: SetNowPlayingClientMessage active_client={bundle_id:?} (was {:?})", self.active_client);
                         self.active_client = Some(bundle_id);
                     }
                 }
@@ -357,12 +343,6 @@ impl PlaybackState {
                         .and_then(|b| decode(b).ok())
                     {
                         let key = parse_player_path(&pp);
-                        println!(
-                            "MRP: SetNowPlayingPlayerMessage client={:?} active_player={:?} (was {:?})",
-                            key.bundle_id,
-                            key.player_id,
-                            self.active_player_per_client.get(&key.bundle_id)
-                        );
                         self.active_player_per_client.insert(key.bundle_id, key.player_id);
                     }
                 }

@@ -302,7 +302,6 @@ impl CompanionSession {
                 .read(&mut tmp)
                 .await
                 .map_err(|_| Error::msg("connection closed while reading frame"))?;
-            println!("raw read: {} bytes: {:x?}", n, &tmp[..n]);
             if n == 0 {
                 return Err(Error::msg("connection closed while reading frame"));
             }

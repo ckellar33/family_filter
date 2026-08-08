@@ -186,12 +186,6 @@ impl DataChannel {
                 if self.channel.plain_buf.len() >= total {
                     let payload: Vec<u8> = self.channel.plain_buf[DATA_HEADER_LEN..total].to_vec();
                     self.channel.plain_buf.drain(..total);
-                    println!(
-                        "AirPlay: data channel frame type={:?} seqno={} payload={} bytes",
-                        String::from_utf8_lossy(&header.message_type).trim_end_matches('\0'),
-                        header.seqno,
-                        payload.len()
-                    );
 
                     if header.message_type[..4] == *b"sync" {
                         let reply = encode_data_header(DATA_HEADER_LEN as u32, &MSG_TYPE_RPLY, &CMD_ZERO, header.seqno, 0);
@@ -202,24 +196,7 @@ impl DataChannel {
                         continue;
                     }
                     if let Some(mrp_bytes) = decode_mrp_bplist(&payload)? {
-                        let split = split_protocol_messages(&mrp_bytes);
-                        let types: Vec<String> = split
-                            .iter()
-                            .map(|m| {
-                                protobuf_lite::decode(m)
-                                    .ok()
-                                    .and_then(|f| protobuf_lite::last_field(&f, 1).and_then(protobuf_lite::WireValue::as_i64))
-                                    .map(|t| t.to_string())
-                                    .unwrap_or_else(|| "?".to_string())
-                            })
-                            .collect();
-                        println!(
-                            "AirPlay: data channel 'data' field = {} bytes, split into {} message(s), types=[{}]",
-                            mrp_bytes.len(),
-                            split.len(),
-                            types.join(", ")
-                        );
-                        self.pending.extend(split);
+                        self.pending.extend(split_protocol_messages(&mrp_bytes));
                     }
                     continue;
                 }
@@ -252,7 +229,6 @@ impl EventChannel {
         loop {
             match self.channel.poll_recv().await {
                 Ok(true) => {
-                    println!("AirPlay: event channel received {} bytes (plain, buffered)", self.channel.plain_buf.len());
                     loop {
                         let Some(header_end) = find_subslice(&self.channel.plain_buf, b"\r\n\r\n") else {
                             break;
@@ -270,19 +246,6 @@ impl EventChannel {
                         let total = header_end + 4 + content_length;
                         if self.channel.plain_buf.len() < total {
                             break; // full body hasn't arrived yet
-                        }
-                        println!("AirPlay: event channel request: {header_str:?} (+{content_length} byte body)");
-                        // The device uses this for actual commands (e.g. a
-                        // reason it's about to tear the session down) — decode
-                        // and print it instead of discarding it blind, since
-                        // "what does it actually say" is exactly what's
-                        // needed to explain an otherwise-unprompted teardown.
-                        if content_length > 0 {
-                            let body = &self.channel.plain_buf[header_end + 4..total];
-                            match plist::Value::from_reader(std::io::Cursor::new(body)) {
-                                Ok(value) => println!("AirPlay: event channel body: {value:#?}"),
-                                Err(e) => println!("AirPlay: event channel body: not a plist ({e}): {body:x?}"),
-                            }
                         }
                         self.channel.plain_buf.drain(..total);
                         let cseq = header_str.lines().find_map(|l| l.strip_prefix("CSeq: ")).unwrap_or("0");
