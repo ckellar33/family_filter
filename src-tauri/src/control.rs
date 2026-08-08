@@ -126,8 +126,18 @@ pub struct PlaybackStatus {
 /// on an interval (e.g. every second). Returns `Ok(None)` rather than an
 /// error when there's no live transport -- that's an expected, steady
 /// state (MRP/AirPlay weren't paired), not a failure.
+///
+/// Between active refreshes, `position`/`playback_state` are whatever the
+/// last known-good snapshot extrapolates to locally -- accurate only if
+/// nothing has changed the *real* position since then. A skip through this
+/// app, or a pause/seek from the physical remote, invalidates that
+/// immediately but won't be reflected here until the next active refresh
+/// (throttled to every `REFRESH_EVERY_POLLS`th call) or a push from the
+/// device. `force: true` bypasses the throttle for an on-demand, always-
+/// fresh read -- used right after `control_skip`, and available to the
+/// frontend as a manual "refresh now" action.
 #[tauri::command]
-pub async fn control_playback_status(state: State<'_, ControlStateHandle>) -> Result<Option<PlaybackStatus>, String> {
+pub async fn control_playback_status(state: State<'_, ControlStateHandle>, force: bool) -> Result<Option<PlaybackStatus>, String> {
     let mut guard = state.lock().await;
     let ControlState { live, poll_count, .. } = &mut *guard;
     let Some(live) = live.as_mut() else {
@@ -135,7 +145,7 @@ pub async fn control_playback_status(state: State<'_, ControlStateHandle>) -> Re
     };
 
     *poll_count += 1;
-    if *poll_count % REFRESH_EVERY_POLLS == 0 {
+    if force || *poll_count % REFRESH_EVERY_POLLS == 0 {
         // Best-effort: an occasional refresh failure shouldn't hide the
         // still-good extrapolated position below.
         let _ = live.refresh_position().await;
