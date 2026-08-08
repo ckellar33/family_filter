@@ -1,0 +1,33 @@
+[package]
+name = "family_filter"
+version = "0.1.0"
+description = "Family Filter — AppleTV parental control app (Tauri + Svelte)"
+authors = ["Christopher Kellar"]
+edition = "2024"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "family_filter_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# `libs/` is its own independent Cargo workspace (a separate, standalone
+# git repo embedded here as a submodule) — this is a plain path dependency
+# into it, not a shared workspace member. See libs/README / the appletv-libs
+# repo for why: it lets appletv-libs keep building on its own outside of
+# this app (e.g. from the CLI in libs/appletv-cli).
+appletv = { path = "../libs/appletv" }
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1.0.99"
+tokio = { version = "1.38", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync"] }
+
