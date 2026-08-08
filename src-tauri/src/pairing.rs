@@ -11,7 +11,7 @@
 //! position (see `appletv::mrp::tunnel`). The frontend decides whether to
 //! attempt them; this module just exposes each step.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -82,6 +82,14 @@ async fn wait_for_pin(app: AppHandle, state: PairingStateHandle, protocol: &'sta
 /// independently -- even for the same physical device, the advertised host
 /// string usually differs per service -- so the frontend re-discovers and
 /// re-prompts device selection for each pairing step, same as the CLI does.
+///
+/// mDNS commonly re-announces the same service across multiple interfaces
+/// or records, so the same host:port can legitimately show up more than
+/// once in one scan -- the CLI just prints every entry positionally and
+/// doesn't care, but the frontend keys its device list by `host:port`, and
+/// a duplicate key crashes Svelte's keyed `{#each}` render (see the
+/// `each_key_duplicate` bug this was fixing). Dedupe here so callers never
+/// see redundant entries in the first place.
 #[tauri::command]
 pub async fn discover_devices(protocol: String) -> Result<Vec<DeviceDto>, String> {
     let timeout = Duration::from_secs(7);
@@ -92,7 +100,14 @@ pub async fn discover_devices(protocol: String) -> Result<Vec<DeviceDto>, String
         other => return Err(format!("unknown protocol: {other}")),
     };
     devices
-        .map(|devices| devices.into_iter().map(DeviceDto::from).collect())
+        .map(|devices| {
+            let mut seen = HashSet::new();
+            devices
+                .into_iter()
+                .map(DeviceDto::from)
+                .filter(|d| seen.insert((d.host.clone(), d.port)))
+                .collect::<Vec<_>>()
+        })
         .map_err(|e| e.to_string())
 }
 
