@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+  import { open } from "@tauri-apps/plugin-dialog";
 
   interface Device {
     host: string;
@@ -18,11 +19,40 @@
     has_live: boolean;
   }
 
+  interface Cue {
+    // Position within the matched entry's cue list -- what
+    // set_filter_cue_enabled expects back to identify this cue.
+    index: number;
+    start: number;
+    end: number;
+    action: "mute" | "skip";
+    category: string;
+    // Whether this cue would actually fire right now: both its category
+    // and this specific cue are enabled. False either way looks the same
+    // to the frontend, so there's no need to track the two separately here.
+    enabled: boolean;
+  }
+
   interface PlaybackStatus {
     title: string | null;
     position: number | null;
     duration: number | null;
     playback_state: string;
+    // Populated whenever a filter list is loaded and its title matches --
+    // regardless of whether auto-filter mode is actually turned on -- so
+    // the schedule is visible as a preview even while it's off.
+    filter_match: string | null;
+    filter_cues: Cue[];
+    // Only ever set while auto-filter mode is on (nothing is actually
+    // applied while it's off).
+    filter_action: string | null;
+    filter_category: string | null;
+  }
+
+  interface FilterSummary {
+    path: string;
+    media_count: number;
+    categories: string[];
   }
 
   type Protocol = "companion" | "mrp" | "airplay";
@@ -56,6 +86,26 @@
   let playback = $state<PlaybackStatus | null>(null);
   let controlBusy = $state(false);
   let controlError = $state("");
+
+  // Auto-filter mode: a loaded cue file (filterSummary), the master on/off
+  // toggle, and per-category on/off state keyed by category name -- absent
+  // from the map (or true) means enabled, matching the backend's
+  // disabled_categories-is-the-exception-list convention.
+  let filterSummary = $state<FilterSummary | null>(null);
+  let filterEnabled = $state(false);
+  let categoryEnabled = $state<Record<string, boolean>>({});
+  let filterBusy = $state(false);
+  let filterError = $state("");
+
+  // The single soonest cue that hasn't fully passed yet and would actually
+  // fire (category + individual toggle both on) -- what shows up next to
+  // the playback position, rather than the whole schedule. filter_cues
+  // already arrives sorted by start, so the first match is the soonest one.
+  let nextCue = $derived.by(() => {
+    const p = playback;
+    if (!p) return null;
+    return p.filter_cues.find((c) => c.enabled && (p.position == null || c.end > p.position)) ?? null;
+  });
 
   let step = $state<Step>("companion");
   let devices = $state<Device[]>([]);
@@ -125,8 +175,92 @@
       playback = null;
       controlError = "";
       page = "control";
+      // start_control_session replaces the backend's whole ControlState, so
+      // any previously loaded filter list is gone too -- re-check for a
+      // saved one now that the fresh state exists, same as checkSaved()
+      // does for the pairing itself on mount.
+      await checkSavedFilter();
     } catch (e) {
       error = String(e);
+    }
+  }
+
+  // Tries to reload whatever filter file was last picked (persisted
+  // backend-side). Leaves the mode off either way -- loading a list must
+  // never silently start auto-muting/skipping.
+  async function checkSavedFilter() {
+    filterSummary = null;
+    filterEnabled = false;
+    categoryEnabled = {};
+    filterError = "";
+    try {
+      const found = await invoke<FilterSummary | null>("check_saved_filter_file");
+      if (found) {
+        filterSummary = found;
+        categoryEnabled = Object.fromEntries(found.categories.map((c) => [c, true]));
+      }
+    } catch (e) {
+      filterError = String(e);
+    }
+  }
+
+  async function pickFilterFile() {
+    filterBusy = true;
+    filterError = "";
+    try {
+      const path = await open({ multiple: false, filters: [{ name: "Filter list", extensions: ["json"] }] });
+      if (!path || Array.isArray(path)) return; // user cancelled
+      const summary = await invoke<FilterSummary>("load_filter_file", { path });
+      filterSummary = summary;
+      filterEnabled = false;
+      categoryEnabled = Object.fromEntries(summary.categories.map((c) => [c, true]));
+    } catch (e) {
+      filterError = String(e);
+    } finally {
+      filterBusy = false;
+    }
+  }
+
+  async function toggleFilterEnabled() {
+    const next = !filterEnabled;
+    filterBusy = true;
+    filterError = "";
+    try {
+      await invoke("set_filter_enabled", { enabled: next });
+      filterEnabled = next;
+    } catch (e) {
+      filterError = String(e);
+    } finally {
+      filterBusy = false;
+    }
+  }
+
+  async function toggleCategory(category: string) {
+    const next = !categoryEnabled[category];
+    filterError = "";
+    try {
+      await invoke("set_filter_category_enabled", { category, enabled: next });
+      categoryEnabled = { ...categoryEnabled, [category]: next };
+      // A category flip can also change which cue is "next" -- refresh now
+      // rather than waiting up to a second for the poll to catch up.
+      await refreshPlayback();
+    } catch (e) {
+      filterError = String(e);
+    }
+  }
+
+  // Unlike categoryEnabled, per-cue enabled state isn't tracked separately
+  // client-side -- `playback.filter_cues[i].enabled` already comes back
+  // fresh from the backend every poll, so that's the single source of
+  // truth; toggling just tells the backend and re-polls immediately.
+  async function toggleCue(cue: Cue) {
+    if (!playback?.filter_match) return;
+    filterError = "";
+    try {
+      await invoke("set_filter_cue_enabled", { title: playback.filter_match, index: cue.index, enabled: !cue.enabled });
+      await refreshPlayback();
+    } catch (e) {
+      filterError = String(e);
     }
   }
 
@@ -324,6 +458,22 @@
             {fmtTime(playback?.position)} / {fmtTime(playback?.duration)}
             {#if playback}· {playback.playback_state}{/if}
           </p>
+          {#if filterSummary && playback}
+            <p class="hint">
+              {#if playback.filter_action}
+                🛡️ {playback.filter_action} — {playback.filter_category}
+              {:else if !playback.filter_match}
+                no filter list for this title
+              {:else if nextCue}
+                🛡️ next: {nextCue.action === "mute" ? "🔇 mute" : "⏭️ skip"} at {fmtTime(nextCue.start)}–{fmtTime(nextCue.end)} — {nextCue.category}
+                {#if !filterEnabled}(mode off){/if}
+              {:else if playback.filter_cues.length > 0}
+                no more cues
+              {:else}
+                🛡️ filter list found for "{playback.filter_match}", no cues
+              {/if}
+            </p>
+          {/if}
         </div>
       {:else}
         <p class="hint">Pair MRP or AirPlay (from the pairing wizard) to unlock mute/unmute and playback info.</p>
@@ -339,6 +489,69 @@
           <button onclick={doMute} disabled={controlBusy}>🔇 Mute</button>
           <button onclick={doUnmute} disabled={controlBusy}>🔊 Unmute</button>
         </div>
+
+        <section class="filter-mode">
+          <h3>Auto filter</h3>
+          {#if filterError}
+            <p class="error">{filterError}</p>
+          {/if}
+
+          {#if filterSummary}
+            <p class="hint"><code>{filterSummary.path}</code> — {filterSummary.media_count} title{filterSummary.media_count === 1 ? "" : "s"}</p>
+
+            <label class="row">
+              <input type="checkbox" checked={filterEnabled} onchange={toggleFilterEnabled} disabled={filterBusy} />
+              Enabled
+            </label>
+
+            {#if filterSummary.categories.length > 0}
+              <p class="hint">Categories</p>
+              <ul class="categories">
+                {#each filterSummary.categories as category (category)}
+                  <li>
+                    <label class="row">
+                      <input
+                        type="checkbox"
+                        checked={categoryEnabled[category] ?? true}
+                        onchange={() => toggleCategory(category)}
+                      />
+                      {category}
+                    </label>
+                  </li>
+                {/each}
+              </ul>
+            {/if}
+
+            {#if playback && playback.filter_cues.length > 0}
+              <p class="hint">
+                Cue schedule for "{playback.filter_match}" -- uncheck to skip an individual cue even while its
+                category is on
+              </p>
+              <ul class="cues">
+                {#each playback.filter_cues as cue (cue.index)}
+                  <li
+                    class="cue"
+                    class:cue-past={playback.position != null && playback.position >= cue.end}
+                    class:cue-active={playback.position != null &&
+                      playback.position >= cue.start &&
+                      playback.position < cue.end}
+                  >
+                    <label class="cue-row">
+                      <input type="checkbox" checked={cue.enabled} onchange={() => toggleCue(cue)} />
+                      <span class="cue-time">{fmtTime(cue.start)}–{fmtTime(cue.end)}</span>
+                      <span class="cue-action">{cue.action === "mute" ? "🔇 mute" : "⏭️ skip"}</span>
+                      <span class="cue-category">{cue.category}</span>
+                    </label>
+                  </li>
+                {/each}
+              </ul>
+            {/if}
+          {/if}
+
+          <button onclick={pickFilterFile} disabled={filterBusy}>
+            {filterSummary ? "Load a different filter file…" : "Load filter file…"}
+          </button>
+        </section>
       {/if}
     </section>
   {:else}
@@ -518,6 +731,72 @@ h1 {
   text-align: left;
 }
 
+.filter-mode {
+  margin-top: 1.5em;
+  padding-top: 1em;
+  border-top: 1px solid #d8d8d8;
+}
+
+.filter-mode h3 {
+  margin: 0 0 0.5em;
+  font-size: 1em;
+}
+
+.categories {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 1em;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35em;
+}
+
+.cues {
+  list-style: none;
+  padding: 0;
+  margin: 0.5em 0 1em;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35em;
+  max-height: 12em;
+  overflow-y: auto;
+}
+
+.cue {
+  border-radius: 6px;
+  background: #ffffff;
+  font-size: 0.9em;
+  opacity: 0.55;
+}
+
+.cue-row {
+  display: flex;
+  gap: 0.75em;
+  align-items: center;
+  padding: 0.4em 0.6em;
+  cursor: pointer;
+}
+
+.cue-time {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  min-width: 8em;
+}
+
+.cue-category {
+  color: #666;
+  margin-left: auto;
+}
+
+.cue-active {
+  opacity: 1;
+  outline: 2px solid #24c8db;
+}
+
+.cue-past {
+  opacity: 0.3;
+}
+
 input,
 button {
   border-radius: 8px;
@@ -558,6 +837,18 @@ button {
 
   .steps li {
     border-color: #444;
+  }
+
+  .filter-mode {
+    border-color: #444;
+  }
+
+  .cue {
+    background: #0f0f0f98;
+  }
+
+  .cue-category {
+    color: #aaa;
   }
 
   .error {
