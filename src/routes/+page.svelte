@@ -171,7 +171,7 @@
   let expandedCategories = $state<Record<string, boolean>>({});
 
   function toggleExpanded(category: string) {
-    expandedCategories = { ...expandedCategories, [category]: !(expandedCategories[category] ?? true) };
+    expandedCategories = { ...expandedCategories, [category]: !(expandedCategories[category] ?? false) };
   }
 
   let step = $state<Step>("companion");
@@ -800,7 +800,7 @@
                   <ul class="list">
                     {#each filterSummary.categories as category (category)}
                       {@const cues = cuesByCategory[category] ?? []}
-                      {@const isExpanded = expandedCategories[category] ?? true}
+                      {@const isExpanded = expandedCategories[category] ?? false}
                       <li>
                         <div class="list-row category-row">
                           <button
