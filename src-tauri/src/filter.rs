@@ -42,7 +42,7 @@ pub enum CueAction {
 /// file itself) so a `Cue` can be handed straight to the frontend as-is --
 /// see `PlaybackStatus::filter_cues` -- rather than needing a separate wire
 /// type just to expose the schedule for display.
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct Cue {
     pub start: f64,
     pub end: f64,
@@ -54,14 +54,14 @@ pub struct Cue {
     pub category: String,
 }
 
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct MediaEntry {
     pub title: String,
     #[serde(default)]
     pub cues: Vec<Cue>,
 }
 
-#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
 pub struct FilterList {
     pub media: Vec<MediaEntry>,
 }
@@ -82,6 +82,35 @@ pub(crate) fn normalize_title(t: &str) -> String {
 }
 
 impl MediaEntry {
+    /// Sorts `cues` by start and re-validates every invariant load-time
+    /// parsing already enforces (finite/non-negative start, end > start,
+    /// non-empty category, no overlap within this entry) -- shared by
+    /// `FilterList::parse_and_validate` and the creation-mode mutation
+    /// methods below (`FilterList::add_cue`/`update_cue`), so both paths can
+    /// never drift apart on what counts as a valid cue list.
+    fn sort_and_validate(&mut self) -> Result<()> {
+        self.cues.sort_by(|a, b| a.start.partial_cmp(&b.start).unwrap_or(std::cmp::Ordering::Equal));
+        let mut prev_end: Option<f64> = None;
+        for cue in &self.cues {
+            if !(cue.start.is_finite() && cue.end.is_finite()) {
+                bail!("{:?} has a non-finite cue start/end", self.title);
+            }
+            if cue.start < 0.0 || cue.end <= cue.start {
+                bail!("{:?} has a cue with start >= end ({} >= {})", self.title, cue.start, cue.end);
+            }
+            if cue.category.trim().is_empty() {
+                bail!("{:?} has a cue with an empty category", self.title);
+            }
+            if let Some(prev_end) = prev_end {
+                if cue.start < prev_end {
+                    bail!("{:?} has overlapping cues around {}", self.title, cue.start);
+                }
+            }
+            prev_end = Some(cue.end);
+        }
+        Ok(())
+    }
+
     /// Whether cue `idx` is currently eligible to fire at all -- neither its
     /// category nor the cue itself has been individually disabled.
     fn cue_enabled(&self, idx: usize, cue: &Cue, disabled_categories: &HashSet<String>, disabled_cues: &HashSet<CueKey>) -> bool {
@@ -142,26 +171,7 @@ impl FilterList {
             if !seen_titles.insert(normalize_title(&entry.title)) {
                 bail!("duplicate title {:?} in filter file", entry.title);
             }
-
-            entry.cues.sort_by(|a, b| a.start.partial_cmp(&b.start).unwrap_or(std::cmp::Ordering::Equal));
-            let mut prev_end: Option<f64> = None;
-            for cue in &entry.cues {
-                if !(cue.start.is_finite() && cue.end.is_finite()) {
-                    bail!("{:?} has a non-finite cue start/end", entry.title);
-                }
-                if cue.start < 0.0 || cue.end <= cue.start {
-                    bail!("{:?} has a cue with start >= end ({} >= {})", entry.title, cue.start, cue.end);
-                }
-                if cue.category.trim().is_empty() {
-                    bail!("{:?} has a cue with an empty category", entry.title);
-                }
-                if let Some(prev_end) = prev_end {
-                    if cue.start < prev_end {
-                        bail!("{:?} has overlapping cues around {}", entry.title, cue.start);
-                    }
-                }
-                prev_end = Some(cue.end);
-            }
+            entry.sort_and_validate()?;
         }
 
         Ok(list)
@@ -185,6 +195,85 @@ impl FilterList {
             }
         }
         out
+    }
+
+    /// Same lookup as `find_entry`, but mutable -- private since only the
+    /// creation-mode mutation methods below need write access; everything
+    /// else (including the frontend, via Tauri commands) goes through those
+    /// instead of poking `media` directly.
+    fn find_entry_mut(&mut self, title: &str) -> Option<&mut MediaEntry> {
+        let norm = normalize_title(title);
+        self.media.iter_mut().find(|e| normalize_title(&e.title) == norm)
+    }
+
+    /// Same lookup as `find_entry_mut`, but creates a new (empty-cues) entry
+    /// under `title` first if none exists yet -- lets the creation-mode
+    /// mutation methods below record a title's very first cue without
+    /// having to special-case "this is a new title" themselves.
+    fn entry_mut(&mut self, title: &str) -> &mut MediaEntry {
+        if self.find_entry_mut(title).is_none() {
+            self.media.push(MediaEntry { title: title.to_string(), cues: Vec::new() });
+        }
+        self.find_entry_mut(title).expect("just inserted if it was absent")
+    }
+
+    /// Adds one cue under `title` (creating the entry if this is its first
+    /// cue), then re-sorts and re-validates that entry -- same invariants
+    /// `parse_and_validate` enforces at load time, via `sort_and_validate`.
+    /// On failure (e.g. the new cue overlaps an existing one), the entry's
+    /// cues are restored to their pre-call state so a rejected mark never
+    /// leaves partial data behind. Returns the new cue's index after
+    /// sorting -- looked up by `start` alone, which validation guarantees
+    /// is unique within an entry (two cues sharing a start would always
+    /// overlap, since both include that point and neither has zero length).
+    pub fn add_cue(&mut self, title: &str, cue: Cue) -> Result<usize> {
+        let start = cue.start;
+        let entry = self.entry_mut(title);
+        let backup = entry.cues.clone();
+        entry.cues.push(cue);
+        if let Err(e) = entry.sort_and_validate() {
+            entry.cues = backup;
+            return Err(e);
+        }
+        Ok(entry.cues.iter().position(|c| c.start == start).expect("just inserted"))
+    }
+
+    /// Changes cue `index`'s start/end in place, then re-sorts/re-validates
+    /// (its position in the list may shift). On failure, the entry's cues
+    /// are restored to their pre-call state, same as `add_cue`.
+    pub fn update_cue(&mut self, title: &str, index: usize, start: f64, end: f64) -> Result<()> {
+        let entry = self.find_entry_mut(title).with_context(|| format!("no entry for title {:?}", title))?;
+        if index >= entry.cues.len() {
+            bail!("cue index {} out of range for {:?} ({} cues)", index, title, entry.cues.len());
+        }
+        let backup = entry.cues.clone();
+        entry.cues[index].start = start;
+        entry.cues[index].end = end;
+        if let Err(e) = entry.sort_and_validate() {
+            entry.cues = backup;
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    /// Removes cue `index` outright. No re-validation needed -- removing a
+    /// cue can't create an overlap or invalid range among what's left.
+    pub fn delete_cue(&mut self, title: &str, index: usize) -> Result<()> {
+        let entry = self.find_entry_mut(title).with_context(|| format!("no entry for title {:?}", title))?;
+        if index >= entry.cues.len() {
+            bail!("cue index {} out of range for {:?} ({} cues)", index, title, entry.cues.len());
+        }
+        entry.cues.remove(index);
+        Ok(())
+    }
+
+    /// Serializes and writes this list to `path`, pretty-printed for a
+    /// human-readable filter file (matches the hand-authored style of
+    /// `test_filter.json`) -- used to autosave a creation-mode draft after
+    /// every mutation.
+    pub fn save(&self, path: &Path) -> Result<()> {
+        let json = serde_json::to_string_pretty(self).context("failed to serialize filter list")?;
+        fs::write(path, json).with_context(|| format!("failed to write {}", path.display()))
     }
 }
 
@@ -670,5 +759,97 @@ mod tests {
         disabled_cues.insert(("some movie".to_string(), 0)); // the mute cue is index 0
         let o = evaluate(&list, &mut runtime, &empty_disabled(), &disabled_cues, Some("Some Movie"), Some(13.0), now);
         assert_eq!(o.commands, vec![FilterCommand::Unmute]);
+    }
+
+    #[test]
+    fn add_cue_creates_entry_when_title_unseen() {
+        let mut list = FilterList::default();
+        let index = list.add_cue("New Movie", cue(10.0, 20.0, CueAction::Mute, "language")).unwrap();
+        assert_eq!(index, 0);
+        assert_eq!(list.media.len(), 1);
+        assert_eq!(list.find_entry("New Movie").unwrap().cues.len(), 1);
+    }
+
+    #[test]
+    fn add_cue_appends_and_resorts_existing_entry() {
+        let mut list = sample_list(); // has cues at [10,20) and [30,40)
+        let index = list.add_cue("Some Movie", cue(0.0, 5.0, CueAction::Mute, "language")).unwrap();
+        assert_eq!(index, 0); // sorts before the existing two
+        assert_eq!(list.find_entry("Some Movie").unwrap().cues.len(), 3);
+    }
+
+    #[test]
+    fn add_cue_rejects_overlap_and_leaves_entry_unchanged() {
+        let mut list = sample_list();
+        let before = list.find_entry("Some Movie").unwrap().cues.clone();
+        let err = list.add_cue("Some Movie", cue(15.0, 22.0, CueAction::Mute, "language"));
+        assert!(err.is_err());
+        assert_eq!(list.find_entry("Some Movie").unwrap().cues, before);
+    }
+
+    #[test]
+    fn add_cue_rejects_end_before_start() {
+        let mut list = FilterList::default();
+        assert!(list.add_cue("X", cue(10.0, 10.0, CueAction::Mute, "language")).is_err());
+    }
+
+    #[test]
+    fn add_cue_rejects_empty_category() {
+        let mut list = FilterList::default();
+        assert!(list.add_cue("X", cue(1.0, 2.0, CueAction::Mute, "")).is_err());
+    }
+
+    #[test]
+    fn update_cue_changes_times_and_resorts() {
+        let mut list = sample_list(); // [10,20) mute, [30,40) skip
+        list.update_cue("Some Movie", 1, 0.0, 5.0).unwrap(); // move the skip cue (index 1) earliest
+        let cues = &list.find_entry("Some Movie").unwrap().cues;
+        assert_eq!(cues[0].start, 0.0);
+        assert_eq!(cues[0].action, CueAction::Skip);
+    }
+
+    #[test]
+    fn update_cue_rejects_new_overlap_and_leaves_original_times_unchanged() {
+        let mut list = sample_list();
+        let before = list.find_entry("Some Movie").unwrap().cues.clone();
+        let err = list.update_cue("Some Movie", 1, 15.0, 22.0); // would overlap the mute cue
+        assert!(err.is_err());
+        assert_eq!(list.find_entry("Some Movie").unwrap().cues, before);
+    }
+
+    #[test]
+    fn update_cue_rejects_out_of_range_index() {
+        let mut list = sample_list();
+        assert!(list.update_cue("Some Movie", 5, 0.0, 1.0).is_err());
+    }
+
+    #[test]
+    fn delete_cue_removes_cue() {
+        let mut list = sample_list();
+        list.delete_cue("Some Movie", 0).unwrap();
+        let cues = &list.find_entry("Some Movie").unwrap().cues;
+        assert_eq!(cues.len(), 1);
+        assert_eq!(cues[0].action, CueAction::Skip);
+    }
+
+    #[test]
+    fn delete_cue_rejects_out_of_range_index() {
+        let mut list = sample_list();
+        assert!(list.delete_cue("Some Movie", 5).is_err());
+    }
+
+    #[test]
+    fn delete_cue_rejects_unknown_title() {
+        let mut list = sample_list();
+        assert!(list.delete_cue("Nonexistent", 0).is_err());
+    }
+
+    #[test]
+    fn save_round_trips_through_parse_and_validate() {
+        let list = sample_list();
+        let json = serde_json::to_string(&list).unwrap();
+        let reloaded = FilterList::parse_and_validate(&json).unwrap();
+        assert_eq!(reloaded.media.len(), list.media.len());
+        assert_eq!(reloaded.find_entry("Some Movie").unwrap().cues.len(), 2);
     }
 }

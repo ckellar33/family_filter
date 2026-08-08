@@ -35,6 +35,7 @@ use tokio::sync::Mutex;
 use appletv::companion::CompanionSession;
 use appletv::{storage, LiveSession};
 
+use crate::creation::CreationState;
 use crate::filter::{self, CueKey, FilterList, FilterRuntime};
 use crate::DISPLAY_NAME;
 
@@ -56,6 +57,22 @@ pub struct ControlState {
     /// index within that title's cues). Not persisted, same as the others.
     disabled_cues: HashSet<CueKey>,
     filter_runtime: FilterRuntime,
+    /// Filter-*creation*-mode state (`crate::creation`) -- a separate draft
+    /// `FilterList` being authored live from playback marks, deliberately
+    /// distinct from `filter_list` above (which is what's actively muting/
+    /// skipping right now). Reset along with everything else whenever
+    /// `start_control_session` rebuilds this struct.
+    pub(crate) creation: CreationState,
+}
+
+impl ControlState {
+    /// Mutable access to the live session for `creation.rs`'s Tauri commands
+    /// (they need to refresh + read title/position, same as
+    /// `control_playback_status` below) without exposing `live`'s field
+    /// itself, or the Companion `session` field, outside this module.
+    pub(crate) fn live_mut(&mut self) -> Option<&mut LiveSession> {
+        self.live.as_mut()
+    }
 }
 
 /// Runs one filter-engine evaluation against the live session's current
@@ -242,7 +259,7 @@ pub async fn set_filter_cue_enabled(
 
 pub type ControlStateHandle = Arc<Mutex<ControlState>>;
 
-fn describe(e: &anyhow::Error) -> String {
+pub(crate) fn describe(e: &anyhow::Error) -> String {
     appletv::error_chain(e).join(": ")
 }
 

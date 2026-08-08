@@ -1,4 +1,5 @@
 mod control;
+mod creation;
 mod filter;
 mod pairing;
 mod saved;
@@ -43,6 +44,16 @@ pub fn run() {
             control::set_filter_enabled,
             control::set_filter_category_enabled,
             control::set_filter_cue_enabled,
+            creation::creation_new_draft,
+            creation::creation_open_draft,
+            creation::creation_close_draft,
+            creation::creation_mark_mute,
+            creation::creation_start_skip_mark,
+            creation::creation_end_skip_mark,
+            creation::creation_cancel_skip_mark,
+            creation::creation_update_cue,
+            creation::creation_delete_cue,
+            creation::creation_list_cues,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

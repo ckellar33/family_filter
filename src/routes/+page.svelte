@@ -1,7 +1,7 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-  import { open } from "@tauri-apps/plugin-dialog";
+  import { open, save as saveDialog } from "@tauri-apps/plugin-dialog";
 
   interface Device {
     host: string;
@@ -55,6 +55,30 @@
     categories: string[];
   }
 
+  // Filter *creation* mode -- recording cue timestamps live from playback,
+  // as opposed to the auto-filter types above, which describe applying an
+  // already-authored file. Deliberately separate types even though the
+  // shapes overlap, since a draft cue has no `enabled` (that's an
+  // auto-filter-only concept).
+  interface DraftSummary {
+    path: string;
+    media_count: number;
+  }
+
+  interface CreationCue {
+    index: number;
+    start: number;
+    end: number;
+    action: "mute" | "skip";
+    category: string;
+  }
+
+  type CategoryKind = "mute" | "skip";
+  interface CategoryDef {
+    name: string;
+    kind: CategoryKind;
+  }
+
   type Protocol = "companion" | "mrp" | "airplay";
   type Step = Protocol | "save" | "done";
 
@@ -96,6 +120,28 @@
   let categoryEnabled = $state<Record<string, boolean>>({});
   let filterBusy = $state(false);
   let filterError = $state("");
+
+  // Filter creation mode: "idle" until a draft is started/opened, then
+  // "recording" while category buttons + the cue table are shown. Separate
+  // from filterSummary/filterEnabled above on purpose -- the draft being
+  // authored here is never the list actively muting/skipping mid-movie
+  // unless the user explicitly arms it via useDraftAsActiveFilter().
+  const DEFAULT_CATEGORIES: CategoryDef[] = [
+    { name: "language", kind: "mute" },
+    { name: "violence", kind: "skip" },
+    { name: "gore", kind: "skip" },
+    { name: "nudity", kind: "skip" },
+    { name: "peril", kind: "skip" },
+  ];
+  let creationStage = $state<"idle" | "recording">("idle");
+  let draft = $state<DraftSummary | null>(null);
+  let categories = $state<CategoryDef[]>(DEFAULT_CATEGORIES);
+  let creationCues = $state<CreationCue[]>([]);
+  let pendingSkipCategory = $state<string | null>(null);
+  let creationBusy = $state(false);
+  let creationError = $state("");
+  let newCategoryName = $state("");
+  let newCategoryKind = $state<CategoryKind>("skip");
 
   // The single soonest cue that hasn't fully passed yet and would actually
   // fire (category + individual toggle both on) -- what shows up next to
@@ -197,10 +243,12 @@
       controlError = "";
       page = "control";
       // start_control_session replaces the backend's whole ControlState, so
-      // any previously loaded filter list is gone too -- re-check for a
-      // saved one now that the fresh state exists, same as checkSaved()
-      // does for the pairing itself on mount.
+      // any previously loaded filter list -- and creation-mode draft -- is
+      // gone too. Re-check for a saved filter now that the fresh state
+      // exists, same as checkSaved() does for the pairing itself on mount,
+      // and drop the frontend's now-stale view of the draft.
       await checkSavedFilter();
+      resetCreation();
     } catch (e) {
       error = String(e);
     }
@@ -282,6 +330,179 @@
       await refreshPlayback();
     } catch (e) {
       filterError = String(e);
+    }
+  }
+
+  // Backend's `start_control_session` rebuilds ControlState from scratch --
+  // including creation-mode's draft -- so the frontend's view of it needs
+  // resetting alongside checkSavedFilter() whenever that happens.
+  function resetCreation() {
+    creationStage = "idle";
+    draft = null;
+    creationCues = [];
+    pendingSkipCategory = null;
+    creationError = "";
+  }
+
+  async function pickNewDraft() {
+    creationError = "";
+    try {
+      const path = await saveDialog({ filters: [{ name: "Filter list", extensions: ["json"] }], defaultPath: "filter.json" });
+      if (!path) return; // user cancelled
+      draft = await invoke<DraftSummary>("creation_new_draft", { path });
+      creationStage = "recording";
+      creationCues = [];
+    } catch (e) {
+      creationError = String(e);
+    }
+  }
+
+  async function pickExistingDraft() {
+    creationError = "";
+    try {
+      const path = await open({ multiple: false, filters: [{ name: "Filter list", extensions: ["json"] }] });
+      if (!path || Array.isArray(path)) return; // user cancelled
+      draft = await invoke<DraftSummary>("creation_open_draft", { path });
+      creationStage = "recording";
+      await refreshCreationCues();
+    } catch (e) {
+      creationError = String(e);
+    }
+  }
+
+  // Re-fetches the draft's cues for whatever's currently playing -- called
+  // after every mutation, and reactively (see the $effect below) whenever
+  // the title changes while recording, so the table always reflects the
+  // title actually on screen.
+  async function refreshCreationCues() {
+    if (!playback?.title) {
+      creationCues = [];
+      return;
+    }
+    try {
+      creationCues = await invoke<CreationCue[]>("creation_list_cues", { title: playback.title });
+    } catch (e) {
+      creationError = String(e);
+    }
+  }
+
+  $effect(() => {
+    if (creationStage === "recording") {
+      refreshCreationCues();
+    }
+  });
+
+  async function markMute(category: string) {
+    creationBusy = true;
+    creationError = "";
+    try {
+      await invoke("creation_mark_mute", { category });
+      await refreshCreationCues();
+    } catch (e) {
+      creationError = String(e);
+    } finally {
+      creationBusy = false;
+    }
+  }
+
+  // First press on a skip-category button starts its mark; the second
+  // press on that *same* button ends it. Other skip buttons are disabled
+  // in the markup while pendingSkipCategory is set, so the "already
+  // recording a different category" branch below is a safety net, not the
+  // normal path.
+  async function toggleSkipMark(category: string) {
+    creationBusy = true;
+    creationError = "";
+    try {
+      if (pendingSkipCategory === category) {
+        await invoke("creation_end_skip_mark");
+        pendingSkipCategory = null;
+        await refreshCreationCues();
+      } else if (pendingSkipCategory === null) {
+        await invoke("creation_start_skip_mark", { category });
+        pendingSkipCategory = category;
+      }
+    } catch (e) {
+      creationError = String(e);
+    } finally {
+      creationBusy = false;
+    }
+  }
+
+  async function cancelSkipMark() {
+    creationBusy = true;
+    creationError = "";
+    try {
+      await invoke("creation_cancel_skip_mark");
+      pendingSkipCategory = null;
+    } catch (e) {
+      creationError = String(e);
+    } finally {
+      creationBusy = false;
+    }
+  }
+
+  // Pairs with fmtTime -- parses the m:ss the cue table's inputs display
+  // back into seconds, or null for anything unrecognized so the caller can
+  // reject the edit without touching the backend.
+  function parseTime(text: string): number | null {
+    const m = /^(\d+):([0-5]?\d)$/.exec(text.trim());
+    if (!m) return null;
+    return Number(m[1]) * 60 + Number(m[2]);
+  }
+
+  async function updateCueTime(cue: CreationCue, field: "start" | "end", text: string) {
+    const seconds = parseTime(text);
+    if (seconds == null) {
+      creationError = `"${text}" isn't a valid m:ss time`;
+      return;
+    }
+    if (!playback?.title) return;
+    creationError = "";
+    try {
+      const start = field === "start" ? seconds : cue.start;
+      const end = field === "end" ? seconds : cue.end;
+      await invoke("creation_update_cue", { title: playback.title, index: cue.index, start, end });
+      await refreshCreationCues();
+    } catch (e) {
+      creationError = String(e);
+    }
+  }
+
+  async function deleteCue(cue: CreationCue) {
+    if (!playback?.title) return;
+    creationError = "";
+    try {
+      await invoke("creation_delete_cue", { title: playback.title, index: cue.index });
+      await refreshCreationCues();
+    } catch (e) {
+      creationError = String(e);
+    }
+  }
+
+  function addCustomCategory() {
+    const name = newCategoryName.trim();
+    if (!name || categories.some((c) => c.name === name)) return;
+    categories = [...categories, { name, kind: newCategoryKind }];
+    newCategoryName = "";
+  }
+
+  // Reloads the draft's own file into the (separate) auto-filter list, so
+  // cues just recorded can be tried out live without manually re-picking
+  // the file via "Load a different filter file…".
+  async function useDraftAsActiveFilter() {
+    if (!draft) return;
+    filterBusy = true;
+    filterError = "";
+    try {
+      const summary = await invoke<FilterSummary>("load_filter_file", { path: draft.path });
+      filterSummary = summary;
+      filterEnabled = false;
+      categoryEnabled = Object.fromEntries(summary.categories.map((c) => [c, true]));
+    } catch (e) {
+      filterError = String(e);
+    } finally {
+      filterBusy = false;
     }
   }
 
@@ -377,6 +598,7 @@
   // Re-scan automatically whenever the wizard lands on a new discovery
   // step -- but only once we're actually on the wizard page (not while
   // still checking for, or looking at, a saved pairing).
+  // This is called when step or page is changed.
   $effect(() => {
     if (page === "wizard" && isProtocol(step)) {
       scan(step);
@@ -585,6 +807,90 @@
           <button onclick={pickFilterFile} disabled={filterBusy}>
             {filterSummary ? "Load a different filter file…" : "Load filter file…"}
           </button>
+        </section>
+
+        <section class="creation-mode">
+          <h3>Create filter</h3>
+          {#if creationError}
+            <p class="error">{creationError}</p>
+          {/if}
+
+          {#if creationStage === "idle"}
+            <p class="hint">Record cue timestamps live from what's currently playing.</p>
+            <div class="row">
+              <button onclick={pickNewDraft}>Record new filter file…</button>
+              <button onclick={pickExistingDraft}>Continue existing draft…</button>
+            </div>
+          {:else if draft}
+            <p class="hint">
+              <code>{draft.path}</code> — {draft.media_count} title{draft.media_count === 1 ? "" : "s"}
+              {#if !playback?.title}(nothing playing){/if}
+            </p>
+            <div class="row">
+              <button onclick={useDraftAsActiveFilter} disabled={filterBusy}>Use this draft as active filter</button>
+              <button onclick={() => { resetCreation(); }} disabled={creationBusy}>Close draft</button>
+            </div>
+            {#if filterSummary?.path === draft.path}
+              <p class="hint">🛡️ this draft is the active auto filter -- cues you record show up there too.</p>
+            {:else}
+              <p class="hint">Not the active auto filter yet -- use the button above once you're ready to test it.</p>
+            {/if}
+
+            <div class="category-buttons">
+              {#each categories as c (c.name)}
+                <button
+                  type="button"
+                  class="category-btn"
+                  class:recording={pendingSkipCategory === c.name}
+                  disabled={creationBusy || !playback?.title || (c.kind === "skip" && pendingSkipCategory !== null && pendingSkipCategory !== c.name)}
+                  onclick={() => (c.kind === "mute" ? markMute(c.name) : toggleSkipMark(c.name))}
+                >
+                  {c.kind === "mute" ? "🔇" : "⏭️"}
+                  {c.name}
+                  {#if pendingSkipCategory === c.name}(recording — press again to end){/if}
+                </button>
+              {/each}
+            </div>
+            {#if pendingSkipCategory}
+              <div class="row">
+                <button onclick={cancelSkipMark} disabled={creationBusy}>Cancel mark</button>
+              </div>
+            {/if}
+
+            <div class="add-category row">
+              <input placeholder="custom category" bind:value={newCategoryName} />
+              <select bind:value={newCategoryKind}>
+                <option value="skip">skip</option>
+                <option value="mute">mute</option>
+              </select>
+              <button type="button" onclick={addCustomCategory} disabled={!newCategoryName.trim()}>Add</button>
+            </div>
+
+            {#if creationCues.length > 0}
+              <p class="hint">Recorded cues for "{playback?.title}" -- edit a time and press Enter/Tab to correct it.</p>
+              <ul class="cue-table">
+                {#each creationCues as cue (cue.index)}
+                  <li class="cue-table-row">
+                    <span class="cue-action">{cue.action === "mute" ? "🔇" : "⏭️"} {cue.category}</span>
+                    <input
+                      class="time-input"
+                      value={fmtTime(cue.start)}
+                      onchange={(e) => updateCueTime(cue, "start", (e.target as HTMLInputElement).value)}
+                    />
+                    <span>–</span>
+                    <input
+                      class="time-input"
+                      value={fmtTime(cue.end)}
+                      onchange={(e) => updateCueTime(cue, "end", (e.target as HTMLInputElement).value)}
+                    />
+                    <button type="button" onclick={() => deleteCue(cue)} aria-label="Delete cue">✕</button>
+                  </li>
+                {/each}
+              </ul>
+            {:else if playback?.title}
+              <p class="hint">No cues recorded yet for "{playback.title}".</p>
+            {/if}
+          {/if}
         </section>
       {/if}
     </section>
@@ -852,6 +1158,69 @@ h1 {
   opacity: 0.3;
 }
 
+.creation-mode {
+  margin-top: 1.5em;
+  padding-top: 1em;
+  border-top: 1px solid #d8d8d8;
+}
+
+.creation-mode h3 {
+  margin: 0 0 0.5em;
+  font-size: 1em;
+}
+
+.category-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5em;
+  margin: 1em 0;
+}
+
+.category-btn.recording {
+  outline: 2px solid #24c8db;
+  border-color: #24c8db;
+}
+
+.add-category {
+  margin-bottom: 1em;
+}
+
+.add-category input {
+  flex: 1;
+}
+
+.cue-table {
+  list-style: none;
+  padding: 0;
+  margin: 0.5em 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35em;
+  max-height: 14em;
+  overflow-y: auto;
+}
+
+.cue-table-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5em;
+  padding: 0.4em 0.6em;
+  border-radius: 6px;
+  background: #ffffff;
+  font-size: 0.9em;
+}
+
+.cue-table-row .cue-action {
+  flex: 1;
+}
+
+.time-input {
+  width: 4.5em;
+  padding: 0.3em 0.5em;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
 input,
 button {
   border-radius: 8px;
@@ -898,7 +1267,15 @@ button {
     border-color: #444;
   }
 
+  .creation-mode {
+    border-color: #444;
+  }
+
   .cue {
+    background: #0f0f0f98;
+  }
+
+  .cue-table-row {
     background: #0f0f0f98;
   }
 
