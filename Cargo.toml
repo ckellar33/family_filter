@@ -1,12 +1,3 @@
-[package]
-name = "family_filter"
-version = "0.1.0"
-edition = "2024"
-authot = ["Christopher Kellar"]
-
-[dependencies]
-appletv = { path = "./libs/appletv" }
-clap = "4.5.47"
-anyhow = "1.0.99"
-tokio = { version = "1.38", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync"] }
-log = "0.4.33"
+[workspace]
+resolver = "2"
+members = ["libs/*"]
