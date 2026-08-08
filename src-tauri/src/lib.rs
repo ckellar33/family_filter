@@ -1,4 +1,5 @@
 mod control;
+mod filter;
 mod pairing;
 mod saved;
 
@@ -19,6 +20,7 @@ fn greet(name: &str) -> String {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage::<PairingStateHandle>(std::sync::Arc::new(std::sync::Mutex::new(PairingState::default())))
         .manage::<ControlStateHandle>(Default::default())
         .invoke_handler(tauri::generate_handler![
@@ -36,6 +38,11 @@ pub fn run() {
             control::control_unmute,
             control::control_skip,
             control::control_playback_status,
+            control::load_filter_file,
+            control::check_saved_filter_file,
+            control::set_filter_enabled,
+            control::set_filter_category_enabled,
+            control::set_filter_cue_enabled,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
