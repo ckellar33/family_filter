@@ -14,6 +14,17 @@
     has_airplay: boolean;
   }
 
+  interface ControlInfo {
+    has_live: boolean;
+  }
+
+  interface PlaybackStatus {
+    title: string | null;
+    position: number | null;
+    duration: number | null;
+    playback_state: string;
+  }
+
   type Protocol = "companion" | "mrp" | "airplay";
   type Step = Protocol | "save" | "done";
 
@@ -32,13 +43,19 @@
   // pairing.store on mount, "saved" if one was found (offer to verify it
   // instead of re-pairing from scratch), "wizard" for the discover-and-pair
   // flow -- either because there was nothing saved, or the user chose to
-  // pair a different device anyway.
-  type Page = "checking" | "saved" | "wizard";
+  // pair a different device anyway -- and "control" once a control session
+  // is open (mute/unmute, skip, now playing).
+  type Page = "checking" | "saved" | "wizard" | "control";
   let page = $state<Page>("checking");
   let savedPairing = $state<SavedPairingInfo | null>(null);
   let verifying = $state(false);
   let verifyResult = $state<"ok" | "failed" | null>(null);
   let verifyError = $state("");
+
+  let hasLive = $state(false);
+  let playback = $state<PlaybackStatus | null>(null);
+  let controlBusy = $state(false);
+  let controlError = $state("");
 
   let step = $state<Step>("companion");
   let devices = $state<Device[]>([]);
@@ -94,6 +111,84 @@
     } finally {
       verifying = false;
     }
+  }
+
+  // Runs Pair-Verify + bootstraps a Companion control session (plus a live
+  // MRP/AirPlay session if one was paired), then switches to the control
+  // page. Available from both the saved-pairing screen and right after a
+  // fresh pairing finishes.
+  async function openControls() {
+    error = "";
+    try {
+      const info = await invoke<ControlInfo>("start_control_session");
+      hasLive = info.has_live;
+      playback = null;
+      controlError = "";
+      page = "control";
+    } catch (e) {
+      error = String(e);
+    }
+  }
+
+  async function doSkip(seconds: number) {
+    controlBusy = true;
+    controlError = "";
+    try {
+      await invoke("control_skip", { seconds });
+    } catch (e) {
+      controlError = String(e);
+    } finally {
+      controlBusy = false;
+    }
+  }
+
+  async function doMute() {
+    controlBusy = true;
+    controlError = "";
+    try {
+      await invoke("control_mute");
+    } catch (e) {
+      controlError = String(e);
+    } finally {
+      controlBusy = false;
+    }
+  }
+
+  async function doUnmute() {
+    controlBusy = true;
+    controlError = "";
+    try {
+      await invoke("control_unmute");
+    } catch (e) {
+      controlError = String(e);
+    } finally {
+      controlBusy = false;
+    }
+  }
+
+  // Polls now-playing status once a second while the control page is open
+  // and a live (MRP/AirPlay) transport is available -- there's nothing to
+  // poll otherwise, since title/position only ever come from that
+  // transport, not Companion. Backend throttles how often it actively
+  // re-requests vs. just extrapolating (see REFRESH_EVERY_POLLS).
+  $effect(() => {
+    if (page !== "control" || !hasLive) return;
+    const id = setInterval(async () => {
+      try {
+        playback = await invoke<PlaybackStatus | null>("control_playback_status");
+      } catch (e) {
+        controlError = String(e);
+      }
+    }, 1000);
+    return () => clearInterval(id);
+  });
+
+  function fmtTime(seconds: number | null | undefined): string {
+    if (seconds == null) return "--:--";
+    const total = Math.max(0, Math.round(seconds));
+    const m = Math.floor(total / 60);
+    const s = total % 60;
+    return `${m}:${s.toString().padStart(2, "0")}`;
   }
 
   async function scan(protocol: Protocol) {
@@ -199,8 +294,40 @@
 
       <div class="row">
         <button onclick={verifySaved} disabled={verifying}>{verifying ? "Verifying…" : "Verify"}</button>
+        <button onclick={openControls} disabled={verifying}>Open controls</button>
         <button onclick={() => { page = "wizard"; }} disabled={verifying}>Pair a different device</button>
       </div>
+    </section>
+  {:else if page === "control"}
+    <section>
+      <h2>Control</h2>
+      {#if controlError}
+        <p class="error">{controlError}</p>
+      {/if}
+
+      {#if hasLive}
+        <div class="now-playing">
+          <p class="title">{playback?.title ?? "(nothing playing)"}</p>
+          <p class="position">
+            {fmtTime(playback?.position)} / {fmtTime(playback?.duration)}
+            {#if playback}· {playback.playback_state}{/if}
+          </p>
+        </div>
+      {:else}
+        <p class="hint">Pair MRP or AirPlay (from the pairing wizard) to unlock mute/unmute and playback info.</p>
+      {/if}
+
+      <div class="row">
+        <button onclick={() => doSkip(-15)} disabled={controlBusy}>⏪ 15s</button>
+        <button onclick={() => doSkip(15)} disabled={controlBusy}>15s ⏩</button>
+      </div>
+
+      {#if hasLive}
+        <div class="row">
+          <button onclick={doMute} disabled={controlBusy}>🔇 Mute</button>
+          <button onclick={doUnmute} disabled={controlBusy}>🔊 Unmute</button>
+        </div>
+      {/if}
     </section>
   {:else}
     <ol class="steps">
@@ -261,9 +388,11 @@
     <section>
       <h2>✅ Paired</h2>
       <p>Credentials saved. This Apple TV is ready to control.</p>
+      <button onclick={openControls}>Open controls</button>
     </section>
     {/if}
   {/if}
+
 </main>
 
 <style>
@@ -340,6 +469,23 @@ h1 {
   font-size: 0.9em;
 }
 
+.now-playing {
+  text-align: center;
+  margin: 1.5em 0;
+}
+
+.now-playing .title {
+  font-size: 1.2em;
+  font-weight: 600;
+  margin: 0 0 0.25em;
+}
+
+.now-playing .position {
+  color: #666;
+  font-variant-numeric: tabular-nums;
+  margin: 0;
+}
+
 .row {
   display: flex;
   gap: 0.5em;
@@ -413,6 +559,10 @@ button {
   }
 
   .hint {
+    color: #aaa;
+  }
+
+  .now-playing .position {
     color: #aaa;
   }
 

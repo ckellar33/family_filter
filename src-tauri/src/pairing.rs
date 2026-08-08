@@ -21,8 +21,7 @@ use tokio::sync::oneshot;
 
 use appletv::{mdns, storage};
 
-/// Same display name the CLI advertises itself as during pairing.
-const DISPLAY_NAME: &str = "family-filter";
+use crate::DISPLAY_NAME;
 
 /// Owned, `Serialize`-able mirror of `appletv::mdns::Discovered` -- Tauri
 /// command return types need to derive `Serialize`.
