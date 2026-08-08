@@ -7,6 +7,13 @@
     port: number;
   }
 
+  interface SavedPairingInfo {
+    host: string;
+    port: number;
+    has_mrp: boolean;
+    has_airplay: boolean;
+  }
+
   type Protocol = "companion" | "mrp" | "airplay";
   type Step = Protocol | "save" | "done";
 
@@ -20,6 +27,18 @@
     mrp: "MRP",
     airplay: "AirPlay",
   };
+
+  // Top-level page: "checking" while we ask the backend for a saved
+  // pairing.store on mount, "saved" if one was found (offer to verify it
+  // instead of re-pairing from scratch), "wizard" for the discover-and-pair
+  // flow -- either because there was nothing saved, or the user chose to
+  // pair a different device anyway.
+  type Page = "checking" | "saved" | "wizard";
+  let page = $state<Page>("checking");
+  let savedPairing = $state<SavedPairingInfo | null>(null);
+  let verifying = $state(false);
+  let verifyResult = $state<"ok" | "failed" | null>(null);
+  let verifyError = $state("");
 
   let step = $state<Step>("companion");
   let devices = $state<Device[]>([]);
@@ -35,6 +54,46 @@
 
   function isProtocol(s: Step): s is Protocol {
     return s === "companion" || s === "mrp" || s === "airplay";
+  }
+
+  // Runs once on mount (no reactive dependencies) to decide the starting
+  // page: straight into the wizard if there's nothing saved yet, or the
+  // saved-pairing screen if libs/appletv-cli (or an earlier run of this
+  // app) already produced a pairing.store.
+  $effect(() => {
+    checkSaved();
+  });
+
+  async function checkSaved() {
+    try {
+      const found = await invoke<SavedPairingInfo | null>("check_saved_pairing");
+      if (found) {
+        savedPairing = found;
+        page = "saved";
+      } else {
+        page = "wizard";
+      }
+    } catch (e) {
+      // Backend couldn't even check -- fall through to the normal pairing
+      // wizard rather than get stuck on "checking...".
+      error = String(e);
+      page = "wizard";
+    }
+  }
+
+  async function verifySaved() {
+    verifying = true;
+    verifyResult = null;
+    verifyError = "";
+    try {
+      await invoke("verify_saved_pairing");
+      verifyResult = "ok";
+    } catch (e) {
+      verifyResult = "failed";
+      verifyError = String(e);
+    } finally {
+      verifying = false;
+    }
   }
 
   async function scan(protocol: Protocol) {
@@ -53,9 +112,11 @@
     }
   }
 
-  // Re-scan automatically whenever the wizard lands on a new discovery step.
+  // Re-scan automatically whenever the wizard lands on a new discovery
+  // step -- but only once we're actually on the wizard page (not while
+  // still checking for, or looking at, a saved pairing).
   $effect(() => {
-    if (isProtocol(step)) {
+    if (page === "wizard" && isProtocol(step)) {
       scan(step);
     }
   });
@@ -120,19 +181,41 @@
 <main class="container">
   <h1>Pair an Apple TV</h1>
 
-  <ol class="steps">
-    {#each ["companion", "mrp", "airplay", "save"] as s (s)}
-      <li class:active={step === s} class:done={STEPS.indexOf(step) > STEPS.indexOf(s as Step)}>
-        {isProtocol(s as Step) ? PROTOCOL_LABEL[s as Protocol] : "Save"}
-      </li>
-    {/each}
-  </ol>
+  {#if page === "checking"}
+    <p>Checking for a saved pairing…</p>
+  {:else if page === "saved" && savedPairing}
+    <section>
+      <h2>Saved Apple TV found</h2>
+      <p><code>{savedPairing.host}:{savedPairing.port}</code></p>
+      <p class="hint">
+        MRP: {savedPairing.has_mrp ? "paired" : "not paired"} · AirPlay: {savedPairing.has_airplay ? "paired" : "not paired"}
+      </p>
 
-  {#if error}
-    <p class="error">{error}</p>
-  {/if}
+      {#if verifyResult === "ok"}
+        <p class="success">✅ Verified — this pairing is still valid.</p>
+      {:else if verifyResult === "failed"}
+        <p class="error">{verifyError}</p>
+      {/if}
 
-  {#if isProtocol(step)}
+      <div class="row">
+        <button onclick={verifySaved} disabled={verifying}>{verifying ? "Verifying…" : "Verify"}</button>
+        <button onclick={() => { page = "wizard"; }} disabled={verifying}>Pair a different device</button>
+      </div>
+    </section>
+  {:else}
+    <ol class="steps">
+      {#each ["companion", "mrp", "airplay", "save"] as s (s)}
+        <li class:active={step === s} class:done={STEPS.indexOf(step) > STEPS.indexOf(s as Step)}>
+          {isProtocol(s as Step) ? PROTOCOL_LABEL[s as Protocol] : "Save"}
+        </li>
+      {/each}
+    </ol>
+
+    {#if error}
+      <p class="error">{error}</p>
+    {/if}
+
+    {#if isProtocol(step)}
     <section>
       <h2>{PROTOCOL_LABEL[step]} pairing{step !== "companion" ? " (optional)" : ""}</h2>
       {#if step !== "companion"}
@@ -179,6 +262,7 @@
       <h2>✅ Paired</h2>
       <p>Credentials saved. This Apple TV is ready to control.</p>
     </section>
+    {/if}
   {/if}
 </main>
 
@@ -240,6 +324,13 @@ h1 {
 .error {
   color: #c0392b;
   background: #fdecea;
+  border-radius: 8px;
+  padding: 0.75em 1em;
+}
+
+.success {
+  color: #1e7e34;
+  background: #e6f6ea;
   border-radius: 8px;
   padding: 0.75em 1em;
 }
@@ -314,6 +405,11 @@ button {
   .error {
     background: #4a1f1c;
     color: #ff8a80;
+  }
+
+  .success {
+    background: #1c3a24;
+    color: #8fe0a4;
   }
 
   .hint {

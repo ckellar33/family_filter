@@ -1,4 +1,5 @@
 mod pairing;
+mod saved;
 
 use pairing::{PairingState, PairingStateHandle};
 
@@ -21,6 +22,8 @@ pub fn run() {
             pairing::pair_airplay,
             pairing::submit_pin,
             pairing::finish_pairing,
+            saved::check_saved_pairing,
+            saved::verify_saved_pairing,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
