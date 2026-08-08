@@ -186,6 +186,17 @@
   let awaitingPinFor = $state<Protocol | null>(null);
   let pin = $state("");
 
+  // Purely cosmetic label for the sticky nav bar -- doesn't drive any
+  // behavior, just names whichever screen `page`/`step` currently show.
+  let navTitle = $derived.by(() => {
+    if (page === "checking") return "Family Filter";
+    if (page === "saved") return "Saved Pairing";
+    if (page === "control") return "Control";
+    if (step === "save") return "Save Pairing";
+    if (step === "done") return "Paired";
+    return "Pair an Apple TV";
+  });
+
   function isProtocol(s: Step): s is Protocol {
     return s === "companion" || s === "mrp" || s === "airplay";
   }
@@ -442,12 +453,17 @@
     }
   }
 
-  // Pairs with fmtTime -- parses the m:ss the cue table's inputs display
-  // back into seconds, or null for anything unrecognized so the caller can
-  // reject the edit without touching the backend.
+  // Pairs with fmtTime -- parses what the cue table's inputs display back
+  // into seconds, or null for anything unrecognized so the caller can
+  // reject the edit without touching the backend. Accepts both the m:ss
+  // fmtTime shows under an hour and the h:mm:ss it shows at/past an hour,
+  // so typing over a displayed value round-trips either way.
   function parseTime(text: string): number | null {
-    const m = /^(\d+):([0-5]?\d)$/.exec(text.trim());
+    const m = /^(\d+):([0-5]?\d)(?::([0-5]?\d))?$/.exec(text.trim());
     if (!m) return null;
+    if (m[3] != null) {
+      return Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]);
+    }
     return Number(m[1]) * 60 + Number(m[2]);
   }
 
@@ -571,11 +587,18 @@
     return () => clearInterval(id);
   });
 
+  // m:ss under an hour (movies' cue timestamps are usually well under
+  // that); h:mm:ss once the position/duration/cue rolls past 60 minutes,
+  // so a 2-hour movie reads as "2:05:33" rather than a confusing "125:33".
   function fmtTime(seconds: number | null | undefined): string {
     if (seconds == null) return "--:--";
     const total = Math.max(0, Math.round(seconds));
-    const m = Math.floor(total / 60);
+    const h = Math.floor(total / 3600);
+    const m = Math.floor((total % 3600) / 60);
     const s = total % 60;
+    if (h > 0) {
+      return `${h}:${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
+    }
     return `${m}:${s.toString().padStart(2, "0")}`;
   }
 
@@ -662,511 +685,860 @@
   }
 </script>
 
-<main class="container">
-  <h1>Pair an Apple TV</h1>
+<div class="phone-shell">
+  <main class="canvas">
+    <header class="navbar">
+      <h1>{navTitle}</h1>
+    </header>
 
-  {#if page === "checking"}
-    <p>Checking for a saved pairing…</p>
-  {:else if page === "saved" && savedPairing}
-    <section>
-      <h2>Saved Apple TV found</h2>
-      <p><code>{savedPairing.host}:{savedPairing.port}</code></p>
-      <p class="hint">
-        MRP: {savedPairing.has_mrp ? "paired" : "not paired"} · AirPlay: {savedPairing.has_airplay ? "paired" : "not paired"}
-      </p>
-
-      {#if verifyResult === "ok"}
-        <p class="success">✅ Verified — this pairing is still valid.</p>
-      {:else if verifyResult === "failed"}
-        <p class="error">{verifyError}</p>
-      {/if}
-
-      <div class="row">
-        <button onclick={verifySaved} disabled={verifying}>{verifying ? "Verifying…" : "Verify"}</button>
-        <button onclick={openControls} disabled={verifying}>Open controls</button>
-        <button onclick={() => { page = "wizard"; }} disabled={verifying}>Pair a different device</button>
-      </div>
-    </section>
-  {:else if page === "control"}
-    <section>
-      <h2>Control</h2>
-      {#if controlError}
-        <p class="error">{controlError}</p>
-      {/if}
-
-      {#if hasLive}
-        <div class="now-playing">
-          <p class="title">{playback?.title ?? "(nothing playing)"}</p>
-          <p class="position">
-            {fmtTime(playback?.position)} / {fmtTime(playback?.duration)}
-            {#if playback}· {playback.playback_state}{/if}
-          </p>
-          {#if filterSummary && playback}
-            <p class="hint">
-              {#if playback.filter_action}
-                🛡️ {playback.filter_action} — {playback.filter_category}
-              {:else if !playback.filter_match}
-                no filter list for this title
-              {:else if nextCue}
-                🛡️ next: {nextCue.action === "mute" ? "🔇 mute" : "⏭️ skip"} at {fmtTime(nextCue.start)}–{fmtTime(nextCue.end)} — {nextCue.category}
-                {#if !filterEnabled}(mode off){/if}
-              {:else if playback.filter_cues.length > 0}
-                no more cues
-              {:else}
-                🛡️ filter list found for "{playback.filter_match}", no cues
-              {/if}
-            </p>
-          {/if}
-        </div>
-      {:else}
-        <p class="hint">Pair MRP or AirPlay (from the pairing wizard) to unlock mute/unmute and playback info.</p>
-      {/if}
-
-      <div class="row">
-        <button onclick={() => doSkip(-15)} disabled={controlBusy}>⏪ 15s</button>
-        <button onclick={() => doSkip(15)} disabled={controlBusy}>15s ⏩</button>
-      </div>
-
-      {#if hasLive}
-        <div class="row">
-          <button onclick={doMute} disabled={controlBusy}>🔇 Mute</button>
-          <button onclick={doUnmute} disabled={controlBusy}>🔊 Unmute</button>
-        </div>
-
-        <section class="filter-mode">
-          <h3>Auto filter</h3>
-          {#if filterError}
-            <p class="error">{filterError}</p>
-          {/if}
-
-          {#if filterSummary}
-            <p class="hint"><code>{filterSummary.path}</code> — {filterSummary.media_count} title{filterSummary.media_count === 1 ? "" : "s"}</p>
-
-            <label class="row">
-              <input type="checkbox" checked={filterEnabled} onchange={toggleFilterEnabled} disabled={filterBusy} />
-              Enabled
-            </label>
-
-            {#if filterSummary.categories.length > 0}
-              <p class="hint">
-                Categories
-                {#if playback?.filter_match}-- expand one to see (and individually toggle) its cues for "{playback.filter_match}"{/if}
-              </p>
-              <ul class="categories">
-                {#each filterSummary.categories as category (category)}
-                  {@const cues = cuesByCategory[category] ?? []}
-                  {@const isExpanded = expandedCategories[category] ?? true}
-                  <li>
-                    <div class="category-row">
-                      <button
-                        type="button"
-                        class="disclosure"
-                        onclick={() => toggleExpanded(category)}
-                        disabled={cues.length === 0}
-                        aria-expanded={isExpanded}
-                        aria-label={`${isExpanded ? "Collapse" : "Expand"} ${category}`}
-                      >
-                        {cues.length > 0 ? (isExpanded ? "▾" : "▸") : "·"}
-                      </button>
-                      <label class="row">
-                        <input
-                          type="checkbox"
-                          checked={categoryEnabled[category] ?? true}
-                          onchange={() => toggleCategory(category)}
-                        />
-                        {category}
-                        {#if cues.length > 0}<span class="hint">({cues.length})</span>{/if}
-                      </label>
-                    </div>
-
-                    {#if isExpanded && cues.length > 0}
-                      <ul class="cues">
-                        {#each cues as cue (cue.index)}
-                          <li
-                            class="cue"
-                            class:cue-past={playback?.position != null && playback.position >= cue.end}
-                            class:cue-active={playback?.position != null &&
-                              playback.position >= cue.start &&
-                              playback.position < cue.end}
-                          >
-                            <label class="cue-row">
-                              <input type="checkbox" checked={cue.enabled} onchange={() => toggleCue(cue)} />
-                              <span class="cue-time">{fmtTime(cue.start)}–{fmtTime(cue.end)}</span>
-                              <span class="cue-action">{cue.action === "mute" ? "🔇 mute" : "⏭️ skip"}</span>
-                            </label>
-                          </li>
-                        {/each}
-                      </ul>
-                    {/if}
-                  </li>
-                {/each}
-              </ul>
-            {/if}
-          {/if}
-
-          <button onclick={pickFilterFile} disabled={filterBusy}>
-            {filterSummary ? "Load a different filter file…" : "Load filter file…"}
-          </button>
-        </section>
-
-        <section class="creation-mode">
-          <h3>Create filter</h3>
-          {#if creationError}
-            <p class="error">{creationError}</p>
-          {/if}
-
-          {#if creationStage === "idle"}
-            <p class="hint">Record cue timestamps live from what's currently playing.</p>
-            <div class="row">
-              <button onclick={pickNewDraft}>Record new filter file…</button>
-              <button onclick={pickExistingDraft}>Continue existing draft…</button>
-            </div>
-          {:else if draft}
-            <p class="hint">
-              <code>{draft.path}</code> — {draft.media_count} title{draft.media_count === 1 ? "" : "s"}
-              {#if !playback?.title}(nothing playing){/if}
-            </p>
-            <div class="row">
-              <button onclick={useDraftAsActiveFilter} disabled={filterBusy}>Use this draft as active filter</button>
-              <button onclick={() => { resetCreation(); }} disabled={creationBusy}>Close draft</button>
-            </div>
-            {#if filterSummary?.path === draft.path}
-              <p class="hint">🛡️ this draft is the active auto filter -- cues you record show up there too.</p>
-            {:else}
-              <p class="hint">Not the active auto filter yet -- use the button above once you're ready to test it.</p>
-            {/if}
-
-            <div class="category-buttons">
-              {#each categories as c (c.name)}
-                <button
-                  type="button"
-                  class="category-btn"
-                  class:recording={pendingSkipCategory === c.name}
-                  disabled={creationBusy || !playback?.title || (c.kind === "skip" && pendingSkipCategory !== null && pendingSkipCategory !== c.name)}
-                  onclick={() => (c.kind === "mute" ? markMute(c.name) : toggleSkipMark(c.name))}
-                >
-                  {c.kind === "mute" ? "🔇" : "⏭️"}
-                  {c.name}
-                  {#if pendingSkipCategory === c.name}(recording — press again to end){/if}
-                </button>
-              {/each}
-            </div>
-            {#if pendingSkipCategory}
-              <div class="row">
-                <button onclick={cancelSkipMark} disabled={creationBusy}>Cancel mark</button>
-              </div>
-            {/if}
-
-            <div class="add-category row">
-              <input placeholder="custom category" bind:value={newCategoryName} />
-              <select bind:value={newCategoryKind}>
-                <option value="skip">skip</option>
-                <option value="mute">mute</option>
-              </select>
-              <button type="button" onclick={addCustomCategory} disabled={!newCategoryName.trim()}>Add</button>
-            </div>
-
-            {#if creationCues.length > 0}
-              <p class="hint">Recorded cues for "{playback?.title}" -- edit a time and press Enter/Tab to correct it.</p>
-              <ul class="cue-table">
-                {#each creationCues as cue (cue.index)}
-                  <li class="cue-table-row">
-                    <span class="cue-action">{cue.action === "mute" ? "🔇" : "⏭️"} {cue.category}</span>
-                    <input
-                      class="time-input"
-                      value={fmtTime(cue.start)}
-                      onchange={(e) => updateCueTime(cue, "start", (e.target as HTMLInputElement).value)}
-                    />
-                    <span>–</span>
-                    <input
-                      class="time-input"
-                      value={fmtTime(cue.end)}
-                      onchange={(e) => updateCueTime(cue, "end", (e.target as HTMLInputElement).value)}
-                    />
-                    <button type="button" onclick={() => deleteCue(cue)} aria-label="Delete cue">✕</button>
-                  </li>
-                {/each}
-              </ul>
-            {:else if playback?.title}
-              <p class="hint">No cues recorded yet for "{playback.title}".</p>
-            {/if}
-          {/if}
-        </section>
-      {/if}
-    </section>
-  {:else}
-    <ol class="steps">
-      {#each ["companion", "mrp", "airplay", "save"] as s (s)}
-        <li class:active={step === s} class:done={STEPS.indexOf(step) > STEPS.indexOf(s as Step)}>
-          {isProtocol(s as Step) ? PROTOCOL_LABEL[s as Protocol] : "Save"}
-        </li>
-      {/each}
-    </ol>
-
-    {#if error}
-      <p class="error">{error}</p>
-    {/if}
-
-    {#if isProtocol(step)}
-    <section>
-      <h2>{PROTOCOL_LABEL[step]} pairing{step !== "companion" ? " (optional)" : ""}</h2>
-      {#if step !== "companion"}
-        <p class="hint">Needed only for live playback position. Skip if this Apple TV isn't reachable over {PROTOCOL_LABEL[step]}.</p>
-      {/if}
-
-      {#if awaitingPinFor === step}
-        <form class="row" onsubmit={(e) => { e.preventDefault(); submitPin(); }}>
-          <p>Enter the PIN shown on your Apple TV:</p>
-          <input inputmode="numeric" autocomplete="one-time-code" bind:value={pin} placeholder="0000" />
-          <button type="submit" disabled={!pin}>Submit</button>
-        </form>
-      {:else}
-        <div class="row">
-          <button onclick={() => scan(step as Protocol)} disabled={scanning || pairing}>
-            {scanning ? "Scanning…" : "Rescan"}
-          </button>
-          {#if step !== "companion"}
-            <button onclick={skip} disabled={pairing}>Skip</button>
-          {/if}
-        </div>
-
-        {#if devices.length > 0}
-          <ul class="devices">
-            {#each devices as device (device.host + device.port)}
-              <li>
-                <button onclick={() => pair(step as Protocol, device)} disabled={pairing}>
-                  {device.host}:{device.port}
-                </button>
-              </li>
-            {/each}
+    <div class="content">
+      {#if page === "checking"}
+        <p class="hint centered">Checking for a saved pairing…</p>
+      {:else if page === "saved" && savedPairing}
+        <section class="screen">
+          <p class="section-header">Device</p>
+          <ul class="list">
+            <li class="list-row static">
+              <code>{savedPairing.host}:{savedPairing.port}</code>
+            </li>
+            <li class="list-row static">
+              <span>MRP</span>
+              <span class="value">{savedPairing.has_mrp ? "Paired" : "Not paired"}</span>
+            </li>
+            <li class="list-row static">
+              <span>AirPlay</span>
+              <span class="value">{savedPairing.has_airplay ? "Paired" : "Not paired"}</span>
+            </li>
           </ul>
-        {/if}
-      {/if}
-    </section>
-  {:else if step === "save"}
-    <section>
-      <h2>Save pairing</h2>
-      <p>Ready to save credentials to <code>pairing.store</code>.</p>
-      <button onclick={save} disabled={pairing}>{pairing ? "Saving…" : "Save"}</button>
-    </section>
-  {:else if step === "done"}
-    <section>
-      <h2>✅ Paired</h2>
-      <p>Credentials saved. This Apple TV is ready to control.</p>
-      <button onclick={openControls}>Open controls</button>
-    </section>
-    {/if}
-  {/if}
 
-</main>
+          {#if verifyResult === "ok"}
+            <p class="banner success">✅ Verified — this pairing is still valid.</p>
+          {:else if verifyResult === "failed"}
+            <p class="banner error">{verifyError}</p>
+          {/if}
+
+          <div class="stack">
+            <button class="btn-primary" onclick={openControls} disabled={verifying}>Open Controls</button>
+            <button class="btn-secondary" onclick={verifySaved} disabled={verifying}>{verifying ? "Verifying…" : "Verify Pairing"}</button>
+            <button class="btn-secondary" onclick={() => { page = "wizard"; }} disabled={verifying}>Pair a Different Device</button>
+          </div>
+        </section>
+      {:else if page === "control"}
+        <section class="screen">
+          {#if controlError}
+            <p class="banner error">{controlError}</p>
+          {/if}
+
+          {#if hasLive}
+            <div class="now-playing">
+              <p class="title">{playback?.title ?? "Nothing Playing"}</p>
+              {#if playback}
+                <p class="subtitle">{playback.playback_state}</p>
+              {/if}
+              {#if playback?.duration}
+                {@const pct = playback.position != null ? Math.min(100, (playback.position / playback.duration) * 100) : 0}
+                <div class="progress-track"><div class="progress-fill" style={`width: ${pct}%`}></div></div>
+              {/if}
+              <p class="position">{fmtTime(playback?.position)} / {fmtTime(playback?.duration)}</p>
+              {#if filterSummary && playback}
+                <p class="hint centered">
+                  {#if playback.filter_action}
+                    🛡️ {playback.filter_action} — {playback.filter_category}
+                  {:else if !playback.filter_match}
+                    no filter list for this title
+                  {:else if nextCue}
+                    🛡️ next: {nextCue.action === "mute" ? "🔇 mute" : "⏭️ skip"} at {fmtTime(nextCue.start)}–{fmtTime(nextCue.end)} — {nextCue.category}
+                    {#if !filterEnabled}(mode off){/if}
+                  {:else if playback.filter_cues.length > 0}
+                    no more cues
+                  {:else}
+                    🛡️ filter list found for "{playback.filter_match}", no cues
+                  {/if}
+                </p>
+              {/if}
+            </div>
+          {:else}
+            <p class="hint centered">Pair MRP or AirPlay (from the pairing wizard) to unlock mute/unmute and playback info.</p>
+          {/if}
+
+          <div class="transport-row">
+            <button class="icon-btn" onclick={() => doSkip(-15)} disabled={controlBusy} aria-label="Back 15 seconds">⏪</button>
+            {#if hasLive}
+              <button class="icon-btn icon-btn-lg" onclick={doMute} disabled={controlBusy} aria-label="Mute">🔇</button>
+              <button class="icon-btn icon-btn-lg" onclick={doUnmute} disabled={controlBusy} aria-label="Unmute">🔊</button>
+            {/if}
+            <button class="icon-btn" onclick={() => doSkip(15)} disabled={controlBusy} aria-label="Forward 15 seconds">⏩</button>
+          </div>
+
+          {#if hasLive}
+            <section class="group">
+              <p class="section-header">Auto Filter</p>
+              {#if filterError}
+                <p class="banner error">{filterError}</p>
+              {/if}
+
+              {#if filterSummary}
+                <ul class="list">
+                  <li class="list-row static">
+                    <span class="truncate"><code>{filterSummary.path}</code></span>
+                  </li>
+                  <li class="list-row">
+                    <span>Enabled</span>
+                    <label class="switch">
+                      <input type="checkbox" checked={filterEnabled} onchange={toggleFilterEnabled} disabled={filterBusy} />
+                      <span class="switch-track"><span class="switch-thumb"></span></span>
+                    </label>
+                  </li>
+                </ul>
+                <p class="footnote">{filterSummary.media_count} title{filterSummary.media_count === 1 ? "" : "s"} in this list.</p>
+
+                {#if filterSummary.categories.length > 0}
+                  <p class="section-header">
+                    Categories
+                    {#if playback?.filter_match}— tap one to see (and individually toggle) its cues for "{playback.filter_match}"{/if}
+                  </p>
+                  <ul class="list">
+                    {#each filterSummary.categories as category (category)}
+                      {@const cues = cuesByCategory[category] ?? []}
+                      {@const isExpanded = expandedCategories[category] ?? true}
+                      <li>
+                        <div class="list-row category-row">
+                          <button
+                            type="button"
+                            class="disclosure"
+                            class:expanded={isExpanded && cues.length > 0}
+                            onclick={() => toggleExpanded(category)}
+                            disabled={cues.length === 0}
+                            aria-expanded={isExpanded}
+                            aria-label={`${isExpanded ? "Collapse" : "Expand"} ${category}`}
+                          >
+                            {cues.length > 0 ? "›" : "·"}
+                          </button>
+                          <span class="category-label">
+                            {category}
+                            {#if cues.length > 0}<span class="hint">({cues.length})</span>{/if}
+                          </span>
+                          <label class="switch">
+                            <input
+                              type="checkbox"
+                              checked={categoryEnabled[category] ?? true}
+                              onchange={() => toggleCategory(category)}
+                            />
+                            <span class="switch-track"><span class="switch-thumb"></span></span>
+                          </label>
+                        </div>
+
+                        {#if isExpanded && cues.length > 0}
+                          <ul class="list nested-list">
+                            {#each cues as cue (cue.index)}
+                              <li
+                                class="list-row cue-row"
+                                class:cue-past={playback?.position != null && playback.position >= cue.end}
+                                class:cue-active={playback?.position != null &&
+                                  playback.position >= cue.start &&
+                                  playback.position < cue.end}
+                              >
+                                <span class="cue-time">{fmtTime(cue.start)}–{fmtTime(cue.end)}</span>
+                                <span class="cue-action">{cue.action === "mute" ? "🔇 mute" : "⏭️ skip"}</span>
+                                <label class="switch switch-sm">
+                                  <input type="checkbox" checked={cue.enabled} onchange={() => toggleCue(cue)} />
+                                  <span class="switch-track"><span class="switch-thumb"></span></span>
+                                </label>
+                              </li>
+                            {/each}
+                          </ul>
+                        {/if}
+                      </li>
+                    {/each}
+                  </ul>
+                {/if}
+              {/if}
+
+              <button class="btn-secondary" onclick={pickFilterFile} disabled={filterBusy}>
+                {filterSummary ? "Load a Different Filter File…" : "Load Filter File…"}
+              </button>
+            </section>
+
+            <section class="group">
+              <p class="section-header">Create Filter</p>
+              {#if creationError}
+                <p class="banner error">{creationError}</p>
+              {/if}
+
+              {#if creationStage === "idle"}
+                <p class="hint">Record cue timestamps live from what's currently playing.</p>
+                <div class="stack">
+                  <button class="btn-secondary" onclick={pickNewDraft}>Record New Filter File…</button>
+                  <button class="btn-secondary" onclick={pickExistingDraft}>Continue Existing Draft…</button>
+                </div>
+              {:else if draft}
+                <ul class="list">
+                  <li class="list-row static">
+                    <span class="truncate"><code>{draft.path}</code></span>
+                  </li>
+                </ul>
+                <p class="footnote">
+                  {draft.media_count} title{draft.media_count === 1 ? "" : "s"}
+                  {#if !playback?.title}· nothing playing{/if}
+                </p>
+                <div class="stack">
+                  <button class="btn-secondary" onclick={useDraftAsActiveFilter} disabled={filterBusy}>Use This Draft as Active Filter</button>
+                  <button class="btn-secondary" onclick={() => { resetCreation(); }} disabled={creationBusy}>Close Draft</button>
+                </div>
+                {#if filterSummary?.path === draft.path}
+                  <p class="hint">🛡️ this draft is the active auto filter -- cues you record show up there too.</p>
+                {:else}
+                  <p class="hint">Not the active auto filter yet -- use the button above once you're ready to test it.</p>
+                {/if}
+
+                <div class="category-buttons">
+                  {#each categories as c (c.name)}
+                    <button
+                      type="button"
+                      class="category-btn"
+                      class:recording={pendingSkipCategory === c.name}
+                      disabled={creationBusy || !playback?.title || (c.kind === "skip" && pendingSkipCategory !== null && pendingSkipCategory !== c.name)}
+                      onclick={() => (c.kind === "mute" ? markMute(c.name) : toggleSkipMark(c.name))}
+                    >
+                      {c.kind === "mute" ? "🔇" : "⏭️"}
+                      {c.name}
+                      {#if pendingSkipCategory === c.name}(recording — tap to end){/if}
+                    </button>
+                  {/each}
+                </div>
+                {#if pendingSkipCategory}
+                  <button class="btn-destructive" onclick={cancelSkipMark} disabled={creationBusy}>Cancel Mark</button>
+                {/if}
+
+                <div class="field-row">
+                  <input class="field" placeholder="Custom category" bind:value={newCategoryName} />
+                  <select class="field field-select" bind:value={newCategoryKind}>
+                    <option value="skip">skip</option>
+                    <option value="mute">mute</option>
+                  </select>
+                  <button type="button" class="btn-secondary" onclick={addCustomCategory} disabled={!newCategoryName.trim()}>Add</button>
+                </div>
+
+                {#if creationCues.length > 0}
+                  <p class="hint">Recorded cues for "{playback?.title}" -- edit a time and press Enter/Tab to correct it.</p>
+                  <ul class="list">
+                    {#each creationCues as cue (cue.index)}
+                      <li class="list-row cue-table-row">
+                        <span class="cue-action">{cue.action === "mute" ? "🔇" : "⏭️"} {cue.category}</span>
+                        <input
+                          class="time-input"
+                          value={fmtTime(cue.start)}
+                          onchange={(e) => updateCueTime(cue, "start", (e.target as HTMLInputElement).value)}
+                        />
+                        <span class="hint">–</span>
+                        <input
+                          class="time-input"
+                          value={fmtTime(cue.end)}
+                          onchange={(e) => updateCueTime(cue, "end", (e.target as HTMLInputElement).value)}
+                        />
+                        <button type="button" class="delete-btn" onclick={() => deleteCue(cue)} aria-label="Delete cue">✕</button>
+                      </li>
+                    {/each}
+                  </ul>
+                {:else if playback?.title}
+                  <p class="hint">No cues recorded yet for "{playback.title}".</p>
+                {/if}
+              {/if}
+            </section>
+          {/if}
+        </section>
+      {:else}
+        <section class="screen">
+          <div class="segmented">
+            {#each ["companion", "mrp", "airplay", "save"] as s (s)}
+              <div class="segment" class:active={step === s} class:done={STEPS.indexOf(step) > STEPS.indexOf(s as Step)}>
+                {isProtocol(s as Step) ? PROTOCOL_LABEL[s as Protocol] : "Save"}
+              </div>
+            {/each}
+          </div>
+
+          {#if error}
+            <p class="banner error">{error}</p>
+          {/if}
+
+          {#if isProtocol(step)}
+            <p class="section-header">{PROTOCOL_LABEL[step]} pairing{step !== "companion" ? " (optional)" : ""}</p>
+            {#if step !== "companion"}
+              <p class="hint">Needed only for live playback position. Skip if this Apple TV isn't reachable over {PROTOCOL_LABEL[step]}.</p>
+            {/if}
+
+            {#if awaitingPinFor === step}
+              <form onsubmit={(e) => { e.preventDefault(); submitPin(); }}>
+                <p class="hint centered">Enter the PIN shown on your Apple TV:</p>
+                <input class="pin-input" inputmode="numeric" autocomplete="one-time-code" bind:value={pin} placeholder="0000" />
+                <button type="submit" class="btn-primary" disabled={!pin}>Submit</button>
+              </form>
+            {:else}
+              <div class="stack">
+                <button class="btn-secondary" onclick={() => scan(step as Protocol)} disabled={scanning || pairing}>
+                  {scanning ? "Scanning…" : "Rescan"}
+                </button>
+                {#if step !== "companion"}
+                  <button class="btn-secondary" onclick={skip} disabled={pairing}>Skip</button>
+                {/if}
+              </div>
+
+              {#if devices.length > 0}
+                <ul class="list">
+                  {#each devices as device (device.host + device.port)}
+                    <li>
+                      <button class="list-row" onclick={() => pair(step as Protocol, device)} disabled={pairing}>
+                        <span>{device.host}:{device.port}</span>
+                        <span class="chevron">›</span>
+                      </button>
+                    </li>
+                  {/each}
+                </ul>
+              {/if}
+            {/if}
+          {:else if step === "save"}
+            <p class="section-header">Save pairing</p>
+            <p class="hint">Ready to save credentials to <code>pairing.store</code>.</p>
+            <button class="btn-primary" onclick={save} disabled={pairing}>{pairing ? "Saving…" : "Save"}</button>
+          {:else if step === "done"}
+            <p class="section-header">✅ Paired</p>
+            <p class="hint">Credentials saved. This Apple TV is ready to control.</p>
+            <button class="btn-primary" onclick={openControls}>Open Controls</button>
+          {/if}
+        </section>
+      {/if}
+    </div>
+  </main>
+</div>
 
 <style>
 :root {
-  font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
-  font-size: 16px;
-  line-height: 24px;
-  font-weight: 400;
-
-  color: #0f0f0f;
-  background-color: #f6f6f6;
-
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  -webkit-text-size-adjust: 100%;
+  color-scheme: light dark;
+  --bg: #f2f2f7;
+  --grouped-bg: #f2f2f7;
+  --card-bg: #ffffff;
+  --label: #000000;
+  --secondary-label: #6c6c70;
+  --tertiary-label: #8e8e93;
+  --separator: rgba(60, 60, 67, 0.29);
+  --accent: #007aff;
+  --destructive: #ff3b30;
+  --success: #34c759;
+  --error-bg: #fdecea;
+  --success-bg: #e6f6ea;
+  --shell-bg: #e5e5ea;
 }
 
-.container {
-  margin: 0 auto;
-  max-width: 32rem;
-  padding: 3rem 1.5rem;
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #000000;
+    --grouped-bg: #000000;
+    --card-bg: #1c1c1e;
+    --label: #ffffff;
+    --secondary-label: #98989f;
+    --tertiary-label: #6c6c70;
+    --separator: rgba(84, 84, 88, 0.6);
+    --accent: #0a84ff;
+    --destructive: #ff453a;
+    --success: #30d158;
+    --error-bg: #3a1613;
+    --success-bg: #122a17;
+    --shell-bg: #1c1c1e;
+  }
 }
 
-h1 {
-  text-align: center;
+:global(html),
+:global(body) {
+  height: 100%;
 }
 
-.steps {
+:global(body) {
+  margin: 0;
+  background: var(--shell-bg);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/* Letterboxes the app to a phone-width column regardless of how wide the
+   desktop window is resized -- the rest of the window just shows a plain
+   fill so the app reads as a phone screen, not a stretched desktop pane. */
+.phone-shell {
   display: flex;
-  justify-content: space-between;
-  list-style: none;
-  padding: 0;
-  margin: 2rem 0;
-  font-size: 0.85em;
+  justify-content: center;
+  min-height: 100vh;
+  background: var(--shell-bg);
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
 }
 
-.steps li {
-  flex: 1;
+.canvas {
+  width: 100%;
+  max-width: 430px;
+  min-height: 100vh;
+  background: var(--bg);
+  color: var(--label);
+  display: flex;
+  flex-direction: column;
+}
+
+.navbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  padding: calc(env(safe-area-inset-top) + 10px) 16px 10px;
+  background: color-mix(in srgb, var(--bg) 82%, transparent);
+  backdrop-filter: saturate(180%) blur(20px);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+  border-bottom: 0.5px solid var(--separator);
   text-align: center;
-  padding-bottom: 0.5em;
-  border-bottom: 3px solid #d8d8d8;
-  color: #888;
 }
 
-.steps li.done {
-  border-color: #396cd8;
-  color: #396cd8;
-}
-
-.steps li.active {
-  border-color: #24c8db;
-  color: #0f0f0f;
+.navbar h1 {
+  margin: 0;
+  font-size: 1.05em;
   font-weight: 600;
+  letter-spacing: -0.01em;
 }
 
-.error {
-  color: #c0392b;
-  background: #fdecea;
-  border-radius: 8px;
-  padding: 0.75em 1em;
+.content {
+  flex: 1;
+  padding: 16px 16px calc(env(safe-area-inset-bottom) + 32px);
 }
 
-.success {
-  color: #1e7e34;
-  background: #e6f6ea;
-  border-radius: 8px;
-  padding: 0.75em 1em;
+.screen {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.group {
+  margin-top: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.section-header {
+  margin: 18px 4px 6px;
+  font-size: 0.8em;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--secondary-label);
+}
+
+.section-header:first-child {
+  margin-top: 4px;
+}
+
+.footnote {
+  margin: 6px 4px 0;
+  font-size: 0.8em;
+  color: var(--secondary-label);
 }
 
 .hint {
-  color: #666;
+  color: var(--secondary-label);
   font-size: 0.9em;
+  margin: 8px 4px;
 }
 
+.hint.centered {
+  text-align: center;
+}
+
+.banner {
+  border-radius: 12px;
+  padding: 0.75em 1em;
+  margin: 8px 0;
+  font-size: 0.92em;
+}
+
+.banner.error {
+  color: var(--destructive);
+  background: var(--error-bg);
+}
+
+.banner.success {
+  color: var(--success);
+  background: var(--success-bg);
+}
+
+/* Grouped-table-view list: rounded card, hairline separators between rows. */
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  background: var(--card-bg);
+  border-radius: 14px;
+  overflow: hidden;
+}
+
+.list li:not(:last-child) {
+  border-bottom: 0.5px solid var(--separator);
+}
+
+.list-row {
+  all: unset;
+  box-sizing: border-box;
+  display: flex;
+  width: 100%;
+  min-height: 44px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6em;
+  padding: 11px 16px;
+  cursor: pointer;
+}
+
+.list-row.static {
+  cursor: default;
+}
+
+button.list-row:active:not(:disabled) {
+  background: color-mix(in srgb, var(--label) 6%, transparent);
+}
+
+.list-row:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.list-row .value {
+  color: var(--secondary-label);
+}
+
+.list-row .truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chevron {
+  color: var(--tertiary-label);
+  font-size: 1.1em;
+}
+
+.category-row {
+  gap: 0.5em;
+}
+
+.category-label {
+  flex: 1;
+  text-align: left;
+}
+
+.nested-list {
+  margin: 6px 12px 12px 40px;
+  width: auto;
+  border-radius: 10px;
+}
+
+.cue-row {
+  font-size: 0.92em;
+  opacity: 0.6;
+  transition: opacity 0.15s ease;
+}
+
+.cue-time {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.cue-action {
+  flex: 1;
+  text-align: left;
+  padding-left: 0.6em;
+}
+
+.cue-active {
+  opacity: 1;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.cue-past {
+  opacity: 0.35;
+}
+
+.cue-table-row .cue-action {
+  padding-left: 0;
+}
+
+/* Disclosure chevron -- rotates open instead of swapping glyphs. */
+.disclosure {
+  all: unset;
+  width: 1.4em;
+  flex-shrink: 0;
+  text-align: center;
+  cursor: pointer;
+  color: var(--tertiary-label);
+  font-size: 1.1em;
+  transition: transform 0.2s ease;
+}
+
+.disclosure.expanded {
+  transform: rotate(90deg);
+}
+
+.disclosure:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+
+/* iOS-style toggle switch. */
+.switch {
+  position: relative;
+  display: inline-flex;
+  flex-shrink: 0;
+  width: 51px;
+  height: 31px;
+}
+
+.switch input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.switch-track {
+  position: absolute;
+  inset: 0;
+  background: var(--separator);
+  border-radius: 999px;
+  transition: background-color 0.2s ease;
+}
+
+.switch-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 27px;
+  height: 27px;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 3px 1px rgba(0, 0, 0, 0.06), 0 3px 8px rgba(0, 0, 0, 0.15);
+  transition: transform 0.2s ease;
+}
+
+.switch input:checked + .switch-track {
+  background: var(--success);
+}
+
+.switch input:checked + .switch-track .switch-thumb {
+  transform: translateX(20px);
+}
+
+.switch input:disabled + .switch-track {
+  opacity: 0.5;
+}
+
+.switch-sm {
+  width: 40px;
+  height: 24px;
+}
+
+.switch-sm .switch-thumb {
+  width: 20px;
+  height: 20px;
+}
+
+.switch-sm input:checked + .switch-track .switch-thumb {
+  transform: translateX(16px);
+}
+
+/* Now-playing card. */
 .now-playing {
   text-align: center;
-  margin: 1.5em 0;
+  margin: 12px 0 20px;
 }
 
 .now-playing .title {
-  font-size: 1.2em;
-  font-weight: 600;
-  margin: 0 0 0.25em;
+  font-size: 1.25em;
+  font-weight: 700;
+  margin: 0 0 0.2em;
+}
+
+.now-playing .subtitle {
+  color: var(--secondary-label);
+  margin: 0 0 0.8em;
+  text-transform: capitalize;
+}
+
+.progress-track {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--separator);
+  overflow: hidden;
+  margin: 0 4px;
+}
+
+.progress-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 999px;
 }
 
 .now-playing .position {
-  color: #666;
+  color: var(--secondary-label);
   font-variant-numeric: tabular-nums;
-  margin: 0;
+  margin: 0.6em 0 0;
+  font-size: 0.9em;
 }
 
-.row {
+/* Transport controls. */
+.transport-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1.4em;
+  margin: 0.5em 0 1.2em;
+}
+
+.icon-btn {
+  all: unset;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  background: var(--card-bg);
+  font-size: 1.3em;
+  cursor: pointer;
+}
+
+.icon-btn-lg {
+  width: 64px;
+  height: 64px;
+  font-size: 1.6em;
+}
+
+.icon-btn:active:not(:disabled) {
+  background: color-mix(in srgb, var(--label) 8%, var(--card-bg));
+}
+
+.icon-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* Buttons. */
+.btn-primary,
+.btn-secondary,
+.btn-destructive {
+  all: unset;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 46px;
+  border-radius: 12px;
+  font-size: 1em;
+  font-weight: 600;
+  text-align: center;
+  cursor: pointer;
+}
+
+.btn-primary {
+  background: var(--accent);
+  color: #ffffff;
+  padding: 0.7em 1em;
+}
+
+.btn-primary:active:not(:disabled) {
+  opacity: 0.85;
+}
+
+.btn-secondary {
+  color: var(--accent);
+  background: var(--card-bg);
+  padding: 0.7em 1em;
+}
+
+.btn-secondary:active:not(:disabled) {
+  background: color-mix(in srgb, var(--label) 6%, var(--card-bg));
+}
+
+.btn-destructive {
+  color: var(--destructive);
+  background: var(--card-bg);
+  padding: 0.7em 1em;
+}
+
+.btn-destructive:active:not(:disabled) {
+  background: color-mix(in srgb, var(--destructive) 10%, var(--card-bg));
+}
+
+.btn-primary:disabled,
+.btn-secondary:disabled,
+.btn-destructive:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6em;
+  margin: 0.8em 0;
+}
+
+/* Segmented control for the pairing wizard's step indicator. */
+.segmented {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  margin: 4px 0 16px;
+  background: var(--card-bg);
+  border-radius: 10px;
+  font-size: 0.82em;
+}
+
+.segment {
+  flex: 1;
+  text-align: center;
+  padding: 0.5em 0.2em;
+  border-radius: 8px;
+  color: var(--tertiary-label);
+  font-weight: 500;
+}
+
+.segment.done {
+  color: var(--accent);
+}
+
+.segment.active {
+  background: var(--accent);
+  color: #ffffff;
+  font-weight: 600;
+}
+
+.field-row {
   display: flex;
   gap: 0.5em;
   align-items: center;
   margin: 1em 0;
 }
 
-.devices {
-  list-style: none;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.5em;
-}
-
-.devices button {
-  width: 100%;
-  text-align: left;
-}
-
-.filter-mode {
-  margin-top: 1.5em;
-  padding-top: 1em;
-  border-top: 1px solid #d8d8d8;
-}
-
-.filter-mode h3 {
-  margin: 0 0 0.5em;
-  font-size: 1em;
-}
-
-.categories {
-  list-style: none;
-  padding: 0;
-  margin: 0 0 1em;
-  display: flex;
-  flex-direction: column;
-  gap: 0.35em;
-}
-
-.category-row {
-  display: flex;
-  align-items: center;
-  gap: 0.3em;
-}
-
-/* Reset the global button styling (background/border/shadow/padding) down
-   to a plain inline glyph -- this is a disclosure triangle, not a button. */
-.disclosure {
+.field {
   all: unset;
-  width: 1.25em;
-  flex-shrink: 0;
-  text-align: center;
-  cursor: pointer;
-  color: #666;
+  box-sizing: border-box;
+  flex: 1;
+  min-height: 40px;
+  padding: 0.5em 0.8em;
+  border-radius: 10px;
+  background: var(--card-bg);
+  font-size: 0.95em;
 }
 
-.disclosure:disabled {
-  cursor: default;
-  opacity: 0.35;
-}
-
-/* Nested under its category, indented past the disclosure triangle above. */
-.categories .cues {
-  margin: 0.35em 0 0 1.65em;
-}
-
-.cues {
-  list-style: none;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.35em;
-  max-height: 12em;
-  overflow-y: auto;
-}
-
-.cue {
-  border-radius: 6px;
-  background: #ffffff;
-  font-size: 0.9em;
-  opacity: 0.55;
-}
-
-.cue-row {
-  display: flex;
-  gap: 0.75em;
-  align-items: center;
-  padding: 0.4em 0.6em;
-  cursor: pointer;
-}
-
-.cue-time {
-  font-variant-numeric: tabular-nums;
-  font-weight: 600;
-  min-width: 8em;
-}
-
-.cue-active {
-  opacity: 1;
-  outline: 2px solid #24c8db;
-}
-
-.cue-past {
-  opacity: 0.3;
-}
-
-.creation-mode {
-  margin-top: 1.5em;
-  padding-top: 1em;
-  border-top: 1px solid #d8d8d8;
-}
-
-.creation-mode h3 {
-  margin: 0 0 0.5em;
-  font-size: 1em;
+.field-select {
+  flex: 0 0 auto;
 }
 
 .category-buttons {
@@ -1176,135 +1548,82 @@ h1 {
   margin: 1em 0;
 }
 
+.category-btn {
+  all: unset;
+  box-sizing: border-box;
+  padding: 0.6em 1em;
+  border-radius: 999px;
+  background: var(--card-bg);
+  color: var(--label);
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.category-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
 .category-btn.recording {
-  outline: 2px solid #24c8db;
-  border-color: #24c8db;
-}
-
-.add-category {
-  margin-bottom: 1em;
-}
-
-.add-category input {
-  flex: 1;
-}
-
-.cue-table {
-  list-style: none;
-  padding: 0;
-  margin: 0.5em 0 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.35em;
-  max-height: 14em;
-  overflow-y: auto;
-}
-
-.cue-table-row {
-  display: flex;
-  align-items: center;
-  gap: 0.5em;
-  padding: 0.4em 0.6em;
-  border-radius: 6px;
-  background: #ffffff;
-  font-size: 0.9em;
-}
-
-.cue-table-row .cue-action {
-  flex: 1;
+  background: var(--destructive);
+  color: #ffffff;
 }
 
 .time-input {
-  width: 4.5em;
+  all: unset;
+  box-sizing: border-box;
+  width: 4.2em;
   padding: 0.3em 0.5em;
+  border-radius: 8px;
+  background: var(--bg);
   font-variant-numeric: tabular-nums;
   text-align: center;
 }
 
-input,
-button {
-  border-radius: 8px;
-  border: 1px solid transparent;
-  padding: 0.6em 1.2em;
-  font-size: 1em;
-  font-weight: 500;
-  font-family: inherit;
-  color: #0f0f0f;
-  background-color: #ffffff;
-  transition: border-color 0.25s;
-  box-shadow: 0 2px 2px rgba(0, 0, 0, 0.2);
-}
-
-button {
+.delete-btn {
+  all: unset;
+  box-sizing: border-box;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--destructive);
+  color: #ffffff;
+  font-size: 0.7em;
   cursor: pointer;
+  flex-shrink: 0;
 }
 
-button:hover:not(:disabled) {
-  border-color: #396cd8;
+form {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.8em;
+  margin: 1.5em 0;
 }
 
-button:disabled {
-  opacity: 0.5;
-  cursor: default;
+.pin-input {
+  all: unset;
+  box-sizing: border-box;
+  width: 60%;
+  text-align: center;
+  font-size: 1.6em;
+  font-weight: 600;
+  letter-spacing: 0.15em;
+  padding: 0.4em;
+  border-radius: 12px;
+  background: var(--card-bg);
+  font-variant-numeric: tabular-nums;
 }
 
-input,
-button {
-  outline: none;
+.pin-input::placeholder {
+  color: var(--tertiary-label);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    color: #f6f6f6;
-    background-color: #2f2f2f;
-  }
-
-  .steps li {
-    border-color: #444;
-  }
-
-  .filter-mode {
-    border-color: #444;
-  }
-
-  .creation-mode {
-    border-color: #444;
-  }
-
-  .cue {
-    background: #0f0f0f98;
-  }
-
-  .cue-table-row {
-    background: #0f0f0f98;
-  }
-
-  .disclosure {
-    color: #aaa;
-  }
-
-  .error {
-    background: #4a1f1c;
-    color: #ff8a80;
-  }
-
-  .success {
-    background: #1c3a24;
-    color: #8fe0a4;
-  }
-
-  .hint {
-    color: #aaa;
-  }
-
-  .now-playing .position {
-    color: #aaa;
-  }
-
-  input,
-  button {
-    color: #ffffff;
-    background-color: #0f0f0f98;
-  }
+code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.95em;
 }
 </style>

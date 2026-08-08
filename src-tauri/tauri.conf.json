@@ -13,8 +13,10 @@
     "windows": [
       {
         "title": "Family Filter",
-        "width": 800,
-        "height": 600
+        "width": 430,
+        "height": 860,
+        "minWidth": 380,
+        "minHeight": 700
       }
     ],
     "security": {
