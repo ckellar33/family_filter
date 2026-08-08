@@ -135,11 +135,10 @@
     controlError = "";
     try {
       await invoke("control_skip", { seconds });
-      // The device won't push an update instantly, and our own periodic
-      // poll might not land for a couple more seconds -- force a fresh
-      // read right away so the display catches up to the skip now instead
-      // of drifting from the pre-skip extrapolated value in the meantime.
-      await refreshPlayback(true);
+      // Backend actively re-fetches on every control_playback_status call
+      // now, but that's on the next 1s poll tick -- fetch immediately too
+      // so the display catches up to the skip right away.
+      await refreshPlayback();
     } catch (e) {
       controlError = String(e);
     } finally {
@@ -171,38 +170,24 @@
     }
   }
 
-  // Fetches one playback snapshot. `force: true` bypasses the backend's
-  // every-3rd-poll throttle for an always-fresh, on-demand read -- errors
-  // propagate to the caller rather than being handled here, since callers
-  // (doSkip, the periodic poll, the manual refresh button) each have their
-  // own busy/error state to manage around it.
-  async function refreshPlayback(force: boolean) {
-    playback = await invoke<PlaybackStatus | null>("control_playback_status", { force });
-  }
-
-  async function manualRefresh() {
-    controlBusy = true;
-    controlError = "";
-    try {
-      await refreshPlayback(true);
-    } catch (e) {
-      controlError = String(e);
-    } finally {
-      controlBusy = false;
-    }
+  // Fetches one playback snapshot -- errors propagate to the caller rather
+  // than being handled here, since callers (doSkip, the periodic poll)
+  // each have their own busy/error state to manage around it.
+  async function refreshPlayback() {
+    playback = await invoke<PlaybackStatus | null>("control_playback_status");
   }
 
   // Polls now-playing status once a second while the control page is open
   // and a live (MRP/AirPlay) transport is available -- there's nothing to
   // poll otherwise, since title/position only ever come from that
-  // transport, not Companion. Not forced -- this is the throttled path
-  // (see REFRESH_EVERY_POLLS on the backend); doSkip and manualRefresh are
-  // what force an immediate re-sync when staleness is likely.
+  // transport, not Companion. The backend actively re-fetches on every
+  // call (see control_playback_status), so this alone keeps the display
+  // in sync with skips and remote-triggered pauses/seeks automatically.
   $effect(() => {
     if (page !== "control" || !hasLive) return;
     const id = setInterval(async () => {
       try {
-        await refreshPlayback(false);
+        await refreshPlayback();
       } catch (e) {
         controlError = String(e);
       }
@@ -339,11 +324,6 @@
             {fmtTime(playback?.position)} / {fmtTime(playback?.duration)}
             {#if playback}· {playback.playback_state}{/if}
           </p>
-          <!-- The position above is extrapolated between refreshes, so it
-               can drift a few seconds after a remote-triggered pause/seek
-               (skip through this app already force-refreshes on its own).
-               This forces an immediate, authoritative re-read. -->
-          <button onclick={manualRefresh} disabled={controlBusy}>🔄 Refresh position</button>
         </div>
       {:else}
         <p class="hint">Pair MRP or AirPlay (from the pairing wizard) to unlock mute/unmute and playback info.</p>

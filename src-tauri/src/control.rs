@@ -26,19 +26,10 @@ use appletv::{storage, LiveSession};
 
 use crate::DISPLAY_NAME;
 
-/// How many `control_playback_status` polls between active
-/// `refresh_position()` calls. Matches the CLI's
-/// `POSITION_REFRESH_EVERY_TICKS`: most polls just extrapolate locally from
-/// the last known position (see `PlaybackState::position_now`), with an
-/// occasional active re-request to close the gap apps don't always push a
-/// fresh value for, without hammering the device every single poll.
-const REFRESH_EVERY_POLLS: u32 = 3;
-
 #[derive(Default)]
 pub struct ControlState {
     session: Option<CompanionSession>,
     live: Option<LiveSession>,
-    poll_count: u32,
 }
 
 pub type ControlStateHandle = Arc<Mutex<ControlState>>;
@@ -79,7 +70,7 @@ pub async fn start_control_session(state: State<'_, ControlStateHandle>) -> Resu
     let live = appletv::connect_live_session(&saved, DISPLAY_NAME).await;
     let has_live = live.is_some();
 
-    *state.lock().await = ControlState { session: Some(session), live, poll_count: 0 };
+    *state.lock().await = ControlState { session: Some(session), live };
     Ok(ControlInfo { has_live })
 }
 
@@ -127,29 +118,22 @@ pub struct PlaybackStatus {
 /// error when there's no live transport -- that's an expected, steady
 /// state (MRP/AirPlay weren't paired), not a failure.
 ///
-/// Between active refreshes, `position`/`playback_state` are whatever the
-/// last known-good snapshot extrapolates to locally -- accurate only if
-/// nothing has changed the *real* position since then. A skip through this
-/// app, or a pause/seek from the physical remote, invalidates that
-/// immediately but won't be reflected here until the next active refresh
-/// (throttled to every `REFRESH_EVERY_POLLS`th call) or a push from the
-/// device. `force: true` bypasses the throttle for an on-demand, always-
-/// fresh read -- used right after `control_skip`, and available to the
-/// frontend as a manual "refresh now" action.
+/// Actively re-requests the current item's metadata on every call rather
+/// than extrapolating locally between occasional refreshes, so a skip, or
+/// a pause/seek from the physical remote, shows up on the caller's *next*
+/// poll automatically -- no manual "refresh now" action needed to stay in
+/// sync, at the cost of one extra request per poll interval against the
+/// device.
 #[tauri::command]
-pub async fn control_playback_status(state: State<'_, ControlStateHandle>, force: bool) -> Result<Option<PlaybackStatus>, String> {
+pub async fn control_playback_status(state: State<'_, ControlStateHandle>) -> Result<Option<PlaybackStatus>, String> {
     let mut guard = state.lock().await;
-    let ControlState { live, poll_count, .. } = &mut *guard;
-    let Some(live) = live.as_mut() else {
+    let Some(live) = guard.live.as_mut() else {
         return Ok(None);
     };
 
-    *poll_count += 1;
-    if force || *poll_count % REFRESH_EVERY_POLLS == 0 {
-        // Best-effort: an occasional refresh failure shouldn't hide the
-        // still-good extrapolated position below.
-        let _ = live.refresh_position().await;
-    }
+    // Best-effort: an occasional refresh failure shouldn't hide the
+    // still-good extrapolated position below.
+    let _ = live.refresh_position().await;
 
     let playback = live.playback();
     Ok(Some(PlaybackStatus {
