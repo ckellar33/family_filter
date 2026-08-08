@@ -869,7 +869,7 @@
                 <p class="hint">Record cue timestamps live from what's currently playing.</p>
                 <div class="stack">
                   <button class="btn-secondary" onclick={pickNewDraft}>Record New Filter File…</button>
-                  <button class="btn-secondary" onclick={pickExistingDraft}>Continue Existing Draft…</button>
+                  <button class="btn-secondary" onclick={pickExistingDraft}>Continue Existing Filter File…</button>
                 </div>
               {:else if draft}
                 <ul class="list">
