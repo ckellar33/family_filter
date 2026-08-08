@@ -1,20 +1,16 @@
-mod mdns;
-mod crypto;
-mod hap_pair;
-mod srp;
-mod storage;
-mod companion;
-mod mrp;
-mod airplay;
+//! Interactive CLI front end. All AppleTV protocol/orchestration logic
+//! lives in the `appletv` library crate (`libs/appletv`) — this file only
+//! does menus, prompts, and printing, and wires them into that library.
 
 use tokio::net::TcpStream;
+use std::future::Ready;
 use std::io::{self, Write};
 
-#[derive(Clone)]
-pub struct Device { pub host: String, pub port: u16 }
+use appletv::{mdns, storage};
 
 #[tokio::main]
 async fn main() -> Result<(), &'static str> {
+    init_logger();
     loop {
         println!("=== Apple TV Companion CLI ===");
         println!("1) Discover and pair a device");
@@ -34,19 +30,40 @@ async fn main() -> Result<(), &'static str> {
     Ok(())
 }
 
-/// pyatv uses a random UUID as the controller pairing identifier; a fresh one
-/// is generated per protocol (Companion and MRP are independent pairings).
-pub(crate) fn random_pairing_id() -> String {
-    let mut b = [0u8; 16];
-    rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut b);
-    // RFC 4122 version 4 / variant 1
-    b[6] = (b[6] & 0x0f) | 0x40;
-    b[8] = (b[8] & 0x3f) | 0x80;
-    format!(
-        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-        b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
-        b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]
-    )
+const DISPLAY_NAME: &str = "family-filter";
+
+/// Forwards `appletv`'s `log::info!`/`log::warn!` progress and fallback
+/// notices (e.g. from `connect_live_session`) straight to stdout, matching
+/// this CLI's previous `println!`-based output.
+struct CliLogger;
+
+impl log::Log for CliLogger {
+    fn enabled(&self, _metadata: &log::Metadata) -> bool {
+        true
+    }
+    fn log(&self, record: &log::Record) {
+        println!("{}", record.args());
+    }
+    fn flush(&self) {}
+}
+
+fn init_logger() {
+    static LOGGER: CliLogger = CliLogger;
+    log::set_logger(&LOGGER).ok();
+    log::set_max_level(log::LevelFilter::Info);
+}
+
+/// Builds a one-shot PIN prompt for `appletv::pair_companion`/`pair_mrp`/
+/// `pair_airplay` — those only call it *after* triggering the on-screen
+/// code, so the prompt text can safely say "shown on Apple TV".
+fn prompt_pin(protocol: &'static str) -> impl FnOnce() -> Ready<String> {
+    move || {
+        print!("Enter {protocol} PIN shown on Apple TV: ");
+        io::stdout().flush().unwrap();
+        let mut pin = String::new();
+        io::stdin().read_line(&mut pin).unwrap();
+        std::future::ready(pin.trim().to_string())
+    }
 }
 
 async fn pair_flow() -> Result<(), &'static str> {
@@ -77,20 +94,8 @@ async fn pair_flow() -> Result<(), &'static str> {
     let port = devices[device].port;
     let mut stream = TcpStream::connect(format!("{host}:{port}")).await.unwrap();
 
-    let (salt, public_key) = hap_pair::initial_pair_m1(&mut stream)
-        .await
-        .map_err(|_| "Failed to send initial pair request")?;
-
-    print!("Enter Companion PIN shown on Apple TV: "); io::stdout().flush().unwrap();
-    let mut pin = String::new(); io::stdin().read_line(&mut pin).unwrap();
-    let pin = pin.trim();
-
-    let pairing_id = random_pairing_id();
-    let display_name = "family-filter";
-    let session_key = hap_pair::pair_m3(&mut stream, pin, &salt, &public_key)
-        .await
-        .unwrap();
-    let companion_result = match hap_pair::pair_m5(&mut stream, &pairing_id, &session_key, display_name).await {
+    let pairing_id = appletv::random_pairing_id();
+    let companion_result = match appletv::pair_companion(&mut stream, &pairing_id, DISPLAY_NAME, prompt_pin("Companion")).await {
         Ok(result) => result,
         Err(e) => {
             println!("❌ Companion pairing failed: {e}");
@@ -103,7 +108,7 @@ async fn pair_flow() -> Result<(), &'static str> {
     // PIN) from their own services. Standalone MRP only works on older tvOS
     // / the local fake device (tvOS 15+ stopped advertising it); AirPlay is
     // what real modern hardware needs to tunnel MRP through instead (see
-    // `mrp/tunnel.rs`). Pair both whenever reachable.
+    // `appletv::mrp::tunnel`). Pair both whenever reachable.
     let mrp_pairing = pair_mrp().await;
     let airplay_pairing = pair_airplay().await;
 
@@ -142,7 +147,7 @@ async fn pair_airplay() -> Option<storage::Pairing> {
     println!("Select the same device you just paired (for live playback position):");
     let device = prompt_device_selection(&devices)?;
 
-    let mut conn = match airplay::rtsp::RtspConnection::connect(&device.host, device.port).await {
+    let mut conn = match appletv::airplay::rtsp::RtspConnection::connect(&device.host, device.port).await {
         Ok(c) => c,
         Err(e) => {
             println!("⚠️  Could not connect to AirPlay service: {e} (skipping)");
@@ -150,22 +155,8 @@ async fn pair_airplay() -> Option<storage::Pairing> {
         }
     };
 
-    // Must trigger the on-screen PIN (POST /pair-pin-start + M1) *before*
-    // asking the user for it — nothing shows up otherwise on real hardware.
-    let (salt, public_key) = match airplay::pairing::pair_setup_start(&mut conn).await {
-        Ok(v) => v,
-        Err(e) => {
-            print_error_chain("❌ AirPlay pairing failed to start: ", &e, "(live playback position will be unavailable)");
-            return None;
-        }
-    };
-
-    print!("Enter AirPlay PIN shown on Apple TV: "); io::stdout().flush().unwrap();
-    let mut pin = String::new(); io::stdin().read_line(&mut pin).unwrap();
-    let pin = pin.trim();
-
-    let pairing_id = random_pairing_id();
-    match airplay::pairing::pair_setup_finish(&mut conn, &pairing_id, "family-filter", pin, &salt, &public_key).await {
+    let pairing_id = appletv::random_pairing_id();
+    match appletv::pair_airplay(&mut conn, &pairing_id, DISPLAY_NAME, prompt_pin("AirPlay")).await {
         Ok(creds) => {
             println!("✅ AirPlay paired");
             Some(storage::Pairing { host: device.host, port: device.port, creds })
@@ -196,34 +187,10 @@ async fn pair_mrp() -> Option<storage::Pairing> {
             return None;
         }
     };
-    let mut conn = mrp::connection::MrpConnection::new(mrp_stream);
-    let pairing_id = random_pairing_id();
+    let mut conn = appletv::mrp::connection::MrpConnection::new(mrp_stream);
+    let pairing_id = appletv::random_pairing_id();
 
-    // Must trigger the on-screen PIN (DeviceInfo handshake + M1) *before*
-    // asking the user for it — nothing shows up otherwise on real hardware.
-    if let Err(e) = mrp::pairing::device_info_handshake(&mut conn, &pairing_id, "family-filter").await {
-        print_error_chain("❌ MRP pairing failed to start: ", &e, "(Companion pairing is still saved; live position will be unavailable)");
-        return None;
-    }
-    let (salt, public_key) = match mrp::pairing::pair_setup_m1(&mut conn).await {
-        Ok(v) => v,
-        Err(e) => {
-            print_error_chain("❌ MRP pairing failed to start: ", &e, "(Companion pairing is still saved; live position will be unavailable)");
-            return None;
-        }
-    };
-
-    print!("Enter MRP PIN shown on Apple TV: "); io::stdout().flush().unwrap();
-    let mut pin = String::new(); io::stdin().read_line(&mut pin).unwrap();
-    let pin = pin.trim();
-
-    let result = async {
-        let session_key = mrp::pairing::pair_setup_m3(&mut conn, pin, &salt, &public_key).await?;
-        mrp::pairing::pair_setup_m5(&mut conn, &pairing_id, &session_key, "family-filter").await
-    }
-    .await;
-
-    match result {
+    match appletv::pair_mrp(&mut conn, &pairing_id, DISPLAY_NAME, prompt_pin("MRP")).await {
         Ok(creds) => {
             println!("✅ MRP paired");
             Some(storage::Pairing { host: device.host, port: device.port, creds })
@@ -253,7 +220,7 @@ async fn verify_flow() -> Result<(), &'static str> {
         .await
         .map_err(|_| "Failed to connect")?;
 
-    match hap_pair::pair_verify(&mut stream, &saved.companion.creds).await {
+    match appletv::hap_pair::pair_verify(&mut stream, &saved.companion.creds).await {
         Ok(_keys) => println!("✅ Pair-Verify OK; session encryption keys derived."),
         Err(e) => println!("❌ Pair-Verify failed: {e}"),
     }
@@ -278,7 +245,7 @@ async fn control_flow() -> Result<(), &'static str> {
         .await
         .map_err(|_| "Failed to connect")?;
 
-    let keys = match hap_pair::pair_verify(&mut stream, &saved.companion.creds).await {
+    let keys = match appletv::hap_pair::pair_verify(&mut stream, &saved.companion.creds).await {
         Ok(keys) => {
             println!("✅ Pair-Verify OK");
             keys
@@ -289,7 +256,7 @@ async fn control_flow() -> Result<(), &'static str> {
         }
     };
 
-    let mut session = companion::CompanionSession::new(stream, keys);
+    let mut session = appletv::companion::CompanionSession::new(stream, keys);
     if let Err(e) = session.bootstrap(&saved.companion.creds.pairing_id).await {
         for cause in e.chain() {
             println!("  caused by: {cause}");
@@ -299,7 +266,7 @@ async fn control_flow() -> Result<(), &'static str> {
     }
     println!("✅ Control session ready");
 
-    let mut live_session = connect_live_session(&saved).await;
+    let mut live_session = appletv::connect_live_session(&saved, DISPLAY_NAME).await;
 
     loop {
         println!("--- Control ---");
@@ -353,101 +320,18 @@ async fn control_flow() -> Result<(), &'static str> {
     Ok(())
 }
 
-/// Either transport that can supply live playback position: standalone MRP
-/// (older tvOS / the local fake device) or MRP tunneled inside AirPlay 2
-/// (tvOS 15+ real hardware — see `mrp/tunnel.rs`). Both expose the same
-/// `PlaybackState`, so the display loop doesn't care which one is active.
-enum LiveSession {
-    Standalone(mrp::MrpSession),
-    Tunneled(mrp::TunneledMrpSession),
-}
-
-impl LiveSession {
-    fn playback(&self) -> &mrp::playback::PlaybackState {
-        match self {
-            LiveSession::Standalone(s) => &s.playback,
-            LiveSession::Tunneled(s) => &s.playback,
-        }
-    }
-
-    async fn recv_update(&mut self) -> anyhow::Result<()> {
-        match self {
-            LiveSession::Standalone(s) => s.recv_update().await,
-            LiveSession::Tunneled(s) => s.recv_update().await,
-        }
-    }
-
-    /// Mute via AirPlay/MRP's `SendHIDEventMessage` (volume-down burst)
-    /// instead of Companion's `_hidC` — see `mrp::session::MrpSession::mute`
-    /// / `mrp::tunnel::TunneledMrpSession::mute`.
-    async fn mute(&mut self) -> anyhow::Result<()> {
-        match self {
-            LiveSession::Standalone(s) => s.mute().await,
-            LiveSession::Tunneled(s) => s.mute().await,
-        }
-    }
-
-    async fn unmute(&mut self) -> anyhow::Result<()> {
-        match self {
-            LiveSession::Standalone(s) => s.unmute().await,
-            LiveSession::Tunneled(s) => s.unmute().await,
-        }
-    }
-
-    /// Actively re-request the current item's metadata rather than only
-    /// waiting on the app's own pushes — see `MrpSession::refresh_position`.
-    async fn refresh_position(&mut self) -> anyhow::Result<()> {
-        match self {
-            LiveSession::Standalone(s) => s.refresh_position().await,
-            LiveSession::Tunneled(s) => s.refresh_position().await,
-        }
-    }
-}
-
 /// Print an anyhow error's full causal chain, not just the outermost
 /// `.context()` message — the underlying cause (a timeout, a wrong HTTP
 /// code, a decode failure) is usually where the actual bug is.
 fn print_error_chain(prefix: &str, e: &anyhow::Error, suffix: &str) {
-    println!("{prefix}{e}");
-    for cause in e.chain().skip(1) {
+    let chain = appletv::error_chain(e);
+    println!("{prefix}{}", chain[0]);
+    for cause in &chain[1..] {
         println!("  caused by: {cause}");
     }
     if !suffix.is_empty() {
         println!("  {suffix}");
     }
-}
-
-/// Prefer standalone MRP when its credentials/service are available; fall
-/// back to the AirPlay-tunneled path otherwise (the normal case on tvOS
-/// 15+, where MRP no longer advertises its own service at all).
-async fn connect_live_session(saved: &storage::SavedDevice) -> Option<LiveSession> {
-    if let Some(mrp) = &saved.mrp {
-        match TcpStream::connect(format!("{}:{}", mrp.host, mrp.port)).await {
-            Ok(mrp_stream) => match mrp::MrpSession::connect(mrp_stream, &mrp.creds, "family-filter").await {
-                Ok(session) => {
-                    println!("✅ MRP session ready (live playback position available)");
-                    return Some(LiveSession::Standalone(session));
-                }
-                Err(e) => print_error_chain("⚠️  MRP session setup failed: ", &e, "(trying AirPlay tunnel instead)"),
-            },
-            Err(e) => println!("⚠️  Could not connect to MRP service: {e} (trying AirPlay tunnel instead)"),
-        }
-    }
-
-    if let Some(airplay_pairing) = &saved.airplay {
-        match airplay::Ap2Session::connect(&airplay_pairing.host, airplay_pairing.port, &airplay_pairing.creds, "family-filter").await {
-            Ok(ap2) => match mrp::TunneledMrpSession::start(ap2.data_channel, &airplay_pairing.creds, "family-filter").await {
-                Ok(session) => {
-                    println!("✅ MRP-over-AirPlay session ready (live playback position available)");
-                    return Some(LiveSession::Tunneled(session));
-                }
-                Err(e) => print_error_chain("⚠️  Tunneled MRP handshake failed: ", &e, "(live position unavailable)"),
-            },
-            Err(e) => print_error_chain("⚠️  AirPlay session setup failed: ", &e, "(live position unavailable)"),
-        }
-    }
-
-    None
 }
 
 /// How many 1-second display ticks between active `refresh_position()`
@@ -459,11 +343,11 @@ const POSITION_REFRESH_EVERY_TICKS: u32 = 3;
 
 /// Print the playback position every second until the user presses Enter or
 /// the connection drops. Most ticks just extrapolate locally (see
-/// `mrp::playback::PlaybackState::position_now`), but every few ticks
-/// actively re-requests the current item's metadata
+/// `appletv::mrp::playback::PlaybackState::position_now`), but every few
+/// ticks actively re-requests the current item's metadata
 /// (`LiveSession::refresh_position`) rather than only ever trusting however
 /// stale the app's own last push happened to be.
-async fn show_live_position(session: &mut LiveSession) {
+async fn show_live_position(session: &mut appletv::LiveSession) {
     println!("Live playback position (press Enter to stop) …");
 
     let (stop_tx, mut stop_rx) = tokio::sync::oneshot::channel::<()>();
