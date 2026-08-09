@@ -35,6 +35,10 @@
 
   interface PlaybackStatus {
     title: string | null;
+    // The show's name, for a TV episode -- title above is just the
+    // episode's own title (e.g. "Chapter 1") in that case. Null for a
+    // movie, or anything else the device doesn't report a series for.
+    series_name: string | null;
     position: number | null;
     duration: number | null;
     playback_state: string;
@@ -769,7 +773,10 @@
 
           {#if hasLive}
             <div class="now-playing">
-              <p class="title">{playback?.title ?? "Nothing Playing"}</p>
+              <p class="title">{playback?.series_name ?? playback?.title ?? "Nothing Playing"}</p>
+              {#if playback?.series_name && playback.title && playback.title !== playback.series_name}
+                <p class="episode-title">{playback.title}</p>
+              {/if}
               {#if playback}
                 <p class="subtitle">
                   {#if playback.app_bundle_id}{playback.app_name ?? playback.app_bundle_id} · {/if}{playback.playback_state}
@@ -1443,6 +1450,13 @@ button.list-row:active:not(:disabled) {
   font-size: 1.25em;
   font-weight: 700;
   margin: 0 0 0.2em;
+}
+
+.now-playing .episode-title {
+  color: var(--secondary-label);
+  font-size: 0.95em;
+  font-weight: 500;
+  margin: 0 0 0.3em;
 }
 
 .now-playing .subtitle {

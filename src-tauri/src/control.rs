@@ -351,6 +351,10 @@ pub struct CueStatus {
 #[derive(serde::Serialize)]
 pub struct PlaybackStatus {
     pub title: Option<String>,
+    /// The show's name, for a TV episode -- `title` above is just the
+    /// episode's own title (e.g. "Chapter 1") in that case. `None` for a
+    /// movie or anything else the device doesn't report a series for.
+    pub series_name: Option<String>,
     pub position: Option<f64>,
     pub duration: Option<f64>,
     pub playback_state: String,
@@ -434,6 +438,7 @@ pub async fn control_playback_status(state: State<'_, ControlStateHandle>) -> Re
 
     let playback = live.playback();
     let title = playback.title().map(str::to_string);
+    let series_name = playback.series_name().map(str::to_string);
     let position = playback.position_now();
     let duration = playback.duration();
     let playback_state = format!("{:?}", playback.playback_state());
@@ -478,6 +483,7 @@ pub async fn control_playback_status(state: State<'_, ControlStateHandle>) -> Re
 
     Ok(Some(PlaybackStatus {
         title,
+        series_name,
         position,
         duration,
         playback_state,
