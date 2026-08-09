@@ -354,6 +354,16 @@ pub struct PlaybackStatus {
     pub position: Option<f64>,
     pub duration: Option<f64>,
     pub playback_state: String,
+    /// Bundle id of whatever app is currently "now playing" (e.g.
+    /// `com.netflix.Netflix`), straight from MRP's
+    /// `SetNowPlayingClientMessage`. `None` until the device has announced
+    /// one, same as `title`.
+    pub app_bundle_id: Option<String>,
+    /// Friendly name for `app_bundle_id`, looked up in `app_display_name`
+    /// below -- `None` for a bundle id not in that (necessarily incomplete)
+    /// table, so the frontend can fall back to showing the raw bundle id
+    /// rather than hiding the app entirely.
+    pub app_name: Option<String>,
     /// The loaded filter list's matching title, or `None` if nothing's
     /// loaded or nothing in the list matches the current now-playing title.
     /// Populated whenever a list is loaded regardless of the master
@@ -371,6 +381,33 @@ pub struct PlaybackStatus {
     pub filter_action: Option<String>,
     /// The category of the cue behind `filter_action`, when set.
     pub filter_category: Option<String>,
+}
+
+/// Best-effort bundle-id -> friendly-name table for the apps most likely to
+/// show up as the "now playing" client -- Apple's own (confirmed via
+/// https://support.apple.com/guide/deployment/depcdd66fe58) plus the
+/// handful of third-party streaming apps whose tvOS bundle id could be
+/// confirmed independently. Deliberately incomplete rather than guessed:
+/// an unrecognized bundle id just falls back to being shown as-is (see
+/// `app_bundle_id` in `PlaybackStatus`) instead of risking a wrong label --
+/// if yours shows up as a raw bundle id, that string is exactly what to add
+/// a case for here.
+fn app_display_name(bundle_id: &str) -> Option<&'static str> {
+    Some(match bundle_id {
+        "com.apple.TVWatchList" => "Apple TV",
+        "com.apple.TVMovies" => "Movies",
+        "com.apple.TVShows" => "TV Shows",
+        "com.apple.TVMusic" => "Music",
+        "com.apple.podcasts" => "Podcasts",
+        "com.netflix.Netflix" => "Netflix",
+        "com.disney.disneyplus" => "Disney+",
+        "com.hulu.plus" => "Hulu",
+        "com.amazon.aiv.AIVApp" => "Prime Video",
+        "com.peacocktv.peacock" => "Peacock",
+        "com.google.ios.youtube" => "YouTube",
+        "com.plexapp.plex" => "Plex",
+        _ => return None,
+    })
 }
 
 /// One snapshot of the current now-playing state, for the frontend to poll
@@ -400,6 +437,8 @@ pub async fn control_playback_status(state: State<'_, ControlStateHandle>) -> Re
     let position = playback.position_now();
     let duration = playback.duration();
     let playback_state = format!("{:?}", playback.playback_state());
+    let app_bundle_id = playback.app_bundle_id().map(str::to_string);
+    let app_name = app_bundle_id.as_deref().and_then(app_display_name).map(str::to_string);
 
     // Looked up independently of the master enabled toggle -- unlike
     // `apply_filter` below, this is a preview ("what would happen"), not an
@@ -442,6 +481,8 @@ pub async fn control_playback_status(state: State<'_, ControlStateHandle>) -> Re
         position,
         duration,
         playback_state,
+        app_bundle_id,
+        app_name,
         filter_cues,
         filter_match,
         filter_action,

@@ -38,6 +38,13 @@
     position: number | null;
     duration: number | null;
     playback_state: string;
+    // Bundle id of whatever app is currently "now playing" (e.g.
+    // "com.netflix.Netflix"), or null until the device has announced one.
+    app_bundle_id: string | null;
+    // Friendly name for app_bundle_id, or null when it isn't in the
+    // backend's (necessarily incomplete) lookup table -- fall back to
+    // app_bundle_id itself in that case rather than hiding the app.
+    app_name: string | null;
     // Populated whenever a filter list is loaded and its title matches --
     // regardless of whether auto-filter mode is actually turned on -- so
     // the schedule is visible as a preview even while it's off.
@@ -171,7 +178,7 @@
   let expandedCategories = $state<Record<string, boolean>>({});
 
   function toggleExpanded(category: string) {
-    expandedCategories = { ...expandedCategories, [category]: !(expandedCategories[category] ?? false) };
+    expandedCategories = { ...expandedCategories, [category]: !(expandedCategories[category] ?? true) };
   }
 
   let step = $state<Step>("companion");
@@ -199,6 +206,34 @@
 
   function isProtocol(s: Step): s is Protocol {
     return s === "companion" || s === "mrp" || s === "airplay";
+  }
+
+  // Whether the sticky nav bar's back button should show for the current
+  // screen. There's no real history stack -- each page/step has exactly one
+  // well-defined "back", mirrored by goBack() below.
+  let canGoBack = $derived.by(() => {
+    if (page === "control") return true;
+    // The wizard's first step only has somewhere to go back to if it was
+    // reached from the saved-pairing screen (i.e. there is one) rather than
+    // being the very first screen of a fresh install.
+    if (page === "wizard") return step !== "companion" || savedPairing !== null;
+    return false;
+  });
+
+  function goBack() {
+    error = "";
+    if (page === "control") {
+      page = savedPairing ? "saved" : "wizard";
+      return;
+    }
+    if (page === "wizard") {
+      if (step === "companion") {
+        if (savedPairing) page = "saved";
+        return;
+      }
+      const i = STEPS.indexOf(step);
+      step = STEPS[i - 1];
+    }
   }
 
   // Runs once on mount (no reactive dependencies) to decide the starting
@@ -688,6 +723,9 @@
 <div class="phone-shell">
   <main class="canvas">
     <header class="navbar">
+      {#if canGoBack}
+        <button type="button" class="nav-back" onclick={goBack}>‹ Back</button>
+      {/if}
       <h1>{navTitle}</h1>
     </header>
 
@@ -733,7 +771,9 @@
             <div class="now-playing">
               <p class="title">{playback?.title ?? "Nothing Playing"}</p>
               {#if playback}
-                <p class="subtitle">{playback.playback_state}</p>
+                <p class="subtitle">
+                  {#if playback.app_bundle_id}{playback.app_name ?? playback.app_bundle_id} · {/if}{playback.playback_state}
+                </p>
               {/if}
               {#if playback?.duration}
                 {@const pct = playback.position != null ? Math.min(100, (playback.position / playback.duration) * 100) : 0}
@@ -800,7 +840,7 @@
                   <ul class="list">
                     {#each filterSummary.categories as category (category)}
                       {@const cues = cuesByCategory[category] ?? []}
-                      {@const isExpanded = expandedCategories[category] ?? false}
+                      {@const isExpanded = expandedCategories[category] ?? true}
                       <li>
                         <div class="list-row category-row">
                           <button
@@ -814,10 +854,15 @@
                           >
                             {cues.length > 0 ? "›" : "·"}
                           </button>
-                          <span class="category-label">
+                          <button
+                            type="button"
+                            class="category-label"
+                            onclick={() => toggleExpanded(category)}
+                            disabled={cues.length === 0}
+                          >
                             {category}
                             {#if cues.length > 0}<span class="hint">({cues.length})</span>{/if}
-                          </span>
+                          </button>
                           <label class="switch">
                             <input
                               type="checkbox"
@@ -1092,14 +1137,41 @@
   backdrop-filter: saturate(180%) blur(20px);
   -webkit-backdrop-filter: saturate(180%) blur(20px);
   border-bottom: 0.5px solid var(--separator);
-  text-align: center;
+  display: grid;
+  /* Fixed-width side columns (rather than 1fr/1fr) so the title -- the
+     middle column -- stays visually centered on the bar as a whole even
+     when the back button (left) has no counterpart on the right, instead
+     of centering only within the leftover space next to it. */
+  grid-template-columns: 70px 1fr 70px;
+  align-items: center;
 }
 
 .navbar h1 {
+  grid-column: 2;
   margin: 0;
   font-size: 1.05em;
   font-weight: 600;
   letter-spacing: -0.01em;
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nav-back {
+  all: unset;
+  grid-column: 1;
+  justify-self: start;
+  box-sizing: border-box;
+  padding: 4px 8px 4px 0;
+  color: var(--accent);
+  font-size: 1em;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.nav-back:active {
+  opacity: 0.6;
 }
 
 .content {
@@ -1226,8 +1298,19 @@ button.list-row:active:not(:disabled) {
 }
 
 .category-label {
+  all: unset;
+  box-sizing: border-box;
   flex: 1;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
   text-align: left;
+  cursor: pointer;
+  color: var(--label);
+}
+
+.category-label:disabled {
+  cursor: default;
 }
 
 .nested-list {
