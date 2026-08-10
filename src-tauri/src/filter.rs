@@ -59,6 +59,17 @@ pub struct MediaEntry {
     pub title: String,
     #[serde(default)]
     pub cues: Vec<Cue>,
+    /// Which streaming service(s) this title was filtered on (e.g.
+    /// "Netflix", "Pure Flix") -- freeform display names, not looked up
+    /// against any catalog, since the whole point is this is *this file's*
+    /// own record of where it was actually watched rather than a guess.
+    /// `#[serde(default)]` so filter files written before this field
+    /// existed still parse. Populated automatically the first time a cue is
+    /// recorded for a title in Create Filter mode (from whichever app was
+    /// playing), and editable from there afterward -- see
+    /// `add_service`/`remove_service`.
+    #[serde(default)]
+    pub services: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
@@ -212,9 +223,33 @@ impl FilterList {
     /// having to special-case "this is a new title" themselves.
     fn entry_mut(&mut self, title: &str) -> &mut MediaEntry {
         if self.find_entry_mut(title).is_none() {
-            self.media.push(MediaEntry { title: title.to_string(), cues: Vec::new() });
+            self.media.push(MediaEntry { title: title.to_string(), cues: Vec::new(), services: Vec::new() });
         }
         self.find_entry_mut(title).expect("just inserted if it was absent")
+    }
+
+    /// Adds `service` to `title`'s service list if it isn't already there
+    /// (creating the entry, with no cues yet, if this is its first mention
+    /// -- same as `add_cue`) -- an exact-string dedupe is enough since these
+    /// are short, curated display names ("Netflix", "Pure Flix"), not free
+    /// text. Used both to auto-tag a title with whichever app was playing
+    /// when its first cue was recorded, and for the user to add one by
+    /// hand afterward -- same call either way.
+    pub fn add_service(&mut self, title: &str, service: &str) {
+        let entry = self.entry_mut(title);
+        if !entry.services.iter().any(|s| s == service) {
+            entry.services.push(service.to_string());
+        }
+    }
+
+    /// Removes `service` from `title`'s service list, if present. A no-op
+    /// (not an error) for an unknown title or a service that isn't listed
+    /// -- there's nothing meaningfully wrong with removing something that's
+    /// already absent.
+    pub fn remove_service(&mut self, title: &str, service: &str) {
+        if let Some(entry) = self.find_entry_mut(title) {
+            entry.services.retain(|s| s != service);
+        }
     }
 
     /// Adds one cue under `title` (creating the entry if this is its first
@@ -466,6 +501,7 @@ mod tests {
                     cue(10.0, 20.0, CueAction::Mute, "language"),
                     cue(30.0, 40.0, CueAction::Skip, "gore"),
                 ],
+                services: Vec::new(),
             }],
         }
     }
@@ -560,8 +596,9 @@ mod tests {
                 MediaEntry {
                     title: "A".to_string(),
                     cues: vec![cue(0.0, 1.0, CueAction::Mute, "language"), cue(2.0, 3.0, CueAction::Skip, "gore")],
+                    services: Vec::new(),
                 },
-                MediaEntry { title: "B".to_string(), cues: vec![cue(0.0, 1.0, CueAction::Mute, "language")] },
+                MediaEntry { title: "B".to_string(), cues: vec![cue(0.0, 1.0, CueAction::Mute, "language")], services: Vec::new() },
             ],
         };
         assert_eq!(list.categories(), vec!["language".to_string(), "gore".to_string()]);
@@ -733,6 +770,7 @@ mod tests {
                     cue(10.0, 20.0, CueAction::Mute, "language"),
                     cue(20.0, 30.0, CueAction::Mute, "language"),
                 ],
+                services: Vec::new(),
             }],
         };
         let mut runtime = FilterRuntime::default();
@@ -842,6 +880,46 @@ mod tests {
     fn delete_cue_rejects_unknown_title() {
         let mut list = sample_list();
         assert!(list.delete_cue("Nonexistent", 0).is_err());
+    }
+
+    #[test]
+    fn add_service_creates_entry_when_title_unseen() {
+        let mut list = FilterList::default();
+        list.add_service("New Movie", "Netflix");
+        assert_eq!(list.find_entry("New Movie").unwrap().services, vec!["Netflix".to_string()]);
+    }
+
+    #[test]
+    fn add_service_is_idempotent() {
+        let mut list = sample_list();
+        list.add_service("Some Movie", "Netflix");
+        list.add_service("Some Movie", "Netflix");
+        assert_eq!(list.find_entry("Some Movie").unwrap().services, vec!["Netflix".to_string()]);
+    }
+
+    #[test]
+    fn add_service_allows_more_than_one() {
+        let mut list = sample_list();
+        list.add_service("Some Movie", "Netflix");
+        list.add_service("Some Movie", "Pure Flix");
+        assert_eq!(list.find_entry("Some Movie").unwrap().services, vec!["Netflix".to_string(), "Pure Flix".to_string()]);
+    }
+
+    #[test]
+    fn remove_service_removes_just_that_one() {
+        let mut list = sample_list();
+        list.add_service("Some Movie", "Netflix");
+        list.add_service("Some Movie", "Pure Flix");
+        list.remove_service("Some Movie", "Netflix");
+        assert_eq!(list.find_entry("Some Movie").unwrap().services, vec!["Pure Flix".to_string()]);
+    }
+
+    #[test]
+    fn remove_service_is_a_no_op_for_unknown_title_or_service() {
+        let mut list = sample_list();
+        list.remove_service("Nonexistent", "Netflix"); // shouldn't panic
+        list.remove_service("Some Movie", "Netflix"); // never added
+        assert!(list.find_entry("Some Movie").unwrap().services.is_empty());
     }
 
     #[test]

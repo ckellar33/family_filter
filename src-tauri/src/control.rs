@@ -28,7 +28,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
-use tauri::State;
+use tauri::{AppHandle, State};
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 
@@ -37,7 +37,7 @@ use appletv::{storage, LiveSession};
 
 use crate::creation::CreationState;
 use crate::filter::{self, CueKey, FilterList, FilterRuntime};
-use crate::DISPLAY_NAME;
+use crate::{library, metadata, DISPLAY_NAME};
 
 #[derive(Default)]
 pub struct ControlState {
@@ -132,25 +132,28 @@ pub struct FilterSummary {
     pub categories: Vec<String>,
 }
 
-/// Opens the file at `path` (chosen by the frontend via
-/// `@tauri-apps/plugin-dialog`'s native picker), parses + validates it as a
-/// filter list, persists the path so it reloads automatically on the next
-/// launch, and replaces whatever list was previously loaded. Does *not*
-/// enable auto-filter mode by itself -- see `set_filter_enabled`.
-#[tauri::command]
-pub async fn load_filter_file(state: State<'_, ControlStateHandle>, path: String) -> Result<FilterSummary, String> {
+/// Shared by `load_filter_file` and `select_filter_tile` below -- both need
+/// to load a file at a given path into `ControlState.filter_list` and hand
+/// back its summary, so that logic lives once here, taking the state handle
+/// itself (rather than a `State` extractor, which only a `#[tauri::command]`
+/// can receive) so either caller can invoke it directly.
+async fn load_filter_file_inner(handle: &ControlStateHandle, path: String) -> Result<FilterSummary, String> {
     let path_buf = PathBuf::from(&path);
     let list = FilterList::load(&path_buf).map_err(|e| describe(&e))?;
     let categories = list.categories();
     let media_count = list.media.len();
 
-    // Best-effort: a failure to persist the path just means the user has to
-    // re-pick the file next launch, not that this load itself should fail.
+    // Best-effort: a failure to persist either just means the user has to
+    // re-pick the file next launch, or it won't show up in the Select Filter
+    // grid until it's loaded again -- neither should fail this load itself.
     if let Err(e) = filter::save_filter_path(&path_buf) {
         eprintln!("[filter] failed to persist filter_path.store: {e}");
     }
+    if let Err(e) = library::register_filter_path(&path_buf) {
+        eprintln!("[library] failed to persist filter_library.store: {e}");
+    }
 
-    let mut guard = state.lock().await;
+    let mut guard = handle.lock().await;
     // Swapping in a new list invalidates any cue index the runtime was
     // tracking against the *old* one -- if a mute is active, release it for
     // real before resetting, rather than just forgetting about it.
@@ -165,6 +168,16 @@ pub async fn load_filter_file(state: State<'_, ControlStateHandle>, path: String
     guard.filter_list = Some(list);
 
     Ok(FilterSummary { path, media_count, categories })
+}
+
+/// Opens the file at `path` (chosen by the frontend via
+/// `@tauri-apps/plugin-dialog`'s native picker), parses + validates it as a
+/// filter list, persists the path so it reloads automatically on the next
+/// launch, and replaces whatever list was previously loaded. Does *not*
+/// enable auto-filter mode by itself -- see `set_filter_enabled`.
+#[tauri::command]
+pub async fn load_filter_file(state: State<'_, ControlStateHandle>, path: String) -> Result<FilterSummary, String> {
+    load_filter_file_inner(state.inner(), path).await
 }
 
 /// On app start, tries to reload whatever filter file was last picked (see
@@ -255,6 +268,155 @@ pub async fn set_filter_cue_enabled(
     }
     let _ = apply_filter(&mut guard).await;
     Ok(())
+}
+
+/// Registers one or more filter files (chosen via
+/// `@tauri-apps/plugin-dialog`'s native multi-file picker) into the library,
+/// for the Select Filter grid to pick up -- unlike `load_filter_file`, this
+/// doesn't make any of them the *active* list; adding a file to the shelf
+/// and choosing to play it are separate actions (the latter is what tapping
+/// its tile does). Validates each path parses as a filter list before
+/// registering it, so a bad file is rejected with an error naming it rather
+/// than silently added and then failing to appear in the grid.
+#[tauri::command]
+pub fn add_filter_files(paths: Vec<String>) -> Result<usize, String> {
+    let mut added = 0;
+    for path in paths {
+        let path_buf = PathBuf::from(&path);
+        FilterList::load(&path_buf).map_err(|e| format!("{path}: {}", describe(&e)))?;
+        library::register_filter_path(&path_buf).map_err(|e| describe(&e))?;
+        added += 1;
+    }
+    Ok(added)
+}
+
+/// Registers every `.json` file directly inside `path` (chosen via the
+/// dialog plugin's directory picker) that parses as a valid filter list --
+/// not recursive, and silently skips both non-`.json` files and `.json`
+/// files that don't parse (e.g. some other JSON file that happens to live
+/// in the same folder), rather than failing the whole scan over one bad
+/// file. Returns how many were actually added.
+#[tauri::command]
+pub fn add_filter_directory(path: String) -> Result<usize, String> {
+    let dir = PathBuf::from(&path);
+    let entries = std::fs::read_dir(&dir).map_err(|e| format!("failed to read {}: {e}", dir.display()))?;
+    let mut added = 0;
+    for entry in entries.flatten() {
+        let entry_path = entry.path();
+        if entry_path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        if FilterList::load(&entry_path).is_err() {
+            continue;
+        }
+        if library::register_filter_path(&entry_path).is_ok() {
+            added += 1;
+        }
+    }
+    Ok(added)
+}
+
+/// One poster tile for the Select Filter grid -- one per movie *title*
+/// (`crate::library` tracks the *files*; this command flattens every known
+/// file's `media` entries into one deduped list of titles for the frontend
+/// to render). `path` is which file to hand `select_filter_tile` when this
+/// tile is tapped.
+#[derive(serde::Serialize)]
+pub struct FilterTile {
+    pub title: String,
+    pub path: String,
+    /// `data:` URI, or `None` if TMDB has no key configured, no match, or
+    /// the lookup otherwise failed -- the frontend shows a placeholder tile
+    /// rather than treating this as an error.
+    pub poster: Option<String>,
+}
+
+/// Every title across every filter file the library knows about, for the
+/// Select Filter grid. Titles are deduped by `filter::normalize_title` --
+/// first file registered wins -- since a poster/tap target only makes sense
+/// once per distinct title, even if (unusually) more than one file mentions
+/// the same movie.
+#[tauri::command]
+pub async fn list_filter_tiles(app: AppHandle) -> Result<Vec<FilterTile>, String> {
+    let mut seen = HashSet::new();
+    let mut tiles = Vec::new();
+    for path in library::list_library_paths() {
+        let Ok(list) = FilterList::load(&path) else {
+            // A file that's been moved/deleted/corrupted since it was
+            // registered just drops out of the grid silently -- the library
+            // itself is left alone so it's not lost if the file reappears.
+            continue;
+        };
+        let path_str = path.to_string_lossy().into_owned();
+        for entry in &list.media {
+            if !seen.insert(filter::normalize_title(&entry.title)) {
+                continue;
+            }
+            let poster = metadata::poster_data_uri(&app, &entry.title).await;
+            tiles.push(FilterTile { title: entry.title.clone(), path: path_str.clone(), poster });
+        }
+    }
+    Ok(tiles)
+}
+
+/// The detail payload for one tapped tile: the same per-cue status shape
+/// `control_playback_status` builds for whatever's currently playing, just
+/// keyed by the tapped title instead -- plus which streaming service(s) the
+/// file itself says it's on (`filter::MediaEntry::services`), not a live
+/// lookup against anything.
+#[derive(serde::Serialize)]
+pub struct FilterEntryDetail {
+    pub title: String,
+    pub categories: Vec<String>,
+    pub cues: Vec<CueStatus>,
+    pub services: Vec<String>,
+}
+
+/// Loads `path` as the active auto-filter list (exactly like
+/// `load_filter_file`) and returns `title`'s categories/cues plus its
+/// service badges. Tapping any tile from the same file selects that whole
+/// file as active -- a file's titles always shared one active list even
+/// before this command existed (see `FilterList`'s doc comment), so this
+/// doesn't change that, just gives the frontend a title-scoped view of the
+/// result.
+#[tauri::command]
+pub async fn select_filter_tile(state: State<'_, ControlStateHandle>, path: String, title: String) -> Result<FilterEntryDetail, String> {
+    load_filter_file_inner(state.inner(), path).await?;
+
+    let guard = state.lock().await;
+    let entry = guard
+        .filter_list
+        .as_ref()
+        .and_then(|list| list.find_entry(&title))
+        .ok_or_else(|| format!("{title:?} not found in the selected filter file"))?;
+
+    let mut categories = Vec::new();
+    let mut seen = HashSet::new();
+    for cue in &entry.cues {
+        if seen.insert(cue.category.clone()) {
+            categories.push(cue.category.clone());
+        }
+    }
+
+    let title_key = filter::normalize_title(&entry.title);
+    let cues: Vec<CueStatus> = entry
+        .cues
+        .iter()
+        .enumerate()
+        .map(|(index, cue)| CueStatus {
+            index,
+            start: cue.start,
+            end: cue.end,
+            action: cue.action,
+            category: cue.category.clone(),
+            enabled: !guard.disabled_categories.contains(&cue.category)
+                && !guard.disabled_cues.contains(&(title_key.clone(), index)),
+        })
+        .collect();
+    let resolved_title = entry.title.clone();
+    let services = entry.services.clone();
+
+    Ok(FilterEntryDetail { title: resolved_title, categories, cues, services })
 }
 
 pub type ControlStateHandle = Arc<Mutex<ControlState>>;
@@ -401,7 +563,11 @@ pub struct PlaybackStatus {
 /// `app_bundle_id` in `PlaybackStatus`) instead of risking a wrong label --
 /// if yours shows up as a raw bundle id, that string is exactly what to add
 /// a case for here.
-fn app_display_name(bundle_id: &str) -> Option<&'static str> {
+///
+/// `pub(crate)` rather than private: `creation.rs` reuses it too, to
+/// auto-tag a title's `services` (see `filter::MediaEntry::services`) with
+/// whichever app was playing when its first cue was recorded.
+pub(crate) fn app_display_name(bundle_id: &str) -> Option<&'static str> {
     Some(match bundle_id {
         "com.apple.TVWatchList" => "Apple TV",
         "com.apple.TVMovies" => "Movies",

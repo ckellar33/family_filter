@@ -1,0 +1,21 @@
+{
+  "media": [
+    {
+      "title": "Back In The Saddle",
+      "cues": [
+        {
+          "start": 2195.155761564084,
+          "end": 2198.155761564084,
+          "action": "mute",
+          "category": "language"
+        },
+        {
+          "start": 2199.67960246832,
+          "end": 2202.957541549512,
+          "action": "skip",
+          "category": "violence"
+        }
+      ]
+    }
+  ]
+}

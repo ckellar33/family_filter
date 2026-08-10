@@ -20,8 +20,9 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use tauri::State;
 
-use crate::control::{describe, ControlState, ControlStateHandle};
+use crate::control::{app_display_name, describe, ControlState, ControlStateHandle};
 use crate::filter::{self, Cue, CueAction, FilterList};
+use crate::library;
 
 /// How long a language-category mute mark lasts, in seconds.
 /// `creation_mark_mute` accepts an optional override of this so a future
@@ -103,13 +104,14 @@ fn autosave(creation: &CreationState) {
     }
 }
 
-/// Reads the live session's current title/position, refreshing first so a
-/// mark lands on the true current position rather than one extrapolated
-/// since the last periodic poll -- same reasoning as
+/// Reads the live session's current title/position (plus, best-effort,
+/// which app is playing it -- see `service_hint` below), refreshing first
+/// so a mark lands on the true current position rather than one
+/// extrapolated since the last periodic poll -- same reasoning as
 /// `control::control_playback_status`'s own refresh-then-read. Never trusts
 /// a client-supplied title/position, matching `control::apply_filter`'s
 /// fresh read.
-async fn live_title_and_position(guard: &mut ControlState) -> Result<(String, f64)> {
+async fn live_title_and_position(guard: &mut ControlState) -> Result<(String, f64, Option<String>)> {
     let live = guard.live_mut().context("no live transport paired (pair MRP or AirPlay to record marks)")?;
     // Best-effort: an occasional refresh failure shouldn't block a mark --
     // fall back to the still-good extrapolated position, same tolerance
@@ -118,7 +120,18 @@ async fn live_title_and_position(guard: &mut ControlState) -> Result<(String, f6
     let playback = live.playback();
     let title = playback.title().context("nothing is currently playing")?.to_string();
     let position = playback.position_now().context("no current playback position")?;
-    Ok((title, position))
+    let service_hint = service_hint(playback.app_bundle_id());
+    Ok((title, position, service_hint))
+}
+
+/// Friendly service name for whichever app is currently "now playing" (e.g.
+/// `com.netflix.Netflix` -> `"Netflix"`), reusing `control.rs`'s bundle-id
+/// table -- `None` for an unrecognized bundle id or no bundle id at all
+/// (nothing sensible to auto-tag with in that case, not an error). Used to
+/// auto-tag a title's `services` the moment its first cue is recorded --
+/// see the callers below.
+fn service_hint(app_bundle_id: Option<&str>) -> Option<String> {
+    app_display_name(app_bundle_id?).map(str::to_string)
 }
 
 /// Starts a brand-new, empty draft at `path` (chosen via
@@ -130,6 +143,13 @@ pub async fn creation_new_draft(state: State<'_, ControlStateHandle>, path: Stri
     let path_buf = PathBuf::from(&path);
     let draft = FilterList::default();
     draft.save(&path_buf).map_err(|e| describe(&e))?;
+    // Best-effort, same tolerance as everywhere else this is called: a
+    // brand-new draft has no titles/cues yet, so there's nothing for Select
+    // Filter to show until the first mark is recorded anyway, but this makes
+    // sure the file is tracked from the moment it exists.
+    if let Err(e) = library::register_filter_path(&path_buf) {
+        eprintln!("[library] failed to persist filter_library.store: {e}");
+    }
 
     let mut guard = state.lock().await;
     guard.creation.pending_skip = None;
@@ -146,6 +166,9 @@ pub async fn creation_open_draft(state: State<'_, ControlStateHandle>, path: Str
     let path_buf = PathBuf::from(&path);
     let draft = FilterList::load(&path_buf).map_err(|e| describe(&e))?;
     let media_count = draft.media.len();
+    if let Err(e) = library::register_filter_path(&path_buf) {
+        eprintln!("[library] failed to persist filter_library.store: {e}");
+    }
 
     let mut guard = state.lock().await;
     guard.creation.pending_skip = None;
@@ -173,12 +196,18 @@ pub async fn creation_mark_mute(
     duration_secs: Option<f64>,
 ) -> Result<CueMarkResult, String> {
     let mut guard = state.lock().await;
-    let (title, position) = live_title_and_position(&mut guard).await.map_err(|e| describe(&e))?;
+    let (title, position, service_hint) = live_title_and_position(&mut guard).await.map_err(|e| describe(&e))?;
     let duration = duration_secs.unwrap_or(MUTE_MARK_SECS);
 
     let draft = guard.creation.draft.as_mut().ok_or_else(|| "no draft filter file open -- start or open one first".to_string())?;
     let cue = Cue { start: position, end: position + duration, action: CueAction::Mute, category };
     let index = draft.add_cue(&title, cue.clone()).map_err(|e| describe(&e))?;
+    // Auto-tag with whichever app is playing -- a no-op (via add_service's
+    // own dedupe) once the title already has it, so this only really does
+    // anything on that title's very first cue.
+    if let Some(service) = &service_hint {
+        draft.add_service(&title, service);
+    }
     autosave(&guard.creation);
 
     Ok(cue_result(&title, index, &cue))
@@ -194,7 +223,7 @@ pub async fn creation_start_skip_mark(state: State<'_, ControlStateHandle>, cate
     if let Some(pending) = &guard.creation.pending_skip {
         return Err(format!("a skip mark is already pending for {:?} -- end or cancel it first", pending.category));
     }
-    let (title, position) = live_title_and_position(&mut guard).await.map_err(|e| describe(&e))?;
+    let (title, position, _) = live_title_and_position(&mut guard).await.map_err(|e| describe(&e))?;
     guard.creation.pending_skip = Some(PendingSkip { category, title: filter::normalize_title(&title), start: position });
     Ok(())
 }
@@ -207,7 +236,7 @@ pub async fn creation_end_skip_mark(state: State<'_, ControlStateHandle>) -> Res
         return Err("no skip mark is pending".to_string());
     };
 
-    let (title, position) = match live_title_and_position(&mut guard).await {
+    let (title, position, service_hint) = match live_title_and_position(&mut guard).await {
         Ok(t) => t,
         // Can't even read the current position -- nothing to retry against,
         // so the pending mark stays cleared.
@@ -221,6 +250,11 @@ pub async fn creation_end_skip_mark(state: State<'_, ControlStateHandle>) -> Res
     let cue = Cue { start: pending.start, end: position, action: CueAction::Skip, category: pending.category.clone() };
     match draft.add_cue(&title, cue.clone()) {
         Ok(index) => {
+            // Same auto-tag as creation_mark_mute -- a no-op past the
+            // title's first cue.
+            if let Some(service) = &service_hint {
+                draft.add_service(&title, service);
+            }
             autosave(&guard.creation);
             Ok(cue_result(&title, index, &cue))
         }
@@ -286,4 +320,36 @@ pub async fn creation_list_cues(state: State<'_, ControlStateHandle>, title: Str
         .enumerate()
         .map(|(index, cue)| CreationCue { index, start: cue.start, end: cue.end, action: cue.action, category: cue.category.clone() })
         .collect())
+}
+
+/// Lists the current draft's service tags for `title`, for the editable
+/// chip list shown alongside the cue table. Same "pure draft lookup, no
+/// `live` touch" shape as `creation_list_cues`.
+#[tauri::command]
+pub async fn creation_list_services(state: State<'_, ControlStateHandle>, title: String) -> Result<Vec<String>, String> {
+    let guard = state.lock().await;
+    Ok(guard.creation.draft.as_ref().and_then(|d| d.find_entry(&title)).map(|e| e.services.clone()).unwrap_or_default())
+}
+
+/// Adds a service tag by hand -- the same call the auto-tagging in
+/// `creation_mark_mute`/`creation_end_skip_mark` makes, just triggered from
+/// the UI instead of a cue mark, for correcting or adding to what got
+/// auto-tagged.
+#[tauri::command]
+pub async fn creation_add_service(state: State<'_, ControlStateHandle>, title: String, service: String) -> Result<(), String> {
+    let mut guard = state.lock().await;
+    let draft = guard.creation.draft.as_mut().ok_or_else(|| "no draft filter file open".to_string())?;
+    draft.add_service(&title, &service);
+    autosave(&guard.creation);
+    Ok(())
+}
+
+/// Removes a service tag -- e.g. one the auto-tagging got wrong.
+#[tauri::command]
+pub async fn creation_remove_service(state: State<'_, ControlStateHandle>, title: String, service: String) -> Result<(), String> {
+    let mut guard = state.lock().await;
+    let draft = guard.creation.draft.as_mut().ok_or_else(|| "no draft filter file open".to_string())?;
+    draft.remove_service(&title, &service);
+    autosave(&guard.creation);
+    Ok(())
 }
