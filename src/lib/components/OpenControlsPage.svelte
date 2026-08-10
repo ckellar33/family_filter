@@ -4,7 +4,7 @@
   // toggling its categories/cues now lives entirely in Select Filter --
   // this screen only shows the *result* of that (filter_action/filter_cues
   // already reflect whatever's currently selected there).
-  import { session, doSkip, doMute, doUnmute } from "$lib/state/session.svelte";
+  import { session, doSkip, doMute, doUnmute, doButton } from "$lib/state/session.svelte";
   import { filterState } from "$lib/state/filter.svelte";
   import { fmtTime } from "$lib/format";
 
@@ -79,6 +79,22 @@
   {:else}
     <p class="hint centered">Pair MRP or AirPlay (from Devices) to unlock mute/unmute and playback info.</p>
   {/if}
+
+  <!-- Siri Remote button ring -- discrete presses only (Companion's `_hidC`
+       HID commands), deliberately no touchpad swipe/drag gesture. -->
+  <div class="dpad">
+    <button class="icon-btn dpad-up" onclick={() => doButton("up")} disabled={session.controlBusy} aria-label="Up">⬆️</button>
+    <button class="icon-btn dpad-left" onclick={() => doButton("left")} disabled={session.controlBusy} aria-label="Left">⬅️</button>
+    <button class="icon-btn dpad-select" onclick={() => doButton("select")} disabled={session.controlBusy} aria-label="Select">🔘</button>
+    <button class="icon-btn dpad-right" onclick={() => doButton("right")} disabled={session.controlBusy} aria-label="Right">➡️</button>
+    <button class="icon-btn dpad-down" onclick={() => doButton("down")} disabled={session.controlBusy} aria-label="Down">⬇️</button>
+  </div>
+
+  <div class="transport-row">
+    <button class="icon-btn" onclick={() => doButton("menu")} disabled={session.controlBusy} aria-label="Menu">🔙</button>
+    <button class="icon-btn icon-btn-lg" onclick={() => doButton("play_pause")} disabled={session.controlBusy} aria-label="Play/Pause">⏯️</button>
+    <button class="icon-btn" onclick={() => doButton("home")} disabled={session.controlBusy} aria-label="Home">🏠</button>
+  </div>
 
   <div class="transport-row">
     <button class="icon-btn" onclick={() => doSkip(-15)} disabled={session.controlBusy} aria-label="Back 15 seconds">⏪</button>
