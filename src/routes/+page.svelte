@@ -43,10 +43,6 @@
     // not guaranteed to be show-related, just whatever the app put there.
     // Only used as a fallback display when series_name is null.
     subtitle: string | null;
-    // Debug aid, temporary: every string-valued metadata field the device
-    // sent for the current item, so an unfamiliar app's fields can be
-    // identified from a real device instead of guessed at.
-    raw_metadata: { field: number; value: string }[];
     position: number | null;
     duration: number | null;
     playback_state: string;
@@ -817,23 +813,6 @@
                 </p>
               {/if}
             </div>
-
-            {#if playback && playback.raw_metadata.length > 0}
-              <!-- Temporary debug aid -- see PlaybackStatus.raw_metadata's
-                   doc comment. Safe to remove once every app this family
-                   actually uses has proper series/episode support above. -->
-              <details class="debug-metadata">
-                <summary>Debug: raw metadata fields ({playback.raw_metadata.length})</summary>
-                <ul class="list nested-list">
-                  {#each playback.raw_metadata as f (f.field)}
-                    <li class="list-row static raw-field-row">
-                      <span class="cue-time">#{f.field}</span>
-                      <span class="cue-action truncate">{f.value}</span>
-                    </li>
-                  {/each}
-                </ul>
-              </details>
-            {/if}
           {:else}
             <p class="hint centered">Pair MRP or AirPlay (from the pairing wizard) to unlock mute/unmute and playback info.</p>
           {/if}
@@ -1354,30 +1333,6 @@ button.list-row:active:not(:disabled) {
   margin: 6px 12px 12px 40px;
   width: auto;
   border-radius: 10px;
-}
-
-/* Temporary debug aid -- see PlaybackStatus.raw_metadata. */
-.debug-metadata {
-  margin: 4px 4px 20px;
-  font-size: 0.85em;
-  color: var(--secondary-label);
-}
-
-.debug-metadata summary {
-  cursor: pointer;
-}
-
-.debug-metadata .nested-list {
-  margin: 8px 0 0;
-}
-
-.raw-field-row {
-  gap: 0.6em;
-}
-
-.raw-field-row .cue-time {
-  flex-shrink: 0;
-  color: var(--tertiary-label);
 }
 
 .cue-row {
