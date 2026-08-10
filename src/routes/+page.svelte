@@ -158,6 +158,25 @@
   let newCategoryName = $state("");
   let newCategoryKind = $state<CategoryKind>("skip");
 
+  // Secondary line under Now Playing's main title -- whichever of
+  // title/subtitle actually differs from what's shown as the main title
+  // (series_name, or title itself if there's no series_name), tried in that
+  // order. Deliberately not "subtitle only when there's no series_name":
+  // apps disagree about where the episode name goes even when they *do*
+  // populate series_name -- e.g. Disney+ appears to leave title equal to
+  // the show name and put the actual episode title in subtitle instead, the
+  // opposite of Apple's own apps (title = episode, series_name = show) this
+  // was originally written against.
+  let episodeLine = $derived.by(() => {
+    const p = playback;
+    if (!p) return null;
+    const mainTitle = p.series_name ?? p.title;
+    for (const candidate of [p.title, p.subtitle]) {
+      if (candidate && candidate !== mainTitle) return candidate;
+    }
+    return null;
+  });
+
   // The single soonest cue that hasn't fully passed yet and would actually
   // fire (category + individual toggle both on) -- what shows up next to
   // the playback position, rather than the whole schedule. filter_cues
@@ -778,13 +797,8 @@
           {#if hasLive}
             <div class="now-playing">
               <p class="title">{playback?.series_name ?? playback?.title ?? "Nothing Playing"}</p>
-              {#if playback?.series_name && playback.title && playback.title !== playback.series_name}
-                <p class="episode-title">{playback.title}</p>
-              {:else if !playback?.series_name && playback?.subtitle && playback.subtitle !== playback.title}
-                <!-- No structured series name from this app (e.g. PureFlix
-                     doesn't send one at all) -- its freeform subtitle line
-                     is the closest available substitute. -->
-                <p class="episode-title">{playback.subtitle}</p>
+              {#if episodeLine}
+                <p class="episode-title">{episodeLine}</p>
               {/if}
               {#if playback}
                 <p class="subtitle">
