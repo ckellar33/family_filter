@@ -32,7 +32,7 @@ use tauri::{AppHandle, State};
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 
-use appletv::companion::CompanionSession;
+use appletv::companion::{CompanionSession, HidButton};
 use appletv::{storage, LiveSession};
 
 use crate::creation::CreationState;
@@ -493,6 +493,52 @@ pub async fn control_skip(state: State<'_, ControlStateHandle>, seconds: f64) ->
         .as_mut()
         .ok_or_else(|| "No control session active -- open controls again".to_string())?;
     session.skip(seconds).await.map_err(|e| describe(&e))
+}
+
+/// The remote buttons the frontend can send via `control_button` -- the
+/// Siri Remote's button ring (arrows, Select, Menu, Home) plus Play/Pause.
+/// Deliberately excludes the touchpad's swipe/tap gestures (see
+/// `appletv::companion::HidButton`'s doc comment); `#[serde(rename_all =
+/// "snake_case")]` so the frontend just passes e.g. `"play_pause"`.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RemoteButton {
+    Up,
+    Down,
+    Left,
+    Right,
+    Select,
+    Menu,
+    Home,
+    PlayPause,
+}
+
+impl From<RemoteButton> for HidButton {
+    fn from(button: RemoteButton) -> Self {
+        match button {
+            RemoteButton::Up => HidButton::Up,
+            RemoteButton::Down => HidButton::Down,
+            RemoteButton::Left => HidButton::Left,
+            RemoteButton::Right => HidButton::Right,
+            RemoteButton::Select => HidButton::Select,
+            RemoteButton::Menu => HidButton::Menu,
+            RemoteButton::Home => HidButton::Home,
+            RemoteButton::PlayPause => HidButton::PlayPause,
+        }
+    }
+}
+
+/// Presses (and releases) one Siri Remote button via Companion -- same
+/// transport `control_skip` uses, so it needs the Companion session, not
+/// the optional live (MRP/AirPlay) one.
+#[tauri::command]
+pub async fn control_button(state: State<'_, ControlStateHandle>, button: RemoteButton) -> Result<(), String> {
+    let mut guard = state.lock().await;
+    let session = guard
+        .session
+        .as_mut()
+        .ok_or_else(|| "No control session active -- open controls again".to_string())?;
+    session.hid_press(button.into()).await.map_err(|e| describe(&e))
 }
 
 /// One cue as shown to the frontend: the raw cue fields plus its position in

@@ -40,6 +40,7 @@ pub fn run() {
             control::control_mute,
             control::control_unmute,
             control::control_skip,
+            control::control_button,
             control::control_playback_status,
             control::load_filter_file,
             control::check_saved_filter_file,

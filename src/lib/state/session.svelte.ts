@@ -7,7 +7,7 @@
 // is what every setter function below (and every consuming component) does.
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { ControlInfo, Device, PlaybackStatus, Protocol, SavedPairingInfo, Step } from "$lib/types";
+import type { ControlInfo, Device, PlaybackStatus, Protocol, RemoteButton, SavedPairingInfo, Step } from "$lib/types";
 
 // Companion is required (it's what unlocks mute/skip control); MRP and
 // AirPlay are each their own optional pairing ceremony against their own
@@ -125,6 +125,23 @@ export async function doSkip(seconds: number) {
     // Backend actively re-fetches on every control_playback_status call
     // now, but that's on the next 1s poll tick -- fetch immediately too so
     // the display catches up to the skip right away.
+    await refreshPlayback();
+  } catch (e) {
+    session.controlError = String(e);
+  } finally {
+    session.controlBusy = false;
+  }
+}
+
+// Presses one Siri Remote button (arrows/Select/Menu/Home/Play-Pause) via
+// Companion -- see control::control_button. Refreshes playback afterward,
+// same as doSkip, since Play/Pause (and a Menu/Home that backs out of
+// what's playing) can change playback_state right away.
+export async function doButton(button: RemoteButton) {
+  session.controlBusy = true;
+  session.controlError = "";
+  try {
+    await invoke("control_button", { button });
     await refreshPlayback();
   } catch (e) {
     session.controlError = String(e);

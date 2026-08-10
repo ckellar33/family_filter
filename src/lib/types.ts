@@ -93,6 +93,10 @@ export interface CategoryDef {
   kind: CategoryKind;
 }
 
+// Siri Remote buttons control_button can send -- see control::RemoteButton.
+// Deliberately excludes the touchpad's swipe/tap gestures.
+export type RemoteButton = "up" | "down" | "left" | "right" | "select" | "menu" | "home" | "play_pause";
+
 export type Protocol = "companion" | "mrp" | "airplay";
 export type Step = Protocol | "save" | "done";
 
