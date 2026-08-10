@@ -39,6 +39,10 @@
     // episode's own title (e.g. "Chapter 1") in that case. Null for a
     // movie, or anything else the device doesn't report a series for.
     series_name: string | null;
+    // Freeform secondary line some apps populate instead of series_name --
+    // not guaranteed to be show-related, just whatever the app put there.
+    // Only used as a fallback display when series_name is null.
+    subtitle: string | null;
     position: number | null;
     duration: number | null;
     playback_state: string;
@@ -776,6 +780,11 @@
               <p class="title">{playback?.series_name ?? playback?.title ?? "Nothing Playing"}</p>
               {#if playback?.series_name && playback.title && playback.title !== playback.series_name}
                 <p class="episode-title">{playback.title}</p>
+              {:else if !playback?.series_name && playback?.subtitle && playback.subtitle !== playback.title}
+                <!-- No structured series name from this app (e.g. PureFlix
+                     doesn't send one at all) -- its freeform subtitle line
+                     is the closest available substitute. -->
+                <p class="episode-title">{playback.subtitle}</p>
               {/if}
               {#if playback}
                 <p class="subtitle">

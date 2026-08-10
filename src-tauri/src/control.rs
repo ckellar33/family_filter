@@ -355,6 +355,11 @@ pub struct PlaybackStatus {
     /// episode's own title (e.g. "Chapter 1") in that case. `None` for a
     /// movie or anything else the device doesn't report a series for.
     pub series_name: Option<String>,
+    /// Freeform secondary line some apps populate instead of `series_name`
+    /// (e.g. PureFlix, which doesn't send the structured field at all) --
+    /// not guaranteed to be show-related, just whatever the app put there.
+    /// The frontend falls back to this only when `series_name` is absent.
+    pub subtitle: Option<String>,
     pub position: Option<f64>,
     pub duration: Option<f64>,
     pub playback_state: String,
@@ -410,6 +415,7 @@ fn app_display_name(bundle_id: &str) -> Option<&'static str> {
         "com.peacocktv.peacock" => "Peacock",
         "com.google.ios.youtube" => "YouTube",
         "com.plexapp.plex" => "Plex",
+        "com.rollingstorm.PureFlix" => "Pure Flix",
         _ => return None,
     })
 }
@@ -439,6 +445,7 @@ pub async fn control_playback_status(state: State<'_, ControlStateHandle>) -> Re
     let playback = live.playback();
     let title = playback.title().map(str::to_string);
     let series_name = playback.series_name().map(str::to_string);
+    let subtitle = playback.subtitle().map(str::to_string);
     let position = playback.position_now();
     let duration = playback.duration();
     let playback_state = format!("{:?}", playback.playback_state());
@@ -484,6 +491,7 @@ pub async fn control_playback_status(state: State<'_, ControlStateHandle>) -> Re
     Ok(Some(PlaybackStatus {
         title,
         series_name,
+        subtitle,
         position,
         duration,
         playback_state,
