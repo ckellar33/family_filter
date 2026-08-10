@@ -360,6 +360,12 @@ pub struct PlaybackStatus {
     /// not guaranteed to be show-related, just whatever the app put there.
     /// The frontend falls back to this only when `series_name` is absent.
     pub subtitle: Option<String>,
+    /// Debug aid, temporary: every string-valued metadata field the device
+    /// actually sent for the current item, so an unfamiliar app's fields
+    /// can be identified from a real device instead of guessed at. Safe to
+    /// remove once every app this family actually uses is accounted for
+    /// above.
+    pub raw_metadata: Vec<RawMetadataField>,
     pub position: Option<f64>,
     pub duration: Option<f64>,
     pub playback_state: String,
@@ -390,6 +396,13 @@ pub struct PlaybackStatus {
     pub filter_action: Option<String>,
     /// The category of the cue behind `filter_action`, when set.
     pub filter_category: Option<String>,
+}
+
+/// One field of `PlaybackStatus::raw_metadata` -- see its doc comment.
+#[derive(serde::Serialize)]
+pub struct RawMetadataField {
+    pub field: u32,
+    pub value: String,
 }
 
 /// Best-effort bundle-id -> friendly-name table for the apps most likely to
@@ -446,6 +459,11 @@ pub async fn control_playback_status(state: State<'_, ControlStateHandle>) -> Re
     let title = playback.title().map(str::to_string);
     let series_name = playback.series_name().map(str::to_string);
     let subtitle = playback.subtitle().map(str::to_string);
+    let raw_metadata: Vec<RawMetadataField> = playback
+        .raw_metadata_strings()
+        .into_iter()
+        .map(|(field, value)| RawMetadataField { field, value })
+        .collect();
     let position = playback.position_now();
     let duration = playback.duration();
     let playback_state = format!("{:?}", playback.playback_state());
@@ -492,6 +510,7 @@ pub async fn control_playback_status(state: State<'_, ControlStateHandle>) -> Re
         title,
         series_name,
         subtitle,
+        raw_metadata,
         position,
         duration,
         playback_state,
