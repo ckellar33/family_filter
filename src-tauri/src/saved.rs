@@ -4,8 +4,17 @@
 //! control session (mute/skip/live position) off a saved pairing is a
 //! separate follow-up.
 
+use std::time::Duration;
+
 use appletv::storage;
 use tokio::net::TcpStream;
+use tokio::time::timeout;
+
+/// Same reasoning as `control::CONNECT_TIMEOUT` -- an unreachable host would
+/// otherwise hang `TcpStream::connect` far longer than this, leaving
+/// "Verify Existing Device" looking stuck rather than failing with a clear
+/// error.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(6);
 
 /// Lightweight, `Serialize`-able summary of a saved pairing -- the frontend
 /// gets host/port/which-protocols-are-present, never the raw credentials
@@ -48,8 +57,9 @@ pub async fn verify_saved_pairing() -> Result<(), String> {
         .map_err(|e| describe(&e))?
         .ok_or_else(|| "No saved pairing found".to_string())?;
 
-    let mut stream = TcpStream::connect(format!("{}:{}", saved.companion.host, saved.companion.port))
+    let mut stream = timeout(CONNECT_TIMEOUT, TcpStream::connect(format!("{}:{}", saved.companion.host, saved.companion.port)))
         .await
+        .map_err(|_| format!("timed out connecting to {}:{}", saved.companion.host, saved.companion.port))?
         .map_err(|e| format!("failed to connect: {e}"))?;
 
     appletv::hap_pair::pair_verify(&mut stream, &saved.companion.creds)

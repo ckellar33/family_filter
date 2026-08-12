@@ -8,6 +8,8 @@
   import { filterState } from "$lib/state/filter.svelte";
   import { fmtTime } from "$lib/format";
 
+  let { onEnableFilter, onOpenDevices }: { onEnableFilter: () => void; onOpenDevices: () => void } = $props();
+
   // Secondary line under Now Playing's main title -- whichever of
   // title/subtitle actually differs from what's shown as the main title
   // (series_name, or title itself if there's no series_name), tried in that
@@ -38,9 +40,26 @@
   });
 </script>
 
+{#if session.page !== "control"}
+  <!-- No active control session -- e.g. fresh launch (Devices now owns
+       connecting, not this screen), a saved pairing that failed to
+       reconnect, or the user backed out of pairing. Nothing below this
+       (remote buttons, mute/skip) works without one, so don't render it;
+       point at Devices instead of showing controls that'll just error. -->
+  <section class="screen">
+    <p class="hint centered">Not connected to an Apple TV.</p>
+    <button type="button" class="btn-primary" onclick={onOpenDevices}>Connect a Device</button>
+  </section>
+{:else}
 <section class="screen">
   {#if session.controlError}
     <p class="banner error">{session.controlError}</p>
+  {/if}
+
+  {#if filterState.availableHint}
+    <button type="button" class="banner-link" onclick={onEnableFilter}>
+      🛡️ A filter is available for "{filterState.availableHint.title}" on {filterState.availableHint.service} — tap to enable
+    </button>
   {/if}
 
   {#if session.hasLive}
@@ -105,3 +124,4 @@
     <button class="icon-btn" onclick={() => doSkip(15)} disabled={session.controlBusy} aria-label="Forward 15 seconds">⏩</button>
   </div>
 </section>
+{/if}

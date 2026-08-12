@@ -1,11 +1,14 @@
 // Auto-filter state: the active filter list (filterSummary/filterEnabled/
 // categoryEnabled -- what's actually muting/skipping right now) plus the
-// Select Filter tab's own state -- the poster grid and whichever tile's
-// detail (categories/cues/streaming badges) is currently open.
+// Select Filter tab's own state -- the poster grid and whichever entry's
+// detail (categories/cues) is currently open, including the in-detail
+// service switcher for titles with more than one variant. Also the Open
+// Controls "a filter is available" auto-detect banner's state, since it's
+// built on the same library-wide service lookup the switcher uses.
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import { refreshPlayback } from "$lib/state/session.svelte";
-import type { Cue, FilterEntryDetail, FilterSummary, FilterTile } from "$lib/types";
+import { session, refreshPlayback } from "$lib/state/session.svelte";
+import type { Cue, FilterEntryDetail, FilterSummary, FilterTile, ServiceOption } from "$lib/types";
 
 export const filterState = $state({
   // Auto-filter mode: a loaded cue file (filterSummary), the master on/off
@@ -23,13 +26,25 @@ export const filterState = $state({
   tilesLoading: false,
   tilesError: "",
 
-  // Select Filter detail -- set once a tile is tapped; `selectedPath` is
-  // kept alongside `detail` (not part of the wire type) so toggling a
-  // category/cue can re-select the same tile to refresh it.
+  // Every service variant of whichever title is open in `detail` below --
+  // drives the in-detail "switch service" control once more than one
+  // exists (see openTitle: there's no separate picker step, tapping a tile
+  // goes straight to a best-guess variant and the switcher handles the
+  // rest).
+  serviceOptions: [] as ServiceOption[],
+
+  // Select Filter detail -- set once a (title, service) entry is open;
+  // `selectedPath` is kept alongside `detail` (not part of the wire type)
+  // so toggling a category/cue can re-select the same entry to refresh it.
   detail: null as FilterEntryDetail | null,
   selectedPath: null as string | null,
   detailLoading: false,
   detailError: "",
+
+  // Open Controls' "a filter is available for what's playing" banner --
+  // set by checkAvailableForPlayback (see +page.svelte's effect that calls
+  // it), null whenever nothing needs enabling.
+  availableHint: null as (ServiceOption & { title: string }) | null,
 });
 
 // Tries to reload whatever filter file was last picked (persisted
@@ -111,16 +126,52 @@ export async function loadTiles() {
   }
 }
 
-// Loads `path` as the active auto-filter list and opens `title`'s detail
-// view (categories/cues/streaming badges) -- what tapping a poster tile
-// does. Also refreshes `filterSummary`/`categoryEnabled` the same way
-// `checkSavedFilter` does, since this *is* a filter-file load, just reached
-// from the grid instead of a file picker.
-export async function selectTile(path: string, title: string) {
+// What tapping a poster tile does: no intermediate picker step -- this
+// looks up every service variant of `title` (see filter::MediaEntry's doc
+// comment for why a title can have more than one) and opens straight into
+// a best guess: whichever matches what's actually playing right now, else
+// just the first one on record. `serviceOptions` is populated regardless,
+// so the detail view's "switch service" control (see
+// SelectFilterPage.svelte) is always there to correct the guess.
+export async function openTitle(title: string) {
+  filterState.detailError = "";
+  try {
+    const options = await invoke<ServiceOption[]>("list_services_for_title", { title });
+    if (options.length === 0) {
+      filterState.detailError = `No filter entries found for "${title}".`;
+      return;
+    }
+    filterState.serviceOptions = options;
+
+    const nowPlayingService = currentlyPlayingService(title);
+    const autoMatch = nowPlayingService ? options.find((o) => o.service.toLowerCase() === nowPlayingService.toLowerCase()) : undefined;
+    const chosen = autoMatch ?? options[0];
+    await selectTile(chosen.path, title, chosen.service);
+  } catch (e) {
+    filterState.detailError = String(e);
+  }
+}
+
+// The app currently "now playing" `title`'s service name, if that's indeed
+// what's on screen right now -- shared by openTitle's auto-pick and
+// checkAvailableForPlayback below.
+function currentlyPlayingService(title: string): string | null {
+  const p = session.playback;
+  if (!p?.title || !p.app_name) return null;
+  return p.title.trim().toLowerCase() === title.trim().toLowerCase() ? p.app_name : null;
+}
+
+// Loads `path` as the active auto-filter list and opens the `(title,
+// service)` entry's detail view -- what openTitle's guess resolves to, and
+// also how the in-detail "switch service" control (see
+// SelectFilterPage.svelte) re-selects a sibling variant. Also refreshes
+// `filterSummary`/`categoryEnabled` the same way `checkSavedFilter` does,
+// since this *is* a filter-file load.
+export async function selectTile(path: string, title: string, service: string) {
   filterState.detailLoading = true;
   filterState.detailError = "";
   try {
-    const detail = await invoke<FilterEntryDetail>("select_filter_tile", { path, title });
+    const detail = await invoke<FilterEntryDetail>("select_filter_tile", { path, title, service });
     filterState.detail = detail;
     filterState.selectedPath = path;
     filterState.filterEnabled = false;
@@ -143,6 +194,7 @@ export function closeDetail() {
   filterState.detail = null;
   filterState.selectedPath = null;
   filterState.detailError = "";
+  filterState.serviceOptions = [];
 }
 
 export async function toggleDetailCategory(category: string) {
@@ -166,7 +218,12 @@ export async function toggleDetailCue(cue: Cue) {
   if (!filterState.detail) return;
   filterState.detailError = "";
   try {
-    await invoke("set_filter_cue_enabled", { title: filterState.detail.title, index: cue.index, enabled: !cue.enabled });
+    await invoke("set_filter_cue_enabled", {
+      title: filterState.detail.title,
+      service: filterState.detail.service,
+      index: cue.index,
+      enabled: !cue.enabled,
+    });
     await refreshDetail();
     await refreshPlayback();
   } catch (e) {
@@ -175,16 +232,46 @@ export async function toggleDetailCue(cue: Cue) {
 }
 
 // Re-fetches the open detail view from the backend -- cheap even though it
-// re-selects the whole tile (poster/streaming-provider lookups are disk-
-// cached by then), used after every toggle so the tree reflects the new
-// enabled state immediately rather than waiting on a poll.
+// re-selects the whole tile (poster lookups are disk-cached by then), used
+// after every toggle so the tree reflects the new enabled state immediately
+// rather than waiting on a poll.
 async function refreshDetail() {
   const path = filterState.selectedPath;
-  const title = filterState.detail?.title;
-  if (!path || !title) return;
+  const detail = filterState.detail;
+  if (!path || !detail) return;
   try {
-    filterState.detail = await invoke<FilterEntryDetail>("select_filter_tile", { path, title });
+    filterState.detail = await invoke<FilterEntryDetail>("select_filter_tile", { path, title: detail.title, service: detail.service });
   } catch (e) {
     filterState.detailError = String(e);
+  }
+}
+
+// Checks whether a filter is available for whatever's playing right now but
+// not currently enabled -- called from +page.svelte whenever the playing
+// title/app changes, powering Open Controls' "a filter is available, tap to
+// enable" banner. Deliberately only ever matches the *exact* service that's
+// playing (never a same-title entry tagged for a different service) --
+// suggesting a filter whose cue times were recorded against a different
+// platform's cut risks muting/skipping at the wrong moments, which is worse
+// than not suggesting one at all.
+export async function checkAvailableForPlayback() {
+  const p = session.playback;
+  if (!p?.title || !p.app_name) {
+    filterState.availableHint = null;
+    return;
+  }
+  // Already matched and turned on -- nothing to nag about.
+  if (p.filter_match && filterState.filterEnabled) {
+    filterState.availableHint = null;
+    return;
+  }
+  try {
+    const options = await invoke<ServiceOption[]>("list_services_for_title", { title: p.title });
+    const exact = options.find((o) => o.service.toLowerCase() === p.app_name!.toLowerCase());
+    filterState.availableHint = exact ? { ...exact, title: p.title } : null;
+  } catch {
+    // Best-effort -- a failed lookup just means no banner, not an error
+    // worth surfacing over Open Controls' now-playing card.
+    filterState.availableHint = null;
   }
 }

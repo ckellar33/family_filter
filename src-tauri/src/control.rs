@@ -26,11 +26,12 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use tauri::{AppHandle, State};
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
+use tokio::time::timeout;
 
 use appletv::companion::{CompanionSession, HidButton};
 use appletv::{storage, LiveSession};
@@ -90,6 +91,7 @@ async fn apply_filter(guard: &mut ControlState) -> (Option<String>, Option<Strin
     };
     let playback = live.playback();
     let title = playback.title().map(str::to_string);
+    let service = playback.app_bundle_id().and_then(app_display_name);
     let position = playback.position_now();
 
     let outcome = filter::evaluate(
@@ -98,6 +100,7 @@ async fn apply_filter(guard: &mut ControlState) -> (Option<String>, Option<Strin
         &guard.disabled_categories,
         &guard.disabled_cues,
         title.as_deref(),
+        service,
         position,
         Instant::now(),
     );
@@ -246,9 +249,9 @@ pub async fn set_filter_category_enabled(
     Ok(())
 }
 
-/// Enables/disables one individual cue, identified by its matched title plus
-/// its index within `PlaybackStatus::filter_cues` (which is exactly
-/// `MediaEntry::cues`'s order, since that's cloned as-is -- see
+/// Enables/disables one individual cue, identified by its matched
+/// title+service plus its index within `PlaybackStatus::filter_cues` (which
+/// is exactly `MediaEntry::cues`'s order, since that's cloned as-is -- see
 /// `control_playback_status`). Layers on top of the category toggle: a cue
 /// only fires if both its category *and* this are enabled. Applies
 /// immediately, same as `set_filter_category_enabled`.
@@ -256,11 +259,12 @@ pub async fn set_filter_category_enabled(
 pub async fn set_filter_cue_enabled(
     state: State<'_, ControlStateHandle>,
     title: String,
+    service: String,
     index: usize,
     enabled: bool,
 ) -> Result<(), String> {
     let mut guard = state.lock().await;
-    let key: CueKey = (filter::normalize_title(&title), index);
+    let key: CueKey = (filter::normalize_title(&title), filter::normalize_service(&service), index);
     if enabled {
         guard.disabled_cues.remove(&key);
     } else {
@@ -359,36 +363,40 @@ pub async fn list_filter_tiles(app: AppHandle) -> Result<Vec<FilterTile>, String
     Ok(tiles)
 }
 
-/// The detail payload for one tapped tile: the same per-cue status shape
-/// `control_playback_status` builds for whatever's currently playing, just
-/// keyed by the tapped title instead -- plus which streaming service(s) the
-/// file itself says it's on (`filter::MediaEntry::services`), not a live
-/// lookup against anything.
+/// The detail payload for one tapped (title, service) tile: the same
+/// per-cue status shape `control_playback_status` builds for whatever's
+/// currently playing, just keyed by the tapped entry instead.
 #[derive(serde::Serialize)]
 pub struct FilterEntryDetail {
     pub title: String,
+    pub service: String,
     pub categories: Vec<String>,
     pub cues: Vec<CueStatus>,
-    pub services: Vec<String>,
 }
 
 /// Loads `path` as the active auto-filter list (exactly like
-/// `load_filter_file`) and returns `title`'s categories/cues plus its
-/// service badges. Tapping any tile from the same file selects that whole
-/// file as active -- a file's titles always shared one active list even
-/// before this command existed (see `FilterList`'s doc comment), so this
-/// doesn't change that, just gives the frontend a title-scoped view of the
-/// result.
+/// `load_filter_file`) and returns the `(title, service)` entry's
+/// categories/cues. Tapping a tile (after resolving which service via
+/// `list_services_for_title`, see that command's doc comment) selects that
+/// whole *file* as active -- a file's titles always shared one active list
+/// even before this command existed (see `FilterList`'s doc comment), so
+/// this doesn't change that, just gives the frontend an entry-scoped view
+/// of the result.
 #[tauri::command]
-pub async fn select_filter_tile(state: State<'_, ControlStateHandle>, path: String, title: String) -> Result<FilterEntryDetail, String> {
+pub async fn select_filter_tile(
+    state: State<'_, ControlStateHandle>,
+    path: String,
+    title: String,
+    service: String,
+) -> Result<FilterEntryDetail, String> {
     load_filter_file_inner(state.inner(), path).await?;
 
     let guard = state.lock().await;
     let entry = guard
         .filter_list
         .as_ref()
-        .and_then(|list| list.find_entry(&title))
-        .ok_or_else(|| format!("{title:?} not found in the selected filter file"))?;
+        .and_then(|list| list.find_entry(&title, &service))
+        .ok_or_else(|| format!("{title:?} on {service:?} not found in the selected filter file"))?;
 
     let mut categories = Vec::new();
     let mut seen = HashSet::new();
@@ -399,6 +407,7 @@ pub async fn select_filter_tile(state: State<'_, ControlStateHandle>, path: Stri
     }
 
     let title_key = filter::normalize_title(&entry.title);
+    let service_key = filter::normalize_service(&entry.service);
     let cues: Vec<CueStatus> = entry
         .cues
         .iter()
@@ -410,13 +419,46 @@ pub async fn select_filter_tile(state: State<'_, ControlStateHandle>, path: Stri
             action: cue.action,
             category: cue.category.clone(),
             enabled: !guard.disabled_categories.contains(&cue.category)
-                && !guard.disabled_cues.contains(&(title_key.clone(), index)),
+                && !guard.disabled_cues.contains(&(title_key.clone(), service_key.clone(), index)),
         })
         .collect();
     let resolved_title = entry.title.clone();
-    let services = entry.services.clone();
+    let resolved_service = entry.service.clone();
 
-    Ok(FilterEntryDetail { title: resolved_title, categories, cues, services })
+    Ok(FilterEntryDetail { title: resolved_title, service: resolved_service, categories, cues })
+}
+
+/// One service variant of a title, as known anywhere in the library (not
+/// just the currently active file) -- `path` is which file it lives in, for
+/// handing straight to `select_filter_tile`.
+#[derive(serde::Serialize)]
+pub struct ServiceOption {
+    pub service: String,
+    pub path: String,
+}
+
+/// Every distinct service variant registered for `title`, across every
+/// filter file the library knows about -- not just the one currently
+/// active. Powers two things on the frontend: the Select Filter service
+/// picker shown after tapping a title whose services can't be confidently
+/// auto-picked (see `FilterList::find_entry_for_playback`'s doc comment for
+/// what "confidently" means), and the Open Controls "a filter is available"
+/// auto-detect banner, which looks for an entry matching whatever's
+/// actually playing right now among these.
+#[tauri::command]
+pub fn list_services_for_title(title: String) -> Vec<ServiceOption> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for path in library::list_library_paths() {
+        let Ok(list) = FilterList::load(&path) else { continue };
+        let path_str = path.to_string_lossy().into_owned();
+        for entry in list.entries_for_title(&title) {
+            if seen.insert(filter::normalize_service(&entry.service)) {
+                out.push(ServiceOption { service: entry.service.clone(), path: path_str.clone() });
+            }
+        }
+    }
+    out
 }
 
 pub type ControlStateHandle = Arc<Mutex<ControlState>>;
@@ -432,6 +474,15 @@ pub struct ControlInfo {
     pub has_live: bool,
 }
 
+/// How long to wait for the initial TCP connect to the saved Companion host
+/// before giving up -- a plain `TcpStream::connect` against an unreachable
+/// host (asleep, moved to a different IP, off the network) can otherwise
+/// hang far longer than this, since nothing sends back a RST to fail it
+/// quickly. Without this, the auto-connect attempt on launch (see
+/// +page.svelte) would sit indefinitely with no error and no visible
+/// "connecting" state -- indistinguishable from having never tried at all.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(6);
+
 /// Loads `pairing.store`, runs Pair-Verify + bootstraps a Companion control
 /// session, and connects a live (MRP/AirPlay) session if one was paired.
 /// Replaces whatever control session (if any) was already active.
@@ -441,8 +492,9 @@ pub async fn start_control_session(state: State<'_, ControlStateHandle>) -> Resu
         .map_err(|e| describe(&e))?
         .ok_or_else(|| "No saved pairing found".to_string())?;
 
-    let mut stream = TcpStream::connect(format!("{}:{}", saved.companion.host, saved.companion.port))
+    let mut stream = timeout(CONNECT_TIMEOUT, TcpStream::connect(format!("{}:{}", saved.companion.host, saved.companion.port)))
         .await
+        .map_err(|_| format!("timed out connecting to {}:{}", saved.companion.host, saved.companion.port))?
         .map_err(|e| format!("failed to connect: {e}"))?;
     let keys = appletv::hap_pair::pair_verify(&mut stream, &saved.companion.creds)
         .await
@@ -671,11 +723,12 @@ pub async fn control_playback_status(state: State<'_, ControlStateHandle>) -> Re
     let matched_entry = guard
         .filter_list
         .as_ref()
-        .and_then(|list| title.as_deref().and_then(|t| list.find_entry(t)));
+        .and_then(|list| title.as_deref().and_then(|t| list.find_entry_for_playback(t, app_name.as_deref())));
     let filter_match = matched_entry.map(|e| e.title.clone());
     let filter_cues: Vec<CueStatus> = matched_entry
         .map(|entry| {
             let title_key = filter::normalize_title(&entry.title);
+            let service_key = filter::normalize_service(&entry.service);
             entry
                 .cues
                 .iter()
@@ -687,7 +740,7 @@ pub async fn control_playback_status(state: State<'_, ControlStateHandle>) -> Re
                     action: cue.action,
                     category: cue.category.clone(),
                     enabled: !guard.disabled_categories.contains(&cue.category)
-                        && !guard.disabled_cues.contains(&(title_key.clone(), index)),
+                        && !guard.disabled_cues.contains(&(title_key.clone(), service_key.clone(), index)),
                 })
                 .collect()
         })

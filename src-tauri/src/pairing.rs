@@ -18,10 +18,18 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter, State};
 use tokio::net::TcpStream;
 use tokio::sync::oneshot;
+use tokio::time::timeout;
 
 use appletv::{mdns, storage};
 
 use crate::DISPLAY_NAME;
+
+/// Same reasoning as `control::CONNECT_TIMEOUT` -- bounds the initial TCP
+/// connect so an unreachable host fails with a clear error instead of
+/// hanging. Lower-risk here than on launch (the host was just discovered
+/// via mDNS moments ago), but cheap insurance against it going offline in
+/// between.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(6);
 
 /// Owned, `Serialize`-able mirror of `appletv::mdns::Discovered` -- Tauri
 /// command return types need to derive `Serialize`.
@@ -118,8 +126,9 @@ pub async fn pair_companion(
     port: u16,
 ) -> Result<(), String> {
     let state = state.inner().clone();
-    let mut stream = TcpStream::connect(format!("{host}:{port}"))
+    let mut stream = timeout(CONNECT_TIMEOUT, TcpStream::connect(format!("{host}:{port}")))
         .await
+        .map_err(|_| format!("timed out connecting to {host}:{port}"))?
         .map_err(|e| format!("failed to connect: {e}"))?;
 
     let pairing_id = appletv::random_pairing_id();
@@ -143,8 +152,9 @@ pub async fn pair_mrp(
     port: u16,
 ) -> Result<(), String> {
     let state = state.inner().clone();
-    let mrp_stream = TcpStream::connect(format!("{host}:{port}"))
+    let mrp_stream = timeout(CONNECT_TIMEOUT, TcpStream::connect(format!("{host}:{port}")))
         .await
+        .map_err(|_| format!("timed out connecting to {host}:{port}"))?
         .map_err(|e| format!("failed to connect: {e}"))?;
     let mut conn = appletv::mrp::connection::MrpConnection::new(mrp_stream);
 

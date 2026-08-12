@@ -2,7 +2,7 @@
   "media": [
     {
       "title": "Star Wars",
-      "services": ["Disney Plus"],
+      "service": "Disney Plus",
       "cues": [
         { "start": 610.0, "end": 640.0, "action": "skip", "category": "violence" },
         { "start": 2200.0, "end": 2208.0, "action": "mute", "category": "language" },

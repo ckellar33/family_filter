@@ -2,11 +2,20 @@
   "media": [
     {
       "title": "Spider-Man: Far From Home",
-      "services": ["Disney Plus"],
+      "service": "Disney Plus",
       "cues": [
         { "start": 320.0, "end": 328.0, "action": "mute", "category": "language" },
         { "start": 1850.0, "end": 1910.0, "action": "skip", "category": "violence" },
         { "start": 4100.0, "end": 4108.0, "action": "mute", "category": "language" }
+      ]
+    },
+    {
+      "title": "Spider-Man: Far From Home",
+      "service": "Prime Video",
+      "cues": [
+        { "start": 296.0, "end": 304.0, "action": "mute", "category": "language" },
+        { "start": 1822.0, "end": 1882.0, "action": "skip", "category": "violence" },
+        { "start": 4066.0, "end": 4074.0, "action": "mute", "category": "language" }
       ]
     }
   ]

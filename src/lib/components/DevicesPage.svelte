@@ -6,7 +6,8 @@
   // different device), shown either as the pre-session landing screen or as
   // an overlay reachable via NavBar's Devices button once a session is
   // already active (see `sessionActive`).
-  import { session, STEPS, PROTOCOL_LABEL, isProtocol, scan, pair, submitPin, skipStep, save, verifySaved } from "$lib/state/session.svelte";
+  import { untrack } from "svelte";
+  import { session, checkSaved, STEPS, PROTOCOL_LABEL, isProtocol, scan, pair, submitPin, skipStep, save, verifySaved } from "$lib/state/session.svelte";
   import type { Protocol, Step } from "$lib/types";
 
   let {
@@ -19,6 +20,39 @@
     onClose?: () => void;
   } = $props();
 
+  // On mount: check for a saved pairing.store, and if one exists, connect
+  // automatically (VidAngel-style auto-connect) rather than waiting for a
+  // manual "Open Controls" tap. This is now the one place in the app that
+  // decides connection status -- the root page just lands on Select Filter
+  // and leaves connecting up to whoever opens this view (a NavBar tap, or
+  // Open Controls' own "connect a device" prompt).
+  //
+  // Skipped once already connected (session.page === "control"): this
+  // effect re-runs every time Devices is opened (it's mounted fresh each
+  // time, behind +page.svelte's `{#if devicesOpen}`), and re-checking here
+  // would otherwise silently tear down and reconnect an already-active
+  // control session -- resetting the loaded filter list, disabled
+  // categories/cues, etc. -- just from the user peeking at Devices to check
+  // status or pair a second one.
+  //
+  // The guard reads session.page through `untrack` deliberately -- this
+  // effect has to run exactly once per mount (matching what the check +
+  // auto-connect itself already relies on: no re-entrant runs while
+  // `checkSaved()`/`onOpenControls()` are still in flight and mutating
+  // `session.page` themselves). A plain (tracked) read here would make the
+  // effect a subscriber of session.page and re-fire on every transition it
+  // causes ("checking" -> "saved" -> "control"), triggering an overlapping
+  // second check-and-connect attempt each time.
+  $effect(() => {
+    (async () => {
+      if (untrack(() => session.page) === "control") return;
+      await checkSaved();
+      if (session.page === "saved") {
+        await onOpenControls();
+      }
+    })();
+  });
+
   // Re-scan automatically whenever the wizard lands on a new discovery step.
   $effect(() => {
     if (session.page === "wizard" && isProtocol(session.step)) {
@@ -27,7 +61,11 @@
   });
 </script>
 
-{#if session.page === "wizard"}
+{#if session.page === "checking"}
+  <section class="screen">
+    <p class="hint centered">Checking for a saved pairing…</p>
+  </section>
+{:else if session.page === "wizard"}
   <section class="screen">
     <div class="segmented">
       {#each ["companion", "mrp", "airplay", "save"] as s (s)}
@@ -103,7 +141,9 @@
       </li>
     </ul>
 
-    {#if session.verifyResult === "ok"}
+    {#if session.connecting}
+      <p class="hint centered">Connecting…</p>
+    {:else if session.verifyResult === "ok"}
       <p class="banner success">✅ Verified — this pairing is still valid.</p>
     {:else if session.verifyResult === "failed"}
       <p class="banner error">{session.verifyError}</p>
@@ -115,12 +155,16 @@
       {#if sessionActive}
         <button class="btn-primary" onclick={onClose} disabled={session.verifying}>Done</button>
       {:else}
-        <button class="btn-primary" onclick={onOpenControls} disabled={session.verifying}>Open Controls</button>
+        <button class="btn-primary" onclick={onOpenControls} disabled={session.verifying || session.connecting}>
+          {session.connecting ? "Connecting…" : "Open Controls"}
+        </button>
       {/if}
-      <button class="btn-secondary" onclick={verifySaved} disabled={session.verifying}>
+      <button class="btn-secondary" onclick={verifySaved} disabled={session.verifying || session.connecting}>
         {session.verifying ? "Verifying…" : "Verify Existing Device"}
       </button>
-      <button class="btn-secondary" onclick={() => { session.page = "wizard"; }} disabled={session.verifying}>Pair a New Device</button>
+      <button class="btn-secondary" onclick={() => { session.page = "wizard"; }} disabled={session.verifying || session.connecting}>
+        Pair a New Device
+      </button>
     </div>
   </section>
 {/if}

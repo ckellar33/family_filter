@@ -1,11 +1,17 @@
 <script lang="ts">
-  // Shell/orchestrator: decides which top-level screen is showing (the
-  // Devices flow, or one of the three tabs once a control session is
-  // active) and wires the sticky NavBar/TabBar to it. Each screen's own
-  // logic lives in src/lib/components + src/lib/state -- this file is just
-  // the composition root.
-  import { session, checkSaved, openControls, refreshPlayback, STEPS } from "$lib/state/session.svelte";
-  import { checkSavedFilter, filterState, closeDetail } from "$lib/state/filter.svelte";
+  // Shell/orchestrator: decides which top-level screen is showing (Devices,
+  // or one of the three tabs) and wires the sticky NavBar/TabBar to it. Each
+  // screen's own logic lives in src/lib/components + src/lib/state -- this
+  // file is just the composition root.
+  //
+  // Lands on the Select Filter tab on launch rather than auto-connecting and
+  // jumping into Open Controls -- Devices now owns checking for (and
+  // auto-connecting to) a saved pairing itself, see DevicesPage's own mount
+  // effect. Nothing here forces navigation into Devices or Controls; the
+  // user gets there by tapping the tab bar or the NavBar's Devices button,
+  // same as any other screen.
+  import { session, openControls, refreshPlayback, STEPS } from "$lib/state/session.svelte";
+  import { checkSavedFilter, filterState, closeDetail, selectTile, checkAvailableForPlayback } from "$lib/state/filter.svelte";
   import { resetCreation } from "$lib/state/creation.svelte";
   import type { Tab } from "$lib/types";
   import NavBar from "$lib/components/NavBar.svelte";
@@ -15,16 +21,19 @@
   import SelectFilterPage from "$lib/components/SelectFilterPage.svelte";
   import CreateFilterPage from "$lib/components/CreateFilterPage.svelte";
 
-  let activeTab = $state<Tab>("controls");
-  // Manually opened via NavBar's Devices button while a control session is
-  // already active -- distinct from session.page, which drives the
-  // pre-session landing flow (checking/saved/wizard) on its own.
+  let activeTab = $state<Tab>("select-filter");
+  // Manually opened via NavBar's Devices button (or Open Controls' "connect
+  // a device" prompt) -- the *only* thing that shows Devices now; nothing
+  // auto-opens it on mount anymore.
   let devicesOpen = $state(false);
 
   // Runs Pair-Verify + bootstraps the control session, then (on success)
-  // brings in the other two modules' post-session setup -- mirrors the
-  // original single-page version's openControls(), just composed here since
-  // that setup now spans three separate state modules.
+  // brings in the other two modules' post-session setup. Passed into
+  // DevicesPage as `onOpenControls` -- called from a manual "Open Controls"
+  // tap, from finishing the pairing wizard, *and* from DevicesPage's own
+  // auto-connect-if-saved check on mount (see that component) -- every
+  // trigger is an explicit "connect now" decision made from within Devices,
+  // never from this root component mounting.
   async function openControlsFlow() {
     const ok = await openControls();
     if (!ok) return;
@@ -34,18 +43,9 @@
     activeTab = "controls";
   }
 
-  // On mount: check for a saved pairing, and if one exists, connect
-  // automatically (VidAngel-style auto-connect) rather than waiting for a
-  // manual "Open Controls" tap -- Devices is only shown up front when
-  // there's nothing saved yet, or that auto-connect attempt fails.
-  $effect(() => {
-    (async () => {
-      await checkSaved();
-      if (session.page === "saved") {
-        await openControlsFlow();
-      }
-    })();
-  });
+  function openDevices() {
+    devicesOpen = true;
+  }
 
   // Polls now-playing status once a second while a control session is open
   // and a live (MRP/AirPlay) transport is available -- kept here (rather
@@ -63,18 +63,43 @@
     return () => clearInterval(id);
   });
 
-  let showDevicesPage = $derived(session.page !== "control" || devicesOpen);
+  // Re-checks whether a filter is available for whatever's playing now
+  // (Open Controls' "tap to enable" banner) whenever the title, the app
+  // it's playing in, or the enabled state changes -- kept here rather than
+  // in OpenControlsPage so it keeps working even while looking at a
+  // different tab, same reasoning as the playback poll above.
+  $effect(() => {
+    session.playback?.title;
+    session.playback?.app_name;
+    filterState.filterEnabled;
+    if (session.page === "control") {
+      checkAvailableForPlayback();
+    }
+  });
+
+  // What Open Controls' banner does when tapped: loads that entry as
+  // active and jumps to Select Filter so the user can review it and flip
+  // Enabled themselves -- same "auto-load, never auto-arm" rule every other
+  // filter-loading path in this app follows.
+  async function enableAvailableFilter() {
+    const hint = filterState.availableHint;
+    if (!hint) return;
+    await selectTile(hint.path, hint.title, hint.service);
+    activeTab = "select-filter";
+  }
 
   // Purely cosmetic label for the sticky nav bar -- doesn't drive any
   // behavior, just names whichever screen is currently showing.
   let navTitle = $derived.by(() => {
-    if (session.page === "checking") return "Family Filter";
-    if (session.page === "wizard") {
-      if (session.step === "save") return "Save Pairing";
-      if (session.step === "done") return "Paired";
-      return "Pair an Apple TV";
+    if (devicesOpen) {
+      if (session.page === "checking") return "Family Filter";
+      if (session.page === "wizard") {
+        if (session.step === "save") return "Save Pairing";
+        if (session.step === "done") return "Paired";
+        return "Pair an Apple TV";
+      }
+      return "Devices";
     }
-    if (showDevicesPage) return "Devices";
     if (activeTab === "controls") return "Open Controls";
     if (activeTab === "select-filter") return filterState.detail?.title ?? "Select Filter";
     return "Create Filter";
@@ -82,35 +107,38 @@
 
   // Whether the sticky nav bar's back button should show for the current
   // screen. There's no real history stack -- each screen has exactly one
-  // well-defined "back", mirrored by goBack() below.
+  // well-defined "back", mirrored by goBack() below. Devices always has
+  // *something* to back out of (an earlier wizard step, or the overlay
+  // itself), so this is unconditionally true whenever it's open.
   let canGoBack = $derived.by(() => {
-    if (session.page === "wizard") return session.step !== "companion" || session.savedPairing !== null;
-    if (session.page === "control") {
-      if (devicesOpen) return true;
-      if (activeTab === "select-filter" && filterState.detail) return true;
-    }
+    if (devicesOpen) return true;
+    if (activeTab === "select-filter" && filterState.detail) return true;
     return false;
   });
 
   function goBack() {
     session.error = "";
-    if (session.page === "wizard") {
-      if (session.step === "companion") {
-        if (session.savedPairing) session.page = "saved";
+    if (devicesOpen) {
+      if (session.page === "wizard") {
+        if (session.step === "companion") {
+          if (session.savedPairing) {
+            session.page = "saved";
+          } else {
+            // Nothing behind this step to go back to -- close the overlay
+            // instead of leaving Back a dead end.
+            devicesOpen = false;
+          }
+          return;
+        }
+        const i = STEPS.indexOf(session.step);
+        session.step = STEPS[i - 1];
         return;
       }
-      const i = STEPS.indexOf(session.step);
-      session.step = STEPS[i - 1];
+      devicesOpen = false;
       return;
     }
-    if (session.page === "control") {
-      if (devicesOpen) {
-        devicesOpen = false;
-        return;
-      }
-      if (activeTab === "select-filter" && filterState.detail) {
-        closeDetail();
-      }
+    if (activeTab === "select-filter" && filterState.detail) {
+      closeDetail();
     }
   }
 </script>
@@ -121,17 +149,15 @@
       title={navTitle}
       {canGoBack}
       onBack={goBack}
-      showDevices={session.page === "control" && !devicesOpen}
-      onDevices={() => { devicesOpen = true; }}
+      showDevices={!devicesOpen}
+      onDevices={openDevices}
     />
 
-    <div class="content" class:with-tabbar={session.page === "control" && !devicesOpen}>
-      {#if session.page === "checking"}
-        <p class="hint centered">Checking for a saved pairing…</p>
-      {:else if showDevicesPage}
+    <div class="content" class:with-tabbar={!devicesOpen}>
+      {#if devicesOpen}
         <DevicesPage sessionActive={session.page === "control"} onOpenControls={openControlsFlow} onClose={() => { devicesOpen = false; }} />
       {:else if activeTab === "controls"}
-        <OpenControlsPage />
+        <OpenControlsPage onEnableFilter={enableAvailableFilter} onOpenDevices={openDevices} />
       {:else if activeTab === "select-filter"}
         <SelectFilterPage />
       {:else}
@@ -139,7 +165,7 @@
       {/if}
     </div>
 
-    {#if session.page === "control" && !devicesOpen}
+    {#if !devicesOpen}
       <TabBar active={activeTab} onSelect={(tab) => { activeTab = tab; }} />
     {/if}
   </main>

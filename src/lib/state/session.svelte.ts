@@ -41,6 +41,14 @@ export const session = $state({
   verifyResult: null as "ok" | "failed" | null,
   verifyError: "",
 
+  // True for the duration of one openControls() call -- covers both the
+  // auto-connect attempt on launch and a manual "Open Controls" tap. The
+  // underlying connect can take several seconds (or, now bounded, time out)
+  // against a slow/unreachable Apple TV; without this the saved-pairing
+  // screen looked identical whether nothing had been tried yet or an
+  // attempt was quietly still in flight.
+  connecting: false,
+
   hasLive: false,
   playback: null as PlaybackStatus | null,
   controlBusy: false,
@@ -104,6 +112,7 @@ export async function verifySaved() {
 // each module's own job; +page.svelte composes them after this resolves).
 export async function openControls(): Promise<boolean> {
   session.error = "";
+  session.connecting = true;
   try {
     const info = await invoke<ControlInfo>("start_control_session");
     session.hasLive = info.has_live;
@@ -114,6 +123,8 @@ export async function openControls(): Promise<boolean> {
   } catch (e) {
     session.error = String(e);
     return false;
+  } finally {
+    session.connecting = false;
   }
 }
 

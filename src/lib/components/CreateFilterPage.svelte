@@ -5,10 +5,11 @@
   import { session } from "$lib/state/session.svelte";
   import {
     creationState,
+    currentService,
     pickNewDraft,
     pickExistingDraft,
     refreshCreationCues,
-    refreshServices,
+    renameService,
     resetCreation,
     useDraftAsActiveFilter,
     markMute,
@@ -17,20 +18,18 @@
     updateCueTime,
     deleteCue,
     addCustomCategory,
-    addService,
-    removeService,
   } from "$lib/state/creation.svelte";
   import { filterState } from "$lib/state/filter.svelte";
   import { fmtTime } from "$lib/format";
 
-  // Re-fetches the draft's cues and service tags whenever the now-playing
-  // title changes while recording, so both always reflect the title
-  // actually on screen.
+  // Re-fetches the draft's cues whenever the now-playing title or the app
+  // it's playing in changes while recording, so the table always reflects
+  // what's actually landing marks right now (see currentService).
   $effect(() => {
     session.playback?.title;
+    session.playback?.app_name;
     if (creationState.stage === "recording") {
       refreshCreationCues();
-      refreshServices();
     }
   });
 </script>
@@ -67,29 +66,21 @@
       <p class="hint">Not the active auto filter yet -- use the button above once you're ready to test it.</p>
     {/if}
 
-    <p class="section-header">
-      Services
-      {#if session.playback?.title}— tagged automatically from whatever app is playing "{session.playback.title}"{/if}
-    </p>
-    {#if creationState.services.length > 0}
-      <div class="category-buttons">
-        {#each creationState.services as service (service)}
-          <button type="button" class="category-btn" onclick={() => removeService(service)} disabled={!session.playback?.title}>
-            {service} ✕
-          </button>
-        {/each}
-      </div>
-    {:else}
+    <p class="section-header">Service</p>
+    {#if session.playback?.title}
       <p class="hint">
-        {#if session.playback?.title}No service tagged yet for "{session.playback.title}" -- mark a cue to auto-tag it, or add one below.{:else}Nothing playing -- a service gets tagged automatically from the first cue you mark.{/if}
+        Marks are landing under <strong>{currentService() || "Generic (app not recognized)"}</strong> for "{session.playback.title}" -- each
+        service gets its own independent timing, since platforms can cut the same title differently.
       </p>
+      {#if !currentService()}
+        <div class="field-row">
+          <input class="field" placeholder="Correct the service (e.g. Netflix)" bind:value={creationState.renameServiceInput} />
+          <button type="button" class="btn-secondary" onclick={renameService} disabled={!creationState.renameServiceInput.trim()}>Rename</button>
+        </div>
+      {/if}
+    {:else}
+      <p class="hint">Nothing playing -- the service is detected automatically from whichever app is on screen when you mark a cue.</p>
     {/if}
-    <div class="field-row">
-      <input class="field" placeholder="Add a service (e.g. Netflix)" bind:value={creationState.newServiceName} disabled={!session.playback?.title} />
-      <button type="button" class="btn-secondary" onclick={addService} disabled={!creationState.newServiceName.trim() || !session.playback?.title}>
-        Add
-      </button>
-    </div>
 
     <div class="category-buttons">
       {#each creationState.categories as c (c.name)}

@@ -112,12 +112,18 @@ export interface FilterTile {
   poster: string | null;
 }
 
-// What tapping a tile loads -- see control::select_filter_tile. `services`
-// comes straight from the filter file's own MediaEntry.services -- not a
-// live lookup against anything.
+// What tapping a tile (after resolving which service, see ServiceOption)
+// loads -- see control::select_filter_tile.
 export interface FilterEntryDetail {
   title: string;
+  service: string;
   categories: string[];
   cues: Cue[];
-  services: string[];
+}
+
+// One service variant of a title, found anywhere in the library -- see
+// control::list_services_for_title. `path` is which file it lives in.
+export interface ServiceOption {
+  service: string;
+  path: string;
 }

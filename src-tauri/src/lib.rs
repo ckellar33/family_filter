@@ -50,6 +50,7 @@ pub fn run() {
             control::add_filter_files,
             control::add_filter_directory,
             control::list_filter_tiles,
+            control::list_services_for_title,
             control::select_filter_tile,
             creation::creation_new_draft,
             creation::creation_open_draft,
@@ -61,9 +62,7 @@ pub fn run() {
             creation::creation_update_cue,
             creation::creation_delete_cue,
             creation::creation_list_cues,
-            creation::creation_list_services,
-            creation::creation_add_service,
-            creation::creation_remove_service,
+            creation::creation_set_service,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

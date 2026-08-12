@@ -1,12 +1,15 @@
 <script lang="ts">
   // Browse-and-configure, VidAngel-style: a poster grid of every title
   // across every filter file the app knows about (see
-  // control::list_filter_tiles), and once a tile is tapped, that title's
-  // streaming-service badges + master Enabled switch + category/cue tree --
-  // picking *and* configuring a filter happen on this one screen.
+  // control::list_filter_tiles). Tapping a tile opens straight into a
+  // best-guess service variant's master Enabled switch + category/cue tree
+  // -- no intermediate picker step -- with a switcher right there in the
+  // header to correct the guess if the title has more than one variant
+  // (see openTitle's doc comment in filter.svelte.ts).
   import {
     filterState,
     loadTiles,
+    openTitle,
     selectTile,
     addFilterFiles,
     addFilterDirectory,
@@ -62,17 +65,25 @@
       </span>
       <div class="detail-header-info">
         <p class="title">{detail.title}</p>
-        {#if detail.services.length > 0}
-          <div class="provider-badges">
-            {#each detail.services as service (service)}
-              <span class="provider-badge">{service}</span>
-            {/each}
-          </div>
-        {:else}
-          <p class="hint">No service tagged for this title yet -- add one from Create Filter.</p>
-        {/if}
+        <p class="hint">{detail.service ? `On ${detail.service}` : "Generic timing (no service specified)"}</p>
       </div>
     </div>
+
+    {#if filterState.serviceOptions.length > 1}
+      <p class="section-header">Service — different platforms can cut this title differently</p>
+      <div class="category-buttons">
+        {#each filterState.serviceOptions as option (option.service)}
+          <button
+            type="button"
+            class="category-btn"
+            class:recording={option.service.toLowerCase() === detail.service.toLowerCase()}
+            onclick={() => selectTile(option.path, detail.title, option.service)}
+          >
+            {option.service || "Generic"}
+          </button>
+        {/each}
+      </div>
+    {/if}
 
     <ul class="list">
       <li class="list-row">
@@ -152,7 +163,7 @@
     {:else}
       <div class="poster-grid">
         {#each filterState.tiles as tile (tile.title)}
-          <PosterTile title={tile.title} poster={tile.poster} onclick={() => selectTile(tile.path, tile.title)} />
+          <PosterTile title={tile.title} poster={tile.poster} onclick={() => openTitle(tile.title)} />
         {/each}
       </div>
     {/if}

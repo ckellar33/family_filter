@@ -33,12 +33,21 @@ export const creationState = $state({
   newCategoryName: "",
   newCategoryKind: "skip" as CategoryKind,
 
-  // Service tags (see filter::MediaEntry::services) for whatever's
-  // currently playing -- auto-tagged backend-side from the playing app on a
-  // title's first cue, shown here as an editable chip list.
-  services: [] as string[],
-  newServiceName: "",
+  // Text field for correcting a mis-detected service (see renameService) --
+  // not the service itself, which is derived live from whatever's playing
+  // (see currentService below), just this form's own input value.
+  renameServiceInput: "",
 });
+
+// Which service's entry cue marks are currently landing in -- whatever app
+// is "now playing" per the live poll, same source `creation_mark_mute`/
+// `creation_end_skip_mark` derive it from server-side (see
+// `creation::service_hint`). `""` (the generic/unspecified entry) when
+// nothing's playing or the app isn't recognized, matching the backend's own
+// fallback.
+export function currentService(): string {
+  return session.playback?.app_name ?? "";
+}
 
 // Backend's `start_control_session` rebuilds ControlState from scratch --
 // including creation-mode's draft -- so the frontend's view of it needs
@@ -48,7 +57,7 @@ export function resetCreation() {
   creationState.stage = "idle";
   creationState.draft = null;
   creationState.cues = [];
-  creationState.services = [];
+  creationState.renameServiceInput = "";
   creationState.pendingSkipCategory = null;
   creationState.error = "";
 }
@@ -61,7 +70,6 @@ export async function pickNewDraft() {
     creationState.draft = await invoke<DraftSummary>("creation_new_draft", { path });
     creationState.stage = "recording";
     creationState.cues = [];
-    creationState.services = [];
   } catch (e) {
     creationState.error = String(e);
   }
@@ -75,63 +83,48 @@ export async function pickExistingDraft() {
     creationState.draft = await invoke<DraftSummary>("creation_open_draft", { path });
     creationState.stage = "recording";
     await refreshCreationCues();
-    await refreshServices();
   } catch (e) {
     creationState.error = String(e);
   }
 }
 
-// Re-fetches the draft's cues for whatever's currently playing -- called
-// after every mutation, and reactively (see CreateFilterPage.svelte)
-// whenever the title changes while recording, so the table always reflects
-// the title actually on screen.
+// Re-fetches the draft's cues for whatever's currently playing (on whatever
+// service it's playing on) -- called after every mutation, and reactively
+// (see CreateFilterPage.svelte) whenever the title or app changes while
+// recording, so the table always reflects what's actually on screen.
 export async function refreshCreationCues() {
   if (!session.playback?.title) {
     creationState.cues = [];
     return;
   }
   try {
-    creationState.cues = await invoke<CreationCue[]>("creation_list_cues", { title: session.playback.title });
+    creationState.cues = await invoke<CreationCue[]>("creation_list_cues", { title: session.playback.title, service: currentService() });
   } catch (e) {
     creationState.error = String(e);
   }
 }
 
-// Same as refreshCreationCues, but for the title's service tags -- kept
-// separate since it's a different backend command, but always called
-// alongside it (see CreateFilterPage.svelte's title-change effect) so the
-// chip list and cue table never fall out of sync with each other.
-export async function refreshServices() {
-  if (!session.playback?.title) {
-    creationState.services = [];
-    return;
-  }
-  try {
-    creationState.services = await invoke<string[]>("creation_list_services", { title: session.playback.title });
-  } catch (e) {
-    creationState.error = String(e);
-  }
-}
-
-export async function addService() {
-  const service = creationState.newServiceName.trim();
-  if (!service || !session.playback?.title) return;
+// Corrects the current title's service -- e.g. the auto-tagging landed it
+// as the generic entry because this build doesn't recognize the app, or it
+// just guessed wrong. Renames *from* whatever's playing right now (the
+// entry recording is actually landing in) *to* the typed-in name.
+//
+// Best used once you're done recording that title for this session: future
+// marks still land wherever the *live* detection says (see
+// currentService()), which no longer matches the renamed entry -- they'd
+// start a fresh entry under the old (e.g. generic) name rather than
+// continuing to append to the one just renamed.
+export async function renameService() {
+  const newService = creationState.renameServiceInput.trim();
+  if (!newService || !session.playback?.title) return;
   creationState.error = "";
   try {
-    await invoke("creation_add_service", { title: session.playback.title, service });
-    creationState.newServiceName = "";
-    await refreshServices();
-  } catch (e) {
-    creationState.error = String(e);
-  }
-}
-
-export async function removeService(service: string) {
-  if (!session.playback?.title) return;
-  creationState.error = "";
-  try {
-    await invoke("creation_remove_service", { title: session.playback.title, service });
-    await refreshServices();
+    await invoke("creation_set_service", { title: session.playback.title, oldService: currentService(), newService });
+    creationState.renameServiceInput = "";
+    // The entry just moved out from under currentService() -- refresh so
+    // the table honestly reflects that this (still-generic, if the app
+    // remains unrecognized) service now has no cues of its own.
+    await refreshCreationCues();
   } catch (e) {
     creationState.error = String(e);
   }
@@ -143,9 +136,6 @@ export async function markMute(category: string) {
   try {
     await invoke("creation_mark_mute", { category });
     await refreshCreationCues();
-    // A mark can auto-tag the title's very first service -- refresh so the
-    // chip appears without waiting for the next title-change effect.
-    await refreshServices();
   } catch (e) {
     creationState.error = String(e);
   } finally {
@@ -165,7 +155,6 @@ export async function toggleSkipMark(category: string) {
       await invoke("creation_end_skip_mark");
       creationState.pendingSkipCategory = null;
       await refreshCreationCues();
-      await refreshServices();
     } else if (creationState.pendingSkipCategory === null) {
       await invoke("creation_start_skip_mark", { category });
       creationState.pendingSkipCategory = category;
@@ -201,7 +190,7 @@ export async function updateCueTime(cue: CreationCue, field: "start" | "end", te
   try {
     const start = field === "start" ? seconds : cue.start;
     const end = field === "end" ? seconds : cue.end;
-    await invoke("creation_update_cue", { title: session.playback.title, index: cue.index, start, end });
+    await invoke("creation_update_cue", { title: session.playback.title, service: currentService(), index: cue.index, start, end });
     await refreshCreationCues();
   } catch (e) {
     creationState.error = String(e);
@@ -212,7 +201,7 @@ export async function deleteCue(cue: CreationCue) {
   if (!session.playback?.title) return;
   creationState.error = "";
   try {
-    await invoke("creation_delete_cue", { title: session.playback.title, index: cue.index });
+    await invoke("creation_delete_cue", { title: session.playback.title, service: currentService(), index: cue.index });
     await refreshCreationCues();
   } catch (e) {
     creationState.error = String(e);
