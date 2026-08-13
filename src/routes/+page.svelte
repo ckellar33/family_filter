@@ -94,27 +94,30 @@
     if (devicesOpen) {
       if (session.page === "checking") return "Family Filter";
       if (session.page === "wizard") {
-        if (session.step === "save") return "Save Pairing";
+        if (session.step === "save") return "Save pairing";
         if (session.step === "done") return "Paired";
         return "Pair an Apple TV";
       }
       return "Devices";
     }
-    if (activeTab === "controls") return "Open Controls";
-    if (activeTab === "select-filter") return filterState.detail?.title ?? "Select Filter";
+    if (activeTab === "controls") return "Now Playing";
+    if (activeTab === "select-filter") return filterState.detail ? "Title" : "Filters";
     return "Create Filter";
   });
+
+  // The Devices button doubles as the connection indicator -- the host of
+  // whatever's connected, or a grey "Not connected" when nothing is.
+  let connected = $derived(session.page === "control");
+  let deviceLabel = $derived(connected ? (session.savedPairing?.host ?? "Connected") : "Not connected");
 
   // Whether the sticky nav bar's back button should show for the current
   // screen. There's no real history stack -- each screen has exactly one
   // well-defined "back", mirrored by goBack() below. Devices always has
   // *something* to back out of (an earlier wizard step, or the overlay
-  // itself), so this is unconditionally true whenever it's open.
-  let canGoBack = $derived.by(() => {
-    if (devicesOpen) return true;
-    if (activeTab === "select-filter" && filterState.detail) return true;
-    return false;
-  });
+  // itself), so this is unconditionally true whenever it's open. The title
+  // detail is the exception: its back lives in the page ("‹ All titles"),
+  // so the nav bar keeps the app mark instead of a back button.
+  let canGoBack = $derived(devicesOpen);
 
   function goBack() {
     session.error = "";
@@ -151,6 +154,8 @@
       onBack={goBack}
       showDevices={!devicesOpen}
       onDevices={openDevices}
+      {connected}
+      {deviceLabel}
     />
 
     <div class="content" class:with-tabbar={!devicesOpen}>
@@ -159,7 +164,7 @@
       {:else if activeTab === "controls"}
         <OpenControlsPage onEnableFilter={enableAvailableFilter} onOpenDevices={openDevices} />
       {:else if activeTab === "select-filter"}
-        <SelectFilterPage />
+        <SelectFilterPage onRecordInstead={() => { activeTab = "create-filter"; }} />
       {:else}
         <CreateFilterPage />
       {/if}

@@ -333,6 +333,11 @@ pub struct FilterTile {
     /// the lookup otherwise failed -- the frontend shows a placeholder tile
     /// rather than treating this as an error.
     pub poster: Option<String>,
+    /// How many cues this tile's own entry carries, for the grid's badge.
+    /// A title with more than one service entry can differ per service --
+    /// this is the count for the entry `select_filter_tile` opens by
+    /// default, i.e. the one the dedupe below kept.
+    pub cue_count: usize,
 }
 
 /// Every title across every filter file the library knows about, for the
@@ -357,7 +362,12 @@ pub async fn list_filter_tiles(app: AppHandle) -> Result<Vec<FilterTile>, String
                 continue;
             }
             let poster = metadata::poster_data_uri(&app, &entry.title).await;
-            tiles.push(FilterTile { title: entry.title.clone(), path: path_str.clone(), poster });
+            tiles.push(FilterTile {
+                title: entry.title.clone(),
+                path: path_str.clone(),
+                poster,
+                cue_count: entry.cues.len(),
+            });
         }
     }
     Ok(tiles)

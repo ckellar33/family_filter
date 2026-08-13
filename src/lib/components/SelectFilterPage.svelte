@@ -16,10 +16,14 @@
     toggleFilterEnabled,
     toggleDetailCategory,
     toggleDetailCue,
+    closeDetail,
   } from "$lib/state/filter.svelte";
   import type { Cue } from "$lib/types";
   import { fmtTime } from "$lib/format";
   import PosterTile from "$lib/components/PosterTile.svelte";
+  import EmptyState from "$lib/components/EmptyState.svelte";
+
+  let { onRecordInstead }: { onRecordInstead: () => void } = $props();
 
   $effect(() => {
     loadTiles();
@@ -55,12 +59,16 @@
       <p class="banner error">{filterState.detailError}</p>
     {/if}
 
+    <!-- Back lives in the page, not the nav bar: the nav keeps the app mark
+         and "Title", and this reads as "‹ All titles" above the poster. -->
+    <button type="button" class="back-link" onclick={closeDetail}>‹ All titles</button>
+
     <div class="detail-header">
       <span class="poster-art">
         {#if tile?.poster}
           <img src={tile.poster} alt="" />
         {:else}
-          <span class="poster-placeholder">🎬</span>
+          <span class="poster-placeholder">poster art</span>
         {/if}
       </span>
       <div class="detail-header-info">
@@ -70,13 +78,14 @@
     </div>
 
     {#if filterState.serviceOptions.length > 1}
-      <p class="section-header">Service — different platforms can cut this title differently</p>
+      <p class="section-header">Service — platforms cut this title differently</p>
       <div class="category-buttons">
         {#each filterState.serviceOptions as option (option.service)}
           <button
             type="button"
             class="category-btn"
-            class:recording={option.service.toLowerCase() === detail.service.toLowerCase()}
+            class:selected={option.service.toLowerCase() === detail.service.toLowerCase()}
+            style="min-height:46px"
             onclick={() => selectTile(option.path, detail.title, option.service)}
           >
             {option.service || "Generic"}
@@ -85,15 +94,21 @@
       </div>
     {/if}
 
-    <ul class="list">
-      <li class="list-row">
-        <span>Enabled</span>
-        <label class="switch">
-          <input type="checkbox" checked={filterState.filterEnabled} onchange={toggleFilterEnabled} disabled={filterState.filterBusy} />
-          <span class="switch-track"><span class="switch-thumb"></span></span>
-        </label>
-      </li>
-    </ul>
+    <!-- Master switch, promoted out of the list into its own card: it's the
+         one control on this screen that decides whether anything happens at
+         all, so it shouldn't read like just another row. -->
+    <div class="enable-card" class:on={filterState.filterEnabled}>
+      <div style="flex:1; min-width:0">
+        <p class="title">{filterState.filterEnabled ? "Filter is on" : "Filter is off"}</p>
+        <p class="sub">
+          {filterState.filterEnabled ? "Applied the moment this title starts" : "Cues stay saved, nothing fires"}
+        </p>
+      </div>
+      <label class="switch">
+        <input type="checkbox" checked={filterState.filterEnabled} onchange={toggleFilterEnabled} disabled={filterState.filterBusy} />
+        <span class="switch-track"><span class="switch-thumb"></span></span>
+      </label>
+    </div>
 
     {#if detail.categories.length > 0}
       <p class="section-header">Categories — tap one to see (and individually toggle) its cues</p>
@@ -105,18 +120,24 @@
             <div class="list-row category-row">
               <button
                 type="button"
+                class="category-label"
+                onclick={() => toggleExpanded(category)}
+                disabled={cues.length === 0}
+                aria-expanded={isExpanded}
+              >
+                <span class="cat-dot" data-cat={category}></span>
+                {category}
+                {#if cues.length > 0}<span class="hint">{cues.length} {cues.length === 1 ? "cue" : "cues"}</span>{/if}
+              </button>
+              <button
+                type="button"
                 class="disclosure"
                 class:expanded={isExpanded && cues.length > 0}
                 onclick={() => toggleExpanded(category)}
                 disabled={cues.length === 0}
-                aria-expanded={isExpanded}
                 aria-label={`${isExpanded ? "Collapse" : "Expand"} ${category}`}
               >
                 {cues.length > 0 ? "›" : "·"}
-              </button>
-              <button type="button" class="category-label" onclick={() => toggleExpanded(category)} disabled={cues.length === 0}>
-                {category}
-                {#if cues.length > 0}<span class="hint">({cues.length})</span>{/if}
               </button>
               <label class="switch">
                 <input
@@ -131,9 +152,10 @@
             {#if isExpanded && cues.length > 0}
               <ul class="list nested-list">
                 {#each cues as cue (cue.index)}
-                  <li class="list-row cue-row">
+                  <li class="list-row cue-row static" class:cue-past={!cue.enabled}>
                     <span class="cue-time">{fmtTime(cue.start)}–{fmtTime(cue.end)}</span>
-                    <span class="cue-action">{cue.action === "mute" ? "🔇 mute" : "⏭️ skip"}</span>
+                    <span class="cue-action"></span>
+                    <span class="cue-pill" data-action={cue.action}>{cue.action === "mute" ? "MUTE" : "SKIP"}</span>
                     <label class="switch switch-sm">
                       <input type="checkbox" checked={cue.enabled} onchange={() => toggleDetailCue(cue)} />
                       <span class="switch-track"><span class="switch-thumb"></span></span>
@@ -151,19 +173,21 @@
       <p class="banner error">{filterState.tilesError}</p>
     {/if}
 
-    <div class="stack">
-      <button class="btn-secondary" onclick={addFilterFiles}>Add Filter File(s)…</button>
-      <button class="btn-secondary" onclick={addFilterDirectory}>Add Filter Folder…</button>
-    </div>
-
     {#if filterState.tilesLoading && filterState.tiles.length === 0}
       <p class="hint centered">Loading filters…</p>
     {:else if filterState.tiles.length === 0}
-      <p class="hint centered">No filter files yet -- add one above, or record one from Create Filter.</p>
+      <EmptyState kind="no-filters" onPrimary={addFilterFiles} onSecondary={onRecordInstead} />
     {:else}
+      <div class="stack">
+        <div style="display:flex; gap:9px">
+          <button class="btn-secondary" style="min-height:46px" onclick={addFilterFiles}>Add file…</button>
+          <button class="btn-secondary" style="min-height:46px" onclick={addFilterDirectory}>Add folder…</button>
+        </div>
+      </div>
+      <p class="footnote">{filterState.tiles.length} {filterState.tiles.length === 1 ? "title" : "titles"}</p>
       <div class="poster-grid">
         {#each filterState.tiles as tile (tile.title)}
-          <PosterTile title={tile.title} poster={tile.poster} onclick={() => openTitle(tile.title)} />
+          <PosterTile title={tile.title} poster={tile.poster} cueCount={tile.cue_count} onclick={() => openTitle(tile.title)} />
         {/each}
       </div>
     {/if}

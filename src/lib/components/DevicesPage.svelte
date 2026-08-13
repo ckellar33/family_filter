@@ -7,8 +7,21 @@
   // an overlay reachable via NavBar's Devices button once a session is
   // already active (see `sessionActive`).
   import { untrack } from "svelte";
-  import { session, checkSaved, STEPS, PROTOCOL_LABEL, isProtocol, scan, pair, submitPin, skipStep, save, verifySaved } from "$lib/state/session.svelte";
+  import {
+    session,
+    checkSaved,
+    STEPS,
+    PROTOCOL_LABEL,
+    isProtocol,
+    scan,
+    pair,
+    submitPin,
+    skipStep,
+    save,
+    verifySaved,
+  } from "$lib/state/session.svelte";
   import type { Protocol, Step } from "$lib/types";
+  import PinKeypad from "$lib/components/PinKeypad.svelte";
 
   let {
     sessionActive = false,
@@ -19,6 +32,31 @@
     onOpenControls: () => void | Promise<void>;
     onClose?: () => void;
   } = $props();
+
+  // One sentence per wizard step, so each screen says what it's for and
+  // whether it matters -- previously only the optional-ness was stated.
+  const STEP_COPY: Record<Step, { title: string; body: string }> = {
+    companion: {
+      title: "Find your Apple TV",
+      body: "Companion is the required one — it's what lets Family Filter mute and skip. Your Apple TV must be awake and on this Wi-Fi.",
+    },
+    mrp: {
+      title: "Add MRP (optional)",
+      body: "MRP reports the live playback position cues are timed against. Skip it if this Apple TV isn't reachable this way.",
+    },
+    airplay: {
+      title: "Add AirPlay (optional)",
+      body: "AirPlay is the fallback for playback position. Skip it and Family Filter still mutes and skips — just without a live timeline.",
+    },
+    save: {
+      title: "Save this pairing",
+      body: "Credentials get written to pairing.store so the next launch reconnects on its own.",
+    },
+    done: {
+      title: "You're paired",
+      body: "Family Filter will reconnect to this Apple TV on its own next time.",
+    },
+  };
 
   // On mount: check for a saved pairing.store, and if one exists, connect
   // automatically (VidAngel-style auto-connect) rather than waiting for a
@@ -66,6 +104,7 @@
     <p class="hint centered">Checking for a saved pairing…</p>
   </section>
 {:else if session.page === "wizard"}
+  {@const copy = STEP_COPY[session.step]}
   <section class="screen">
     <div class="segmented">
       {#each ["companion", "mrp", "airplay", "save"] as s (s)}
@@ -75,76 +114,110 @@
       {/each}
     </div>
 
-    {#if session.error}
+    <div>
+      <h2 class="empty-title" style="font-size:28px">{copy.title}</h2>
+      <p class="empty-body" style="font-size:14px">{copy.body}</p>
+    </div>
+
+    {#if session.error && !isProtocol(session.step)}
       <p class="banner error">{session.error}</p>
     {/if}
 
     {#if isProtocol(session.step)}
-      <p class="section-header">{PROTOCOL_LABEL[session.step]} pairing{session.step !== "companion" ? " (optional)" : ""}</p>
-      {#if session.step !== "companion"}
-        <p class="hint">Needed only for live playback position. Skip if this Apple TV isn't reachable over {PROTOCOL_LABEL[session.step]}.</p>
-      {/if}
-
       {#if session.awaitingPinFor === session.step}
-        <form onsubmit={(e) => { e.preventDefault(); submitPin(); }}>
-          <p class="hint centered">Enter the PIN shown on your Apple TV:</p>
-          <input class="pin-input" inputmode="numeric" autocomplete="one-time-code" bind:value={session.pin} placeholder="0000" />
-          <button type="submit" class="btn-primary" disabled={!session.pin}>Submit</button>
-        </form>
+        <PinKeypad bind:value={session.pin} onSubmit={submitPin} />
       {:else}
-        <div class="stack">
-          <button class="btn-secondary" onclick={() => scan(session.step as Protocol)} disabled={session.scanning || session.pairing}>
-            {session.scanning ? "Scanning…" : "Rescan"}
-          </button>
-          {#if session.step !== "companion"}
-            <button class="btn-secondary" onclick={skipStep} disabled={session.pairing}>Skip</button>
-          {/if}
-        </div>
+        {#if session.error}
+          <p class="banner error">
+            {session.error}{session.step !== "companion" ? " You can skip this one." : ""}
+          </p>
+        {/if}
 
         {#if session.devices.length > 0}
           <ul class="list">
             {#each session.devices as device (device.host + device.port)}
               <li>
                 <button class="list-row" onclick={() => pair(session.step as Protocol, device)} disabled={session.pairing}>
-                  <span>{device.host}:{device.port}</span>
+                  <span class="device-icon">📺</span>
+                  <span class="device-row-text">
+                    <span>{device.host}</span>
+                    <span class="addr">{device.host}:{device.port}</span>
+                  </span>
                   <span class="chevron">›</span>
                 </button>
               </li>
             {/each}
           </ul>
+        {:else if session.scanning}
+          <ul class="list">
+            <li class="list-row static" style="justify-content:center; padding:24px 16px">
+              <span class="hint centered" style="margin:0">Looking on your network…</span>
+            </li>
+          </ul>
         {/if}
+
+        <div style="display:flex; gap:10px">
+          <button class="btn-secondary" onclick={() => scan(session.step as Protocol)} disabled={session.scanning || session.pairing}>
+            {session.scanning ? "Scanning…" : "Scan again"}
+          </button>
+          {#if session.step !== "companion"}
+            <button class="btn-secondary" style="background: var(--grouped-bg); border-color: transparent" onclick={skipStep} disabled={session.pairing}>
+              Skip this one
+            </button>
+          {/if}
+        </div>
       {/if}
     {:else if session.step === "save"}
-      <p class="section-header">Save pairing</p>
-      <p class="hint">Ready to save credentials to <code>pairing.store</code>.</p>
-      <button class="btn-primary" onclick={save} disabled={session.pairing}>{session.pairing ? "Saving…" : "Save"}</button>
+      <button class="btn-primary" onclick={save} disabled={session.pairing}>{session.pairing ? "Saving…" : "Save this pairing"}</button>
     {:else if session.step === "done"}
-      <p class="section-header">✅ Paired</p>
-      <p class="hint">Credentials saved. This Apple TV is ready to control.</p>
-      <button class="btn-primary" onclick={onOpenControls}>Open Controls</button>
+      <div style="display:flex; flex-direction:column; align-items:center; gap:16px">
+        <div
+          style="width:88px; height:98px; border-radius:28px 28px 44px 44px; background: var(--accent); color:#fff; display:flex; align-items:center; justify-content:center; font-size:32px"
+        >
+          ✓
+        </div>
+        <p class="footnote" style="text-align:center">Saved to <code>pairing.store</code>.</p>
+      </div>
+      <button class="btn-primary" onclick={onOpenControls}>Open controls</button>
     {/if}
   </section>
 {:else if session.savedPairing}
   <section class="screen">
-    <p class="section-header">Device</p>
-    <ul class="list">
-      <li class="list-row static">
-        <code>{session.savedPairing.host}:{session.savedPairing.port}</code>
-      </li>
-      <li class="list-row static">
-        <span>MRP</span>
-        <span class="value">{session.savedPairing.has_mrp ? "Paired" : "Not paired"}</span>
-      </li>
-      <li class="list-row static">
-        <span>AirPlay</span>
-        <span class="value">{session.savedPairing.has_airplay ? "Paired" : "Not paired"}</span>
-      </li>
-    </ul>
+    <div class="device-card">
+      <div class="device-card-head">
+        <span class="device-icon" style="background: rgba(245,241,234,.12); width:44px; height:44px; border-radius:14px; font-size:17px">📺</span>
+        <div style="flex:1; min-width:0">
+          <p class="name">{session.savedPairing.host}</p>
+          <p class="addr">{session.savedPairing.host}:{session.savedPairing.port}</p>
+        </div>
+        <span class="shield" data-state={session.verifyResult === "ok" ? "on" : "off"}>
+          {session.verifying ? "CHECKING" : session.verifyResult === "ok" ? "VERIFIED" : "SAVED"}
+        </span>
+      </div>
+      <div class="protocol-tiles">
+        <div class="protocol-tile">
+          <span class="name">Companion</span>
+          <span class="state paired">Paired</span>
+        </div>
+        <div class="protocol-tile">
+          <span class="name">MRP</span>
+          <span class="state" class:paired={session.savedPairing.has_mrp}>{session.savedPairing.has_mrp ? "Paired" : "Not paired"}</span>
+        </div>
+        <div class="protocol-tile">
+          <span class="name">AirPlay</span>
+          <span class="state" class:paired={session.savedPairing.has_airplay}>
+            {session.savedPairing.has_airplay ? "Paired" : "Not paired"}
+          </span>
+        </div>
+      </div>
+    </div>
+
+    <p class="hint">
+      Companion is what lets Family Filter mute and skip. MRP or AirPlay adds the live playback position the cues are timed against.
+    </p>
 
     {#if session.connecting}
       <p class="hint centered">Connecting…</p>
-    {:else if session.verifyResult === "ok"}
-      <p class="banner success">✅ Verified — this pairing is still valid.</p>
     {:else if session.verifyResult === "failed"}
       <p class="banner error">{session.verifyError}</p>
     {:else if session.error}
@@ -156,14 +229,14 @@
         <button class="btn-primary" onclick={onClose} disabled={session.verifying}>Done</button>
       {:else}
         <button class="btn-primary" onclick={onOpenControls} disabled={session.verifying || session.connecting}>
-          {session.connecting ? "Connecting…" : "Open Controls"}
+          {session.connecting ? "Connecting…" : "Open controls"}
         </button>
       {/if}
       <button class="btn-secondary" onclick={verifySaved} disabled={session.verifying || session.connecting}>
-        {session.verifying ? "Verifying…" : "Verify Existing Device"}
+        {session.verifying ? "Verifying…" : "Verify this device"}
       </button>
       <button class="btn-secondary" onclick={() => { session.page = "wizard"; }} disabled={session.verifying || session.connecting}>
-        Pair a New Device
+        Pair a new device
       </button>
     </div>
   </section>

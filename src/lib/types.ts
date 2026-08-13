@@ -110,6 +110,8 @@ export interface FilterTile {
   // `data:` URI, or null when TMDB has no key configured, no match, or the
   // lookup otherwise failed -- render a placeholder tile in that case.
   poster: string | null;
+  // How many cues the entry behind this tile carries -- the grid's badge.
+  cue_count: number;
 }
 
 // What tapping a tile (after resolving which service, see ServiceOption)
