@@ -67,6 +67,13 @@ export interface FilterSummary {
   path: string;
   media_count: number;
   categories: string[];
+  // Master auto-filter toggle's state as of this summary -- persisted
+  // backend-side (see filter::load_saved_filter_enabled), so a session
+  // restored via checkSavedFilter can come back armed instead of always
+  // defaulting off. Loading a *different* file (load_filter_file/
+  // select_filter_tile) always reports this false, matching the backend's
+  // "never silently start muting/skipping" rule.
+  enabled: boolean;
 }
 
 // Filter *creation* mode -- recording cue timestamps live from playback, as

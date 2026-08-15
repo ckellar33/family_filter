@@ -17,6 +17,7 @@ target
 pairing.store
 filter_path.store
 filter_library.store
+filter_enabled.store
 tmdb_api_key.store
 
 # Node / SvelteKit / Vite (Tauri frontend)

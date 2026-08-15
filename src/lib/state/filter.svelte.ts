@@ -61,6 +61,10 @@ export async function checkSavedFilter() {
     const found = await invoke<FilterSummary | null>("check_saved_filter_file");
     if (found) {
       filterState.filterSummary = found;
+      // Mirrors whatever the backend restored from filter_enabled.store --
+      // may already be true, unlike every other path into filterSummary
+      // here, which always load in disarmed.
+      filterState.filterEnabled = found.enabled;
       filterState.categoryEnabled = Object.fromEntries(found.categories.map((c) => [c, true]));
     }
   } catch (e) {
@@ -182,7 +186,7 @@ export async function selectTile(path: string, title: string, service: string) {
     // Open Controls' "no filter list loaded" check) without a second
     // round trip; media_count isn't shown anywhere that matters here, so 0
     // is fine as a placeholder.
-    filterState.filterSummary = { path, media_count: 0, categories: detail.categories };
+    filterState.filterSummary = { path, media_count: 0, categories: detail.categories, enabled: false };
     await refreshPlayback();
   } catch (e) {
     filterState.detailError = String(e);

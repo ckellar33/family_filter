@@ -26,10 +26,21 @@ use anyhow::{bail, Context, Result};
 /// specific (just a path, not credentials) so it lives here instead.
 const FILTER_PATH_STORE: &str = "filter_path.store";
 
-/// Minimum time to wait before re-dispatching a skip for the *same* cue --
+/// Sidecar file remembering the master auto-filter on/off toggle across
+/// launches -- same idea as `FILTER_PATH_STORE`, just a `"true"`/`"false"`
+/// (or anything else, tolerated the same way) instead of a path. Read back
+/// by `control::check_saved_filter_file` on startup so the mode comes back
+/// exactly how it was left, rather than always defaulting off.
+const FILTER_ENABLED_STORE: &str = "filter_enabled.store";
+
+/// Minimum time to wait before re-dispatching a seek for the *same* cue --
 /// without this, a poll tick landing inside `[start, end)` again before the
-/// device has caught up to the previous skip would re-dispatch every poll
-/// interval until it does.
+/// device has caught up to the previous seek (or actually applied it --
+/// worth retrying if it silently dropped) would re-dispatch every poll
+/// interval until it does. Every retry targets the exact same absolute
+/// position (`cue.end` -- see `FilterCommand::Seek`), so unlike a relative
+/// skip there's no "remaining amount" to recompute between attempts, and
+/// no risk of compounding overshoot from retrying.
 const SKIP_RETRY_COOLDOWN: Duration = Duration::from_secs(3);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
@@ -160,32 +171,6 @@ impl MediaEntry {
             .find(|(idx, c)| c.start <= pos && pos < c.end && self.cue_enabled(*idx, c, disabled_categories, disabled_cues))
     }
 
-    /// Skip cues whose *entire* window was jumped clean over between the
-    /// previous known position and this one -- e.g. a background gap or a
-    /// large position-drift correction that landed past `end` without this
-    /// engine ever observing a position inside `[start, end)`, so `cue_at`
-    /// above never got a chance to catch (and dispatch a skip for) them.
-    /// Mute cues aren't included: muting audio after it's already played
-    /// achieves nothing, so there's nothing meaningful to catch up on for
-    /// those the way there is for skip.
-    fn skipped_over_cues<'a>(
-        &'a self,
-        prev_pos: f64,
-        pos: f64,
-        disabled_categories: &HashSet<String>,
-        disabled_cues: &HashSet<CueKey>,
-    ) -> Vec<(usize, &'a Cue)> {
-        self.cues
-            .iter()
-            .enumerate()
-            .filter(|(idx, c)| {
-                c.action == CueAction::Skip
-                    && prev_pos < c.start
-                    && pos >= c.end
-                    && self.cue_enabled(*idx, c, disabled_categories, disabled_cues)
-            })
-            .collect()
-    }
 }
 
 impl FilterList {
@@ -395,6 +380,18 @@ pub fn save_filter_path(path: &Path) -> Result<()> {
     fs::write(FILTER_PATH_STORE, path.to_string_lossy().as_bytes()).context("failed to write filter_path.store")
 }
 
+/// `false` (never on by default) if the store is missing or unparseable --
+/// same "nothing to offer yet" tolerance `load_saved_filter_path` has, and
+/// the safer of the two defaults regardless: a corrupt/absent store should
+/// never be the reason auto-filter mode silently turns itself on.
+pub fn load_saved_filter_enabled() -> bool {
+    fs::read_to_string(FILTER_ENABLED_STORE).ok().map(|s| s.trim() == "true").unwrap_or(false)
+}
+
+pub fn save_filter_enabled(enabled: bool) -> Result<()> {
+    fs::write(FILTER_ENABLED_STORE, if enabled { "true" } else { "false" }).context("failed to write filter_enabled.store")
+}
+
 /// Per-session bookkeeping the evaluation engine carries across poll ticks --
 /// which title+service it last saw, which cue (if any) currently holds an
 /// auto-applied mute, when a skip was last dispatched for which cue (to
@@ -442,9 +439,17 @@ impl FilterRuntime {
 pub enum FilterCommand {
     Mute,
     Unmute,
-    /// Relative skip, in seconds -- always positive; matches
-    /// `CompanionSession::skip`'s (also relative) signature.
-    Skip(f64),
+    /// Absolute seek target, in seconds -- always `cue.end` for whichever
+    /// skip cue is in play. Dispatched as `LiveSession::seek` (MRP's
+    /// `SendCommandMessage`/`SeekToPlaybackPosition`), *not* Companion's
+    /// relative `_mcc` SkipBy: some apps (confirmed against Disney+) only
+    /// ever honor a fixed, much shorter interval than a SkipBy actually
+    /// requests, so a cue longer than that landed as several under-shot
+    /// hops instead of clearing in one go -- an absolute "go to this
+    /// position" command doesn't have that problem, since there's no
+    /// "requested amount" for the device to substitute its own fixed one
+    /// for.
+    Seek(f64),
 }
 
 /// What `evaluate` decided for one poll tick: which commands (if any) the
@@ -470,7 +475,8 @@ pub struct FilterOutcome {
 /// (service-unspecified) entry can match (see
 /// `FilterList::find_entry_for_playback`). `is_playing` should be `false`
 /// for anything other than actively playing (paused, stopped, seeking,
-/// unknown) -- see the guard below for why. No I/O -- the caller
+/// unknown) -- see the guard below for why, and `continuing_in_flight_skip`
+/// just past it for the one narrow exception. No I/O -- the caller
 /// (`control.rs`) is responsible for actually issuing the returned commands
 /// against the live/Companion sessions, which is what makes this testable
 /// without a real device.
@@ -512,24 +518,31 @@ pub fn evaluate(
         return outcome;
     };
 
+    let found = entry.cue_at(pos, disabled_categories, disabled_cues);
+
     // Paused (or stopped/seeking/unknown) -- don't apply, re-apply, or
     // release any cue action while playback isn't actually advancing. A cue
     // landing exactly where playback is paused shouldn't force a mute the
-    // user won't hear anyway, and a skip must never fire while paused --
+    // user won't hear anyway, and a seek must never fire while paused --
     // that would yank position out from under a deliberate pause instead of
-    // waiting for it to resume. Leaves any mute already engaged untouched
-    // rather than releasing it: there's nothing wrong with staying muted
-    // through a pause, and the next `evaluate` while actually playing will
-    // reapply the correct state for wherever position ends up anyway. Still
-    // records `last_position` so the catch-up pass (below, once playing
-    // again) compares against an accurate "last seen" position rather than
-    // one frozen from before the pause.
+    // waiting for it to resume. (This used to need a narrow exception here
+    // for a skip already in flight, back when skipping was a *relative*
+    // Companion `SkipBy` that some apps only ever honored as a fixed,
+    // much-shorter-than-requested hop -- clearing a whole cue could take
+    // several hops, each triggering the app's own auto-pause-after-seek.
+    // `FilterCommand::Seek` is an absolute MRP position command instead, so
+    // one dispatch is enough regardless of pause; nothing to continue.)
+    // Leaves any mute already engaged untouched rather than releasing it:
+    // there's nothing wrong with staying muted through a pause, and the
+    // next `evaluate` while actually playing will reapply the correct state
+    // for wherever position ends up anyway. Still records `last_position`
+    // so the catch-up pass (below, once playing again) compares against an
+    // accurate "last seen" position rather than one frozen from before the
+    // pause.
     if !is_playing {
         runtime.last_position = Some(pos);
         return outcome;
     }
-
-    let found = entry.cue_at(pos, disabled_categories, disabled_cues);
 
     // Mute/unmute: compare the cue (if any) that *should* be holding a mute
     // right now against the one that actually is, and transition between
@@ -559,7 +572,7 @@ pub fn evaluate(
                 _ => true,
             };
             if should_dispatch {
-                outcome.commands.push(FilterCommand::Skip((cue.end - pos).max(0.1)));
+                outcome.commands.push(FilterCommand::Seek(cue.end));
                 outcome.filter_action = Some("auto-skipped");
                 outcome.filter_category = Some(cue.category.clone());
                 runtime.last_skip = Some((idx, now));
@@ -567,26 +580,18 @@ pub fn evaluate(
         }
     }
 
-    // Catch-up pass: any skip cue whose entire window got jumped clean over
-    // since the last poll (see `skipped_over_cues`) never shows up as
-    // `found` above, since `pos` is already past its `end` by the time we
-    // notice -- dispatch a best-effort skip for each anyway, just in case
-    // there's still something left to skip past. Same "end minus current
-    // position" amount `found`'s skip uses above (i.e. still subtracting
-    // however far over `pos` already is), just evaluated past the window
-    // instead of inside it, so it naturally clamps to the token 0.1s
-    // minimum once there's truly nothing left. Self-limiting without extra
-    // bookkeeping: `runtime.last_position` becomes `pos` (>= this cue's
-    // `end`) right below, so the `prev_pos < cue.start` condition can never
-    // match this same cue again for the rest of this entry.
-    if let Some(prev_pos) = runtime.last_position {
-        for (idx, cue) in entry.skipped_over_cues(prev_pos, pos, disabled_categories, disabled_cues) {
-            outcome.commands.push(FilterCommand::Skip((cue.end - pos).max(0.1)));
-            outcome.filter_action = Some("auto-skipped (caught up)");
-            outcome.filter_category = Some(cue.category.clone());
-            runtime.last_skip = Some((idx, now));
-        }
-    }
+    // No catch-up pass for a skip cue whose entire window got jumped clean
+    // over since the last poll (see `skipped_over_cues`) -- unlike the old
+    // relative-skip design (a "best-effort forward nudge" was always safe,
+    // since it could only ever move forward), an absolute `Seek` to
+    // `cue.end` here would be *backward*: `skipped_over_cues` only reports a
+    // cue once `pos` is already at or past its `end`, so there's nothing
+    // left ahead to seek to, and seeking back into a cue whose content
+    // either already played (missed between two poll ticks) or was
+    // deliberately scrubbed past by the user would be actively wrong in
+    // both cases. `runtime.last_position` is still tracked below regardless
+    // -- other bookkeeping (e.g. a future entry's very first poll) still
+    // depends on it.
     runtime.last_position = Some(pos);
 
     outcome
@@ -833,7 +838,7 @@ mod tests {
         let t0 = Instant::now();
 
         let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(32.0), true, t0);
-        assert_eq!(o.commands, vec![FilterCommand::Skip(8.0)]); // end(40) - pos(32)
+        assert_eq!(o.commands, vec![FilterCommand::Seek(40.0)]); // cue.end, regardless of pos
 
         // Immediately again (device hasn't caught up yet): no re-dispatch.
         let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(32.0), true, t0);
@@ -842,7 +847,7 @@ mod tests {
         // After the cooldown, still stuck in range: dispatch again.
         let later = t0 + Duration::from_secs(4);
         let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(32.0), true, later);
-        assert_eq!(o.commands, vec![FilterCommand::Skip(8.0)]);
+        assert_eq!(o.commands, vec![FilterCommand::Seek(40.0)]);
     }
 
     #[test]
@@ -863,7 +868,7 @@ mod tests {
 
         // Resumes at the same position: now it fires.
         let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(32.0), true, now);
-        assert_eq!(o.commands, vec![FilterCommand::Skip(8.0)]);
+        assert_eq!(o.commands, vec![FilterCommand::Seek(40.0)]);
     }
 
     #[test]
@@ -907,7 +912,7 @@ mod tests {
     }
 
     #[test]
-    fn catch_up_skip_fires_when_a_skip_window_is_jumped_clean_over() {
+    fn jumping_over_a_skip_window_does_not_seek_backward() {
         let list = sample_list(); // skip cue at [30.0, 40.0)
         let mut runtime = FilterRuntime::default();
         let now = Instant::now();
@@ -916,52 +921,15 @@ mod tests {
         let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(25.0), true, now);
         assert!(o.commands.is_empty());
 
-        // Next poll lands past the *entire* window (e.g. a background gap)
-        // -- cue_at alone would never catch this, since pos is already past
-        // `end`, but the catch-up pass should still fire a best-effort skip.
+        // Next poll lands past the *entire* window (e.g. a background gap,
+        // or the user scrubbing past it themselves) -- `cue_at` alone never
+        // catches this, since `pos` is already past `end`. Unlike the old
+        // relative-skip design (a "best-effort forward nudge" was always
+        // safe here), there's nothing to dispatch now: seeking to `cue.end`
+        // would move backward, either replaying content already shown or
+        // undoing the user's own scrub -- both wrong. See `evaluate`'s doc
+        // just above the (removed) catch-up pass.
         let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(45.0), true, now);
-        assert_eq!(o.commands, vec![FilterCommand::Skip(0.1)]); // end(40) - pos(45), clamped to the minimum
-    }
-
-    #[test]
-    fn catch_up_skip_does_not_fire_on_a_titles_very_first_poll() {
-        let list = sample_list();
-        let mut runtime = FilterRuntime::default();
-        // First-ever poll for this title lands already past the skip
-        // window -- no prior position to compare against, so this must not
-        // be treated as "missed while running" (vs. "just started here").
-        let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(45.0), true, Instant::now());
-        assert!(o.commands.is_empty());
-    }
-
-    #[test]
-    fn catch_up_skip_fires_only_once_per_miss() {
-        let list = sample_list();
-        let mut runtime = FilterRuntime::default();
-        let now = Instant::now();
-        evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(25.0), true, now);
-        let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(45.0), true, now);
-        assert_eq!(o.commands, vec![FilterCommand::Skip(0.1)]);
-
-        // Polled again at the same (or any later) position: no repeat --
-        // `last_position` is now past this cue's start, so it can't look
-        // "freshly jumped over" again.
-        let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(45.0), true, now);
-        assert!(o.commands.is_empty());
-        let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(60.0), true, now);
-        assert!(o.commands.is_empty());
-    }
-
-    #[test]
-    fn catch_up_skip_respects_a_disabled_category() {
-        let list = sample_list();
-        let mut runtime = FilterRuntime::default();
-        let now = Instant::now();
-        evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(25.0), true, now);
-
-        let mut disabled = HashSet::new();
-        disabled.insert("gore".to_string());
-        let o = evaluate(&list, &mut runtime, &disabled, &empty_disabled_cues(), Some("Some Movie"), None, Some(45.0), true, now);
         assert!(o.commands.is_empty());
     }
 

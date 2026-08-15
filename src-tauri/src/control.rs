@@ -102,8 +102,14 @@ async fn apply_filter(guard: &mut ControlState) -> (Option<String>, Option<Strin
     // Cues only take effect while content is actually advancing -- see
     // `filter::evaluate`'s `is_playing` doc. Paused/stopped/seeking/unknown
     // all withhold new mute/skip commands (and leave any existing mute
-    // alone) until playback resumes.
-    let is_playing = playback.playback_state() == appletv::mrp::playback::PlaybackStateKind::Playing;
+    // alone) until playback resumes. Uses `is_advancing` rather than a bare
+    // `playback_state() == Playing` check -- some clients leave
+    // `playbackState` stale on pause and only zero out the rate, so relying
+    // on state alone let a skip cue still dispatch a real seek to the
+    // device even while the locally displayed position had already frozen
+    // (see `PlayerSnapshot::is_advancing`'s doc for why the two can
+    // disagree).
+    let is_playing = playback.is_advancing();
 
     let outcome = filter::evaluate(
         guard.filter_list.as_ref().expect("checked above"),
@@ -129,9 +135,12 @@ async fn apply_filter(guard: &mut ControlState) -> (Option<String>, Option<Strin
                     let _ = live.unmute().await;
                 }
             }
-            filter::FilterCommand::Skip(seconds) => {
-                if let Some(session) = guard.session.as_mut() {
-                    let _ = session.skip(*seconds).await;
+            filter::FilterCommand::Seek(position) => {
+                // MRP's absolute SeekToPlaybackPosition (LiveSession::seek),
+                // not Companion's relative `_mcc` SkipBy -- see
+                // `filter::FilterCommand::Seek`'s doc for why.
+                if let Some(live) = guard.live.as_mut() {
+                    let _ = live.seek(*position).await;
                 }
             }
         }
@@ -145,6 +154,11 @@ pub struct FilterSummary {
     pub path: String,
     pub media_count: usize,
     pub categories: Vec<String>,
+    /// Master auto-filter toggle's state at the moment this summary was
+    /// built -- lets the frontend mirror the backend's persisted value
+    /// (see `filter::load_saved_filter_enabled`) instead of assuming it's
+    /// always off.
+    pub enabled: bool,
 }
 
 /// Shared by `load_filter_file` and `select_filter_tile` below -- both need
@@ -182,8 +196,18 @@ async fn load_filter_file_inner(handle: &ControlStateHandle, path: String) -> Re
     guard.disabled_cues.clear();
     guard.filter_list = Some(list);
     guard.filter_list_path = Some(path_buf);
+    // Loading a (possibly different) list must never silently start auto-
+    // muting/skipping -- previously this was a given since `filter_enabled`
+    // only ever started `false` each launch, but now that it's persisted
+    // (see `set_filter_enabled`) a restored session can easily still be
+    // `true` here, so this has to force it off explicitly rather than just
+    // leaving it alone.
+    guard.filter_enabled = false;
+    if let Err(e) = filter::save_filter_enabled(false) {
+        eprintln!("[filter] failed to persist filter_enabled.store: {e}");
+    }
 
-    Ok(FilterSummary { path, media_count, categories })
+    Ok(FilterSummary { path, media_count, categories, enabled: false })
 }
 
 /// Opens the file at `path` (chosen by the frontend via
@@ -197,11 +221,16 @@ pub async fn load_filter_file(state: State<'_, ControlStateHandle>, path: String
 }
 
 /// On app start, tries to reload whatever filter file was last picked (see
-/// `filter::load_saved_filter_path`). Populates state but leaves the mode
-/// off -- same "auto-load, don't auto-arm" rule as `load_filter_file`.
-/// Returns `None` for both "nothing was ever picked" and "the saved path no
-/// longer parses" -- either way there's nothing to offer, so the frontend
-/// just shows its normal "load a filter file" prompt.
+/// `filter::load_saved_filter_path`) *and* restores the master auto-filter
+/// toggle to however it was last left (see `filter::load_saved_filter_
+/// enabled`) -- unlike `load_filter_file`, this genuinely can come back
+/// armed: it's re-opening the exact same list the toggle was already
+/// validated against when the user turned it on, not swapping in a new one
+/// out from under it. Returns `None` for both "nothing was ever picked" and
+/// "the saved path no longer parses" -- either way there's nothing to
+/// offer, so the frontend just shows its normal "load a filter file"
+/// prompt (and the enabled flag is left untouched on disk either way, so a
+/// transient load failure doesn't erase it for next launch).
 #[tauri::command]
 pub async fn check_saved_filter_file(state: State<'_, ControlStateHandle>) -> Result<Option<FilterSummary>, String> {
     let Some(path) = filter::load_saved_filter_path() else {
@@ -212,6 +241,7 @@ pub async fn check_saved_filter_file(state: State<'_, ControlStateHandle>) -> Re
     };
     let categories = list.categories();
     let media_count = list.media.len();
+    let enabled = filter::load_saved_filter_enabled();
 
     let mut guard = state.lock().await;
     guard.filter_runtime.reset();
@@ -219,8 +249,16 @@ pub async fn check_saved_filter_file(state: State<'_, ControlStateHandle>) -> Re
     guard.disabled_cues.clear();
     guard.filter_list = Some(list);
     guard.filter_list_path = Some(path.clone());
+    guard.filter_enabled = enabled;
+    if enabled {
+        // Land any cue that's already due right away, same as
+        // `set_filter_enabled` does for an explicit toggle -- otherwise a
+        // restored session sits un-applied for up to a second until the
+        // next poll tick.
+        let _ = apply_filter(&mut guard).await;
+    }
 
-    Ok(Some(FilterSummary { path: path.to_string_lossy().into_owned(), media_count, categories }))
+    Ok(Some(FilterSummary { path: path.to_string_lossy().into_owned(), media_count, categories, enabled }))
 }
 
 /// Flips the master auto-filter toggle. Turning it off while a filter-
@@ -230,6 +268,13 @@ pub async fn check_saved_filter_file(state: State<'_, ControlStateHandle>) -> Re
 pub async fn set_filter_enabled(state: State<'_, ControlStateHandle>, enabled: bool) -> Result<(), String> {
     let mut guard = state.lock().await;
     guard.filter_enabled = enabled;
+    // Best-effort, same tolerance as everywhere else this pattern shows up:
+    // a failure to persist just means the toggle reverts to off on the next
+    // launch instead of coming back as left, not something worth failing
+    // this call over.
+    if let Err(e) = filter::save_filter_enabled(enabled) {
+        eprintln!("[filter] failed to persist filter_enabled.store: {e}");
+    }
     if enabled {
         // Land any cue that's already due right away rather than waiting up
         // to a second for the next poll tick.
