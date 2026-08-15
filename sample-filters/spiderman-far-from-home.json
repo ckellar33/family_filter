@@ -2,7 +2,7 @@
   "media": [
     {
       "title": "Spider-Man: Far From Home",
-      "service": "Disney Plus",
+      "service": "Disney+",
       "cues": [
         { "start": 320.0, "end": 328.0, "action": "mute", "category": "language" },
         { "start": 1850.0, "end": 1910.0, "action": "skip", "category": "violence" },

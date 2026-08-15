@@ -13,6 +13,24 @@ export function fmtTime(seconds: number | null | undefined): string {
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
+// Turns a now-playing title into a filesystem-friendly default filename for
+// "Record a new filter file…" (e.g. "The Princess Bride" -> "the-princess-
+// bride.json") -- lowercased, punctuation collapsed to single hyphens, so
+// the save dialog opens with a sensible name instead of always "filter.json"
+// regardless of what's on screen. Mirrors the spirit of the Rust side's
+// `metadata::cache_key` (same normalize-then-collapse-punctuation shape),
+// just hyphenated for readability in a filename rather than underscored for
+// a cache key, and kept separate since one lands in a Tauri command's
+// filesystem path and the other in the poster cache dir.
+export function slugifyTitle(title: string): string {
+  const slug = title
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return slug || "filter";
+}
+
 // Pairs with fmtTime -- parses what a cue table's inputs display back into
 // seconds, or null for anything unrecognized so the caller can reject the
 // edit without touching the backend. Accepts both the m:ss fmtTime shows

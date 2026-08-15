@@ -304,6 +304,22 @@ impl FilterList {
         Ok(())
     }
 
+    /// Creates an empty (no-cues-yet) entry under `(title, service)` if one
+    /// doesn't already exist -- the public counterpart to `entry_mut`, for
+    /// callers (creation mode's draft-start commands) that want a title's
+    /// entry to exist and be persisted the moment recording starts, rather
+    /// than only appearing once its first cue is marked via `add_cue`.
+    /// A no-op (not an error) if the entry already exists, so it's safe to
+    /// call unconditionally whenever a draft opens with something already
+    /// playing.
+    pub fn ensure_entry(&mut self, title: &str, service: &str) -> Result<()> {
+        if title.trim().is_empty() {
+            bail!("a media entry has an empty title");
+        }
+        self.entry_mut(title, service);
+        Ok(())
+    }
+
     /// Adds one cue under `(title, service)` (creating the entry if this is
     /// its first cue), then re-sorts and re-validates that entry -- same
     /// invariants `parse_and_validate` enforces at load time, via
@@ -447,11 +463,14 @@ pub struct FilterOutcome {
 
 /// Pure decision function: given the loaded list, the running state, which
 /// categories and individual cues are currently disabled, and one playback
-/// snapshot (title + service + position), decides what (if anything) should
-/// happen. `service` is whichever app is currently "now playing" -- see
-/// `control::app_display_name` -- or `None` if that couldn't be determined,
-/// in which case only a generic (service-unspecified) entry can match (see
-/// `FilterList::find_entry_for_playback`). No I/O -- the caller
+/// snapshot (title + service + position + whether it's actually advancing),
+/// decides what (if anything) should happen. `service` is whichever app is
+/// currently "now playing" -- see `control::app_display_name` -- or `None`
+/// if that couldn't be determined, in which case only a generic
+/// (service-unspecified) entry can match (see
+/// `FilterList::find_entry_for_playback`). `is_playing` should be `false`
+/// for anything other than actively playing (paused, stopped, seeking,
+/// unknown) -- see the guard below for why. No I/O -- the caller
 /// (`control.rs`) is responsible for actually issuing the returned commands
 /// against the live/Companion sessions, which is what makes this testable
 /// without a real device.
@@ -463,6 +482,7 @@ pub fn evaluate(
     title: Option<&str>,
     service: Option<&str>,
     position: Option<f64>,
+    is_playing: bool,
     now: Instant,
 ) -> FilterOutcome {
     let mut outcome = FilterOutcome::default();
@@ -491,6 +511,23 @@ pub fn evaluate(
     let Some(pos) = position else {
         return outcome;
     };
+
+    // Paused (or stopped/seeking/unknown) -- don't apply, re-apply, or
+    // release any cue action while playback isn't actually advancing. A cue
+    // landing exactly where playback is paused shouldn't force a mute the
+    // user won't hear anyway, and a skip must never fire while paused --
+    // that would yank position out from under a deliberate pause instead of
+    // waiting for it to resume. Leaves any mute already engaged untouched
+    // rather than releasing it: there's nothing wrong with staying muted
+    // through a pause, and the next `evaluate` while actually playing will
+    // reapply the correct state for wherever position ends up anyway. Still
+    // records `last_position` so the catch-up pass (below, once playing
+    // again) compares against an accurate "last seen" position rather than
+    // one frozen from before the pause.
+    if !is_playing {
+        runtime.last_position = Some(pos);
+        return outcome;
+    }
 
     let found = entry.cue_at(pos, disabled_categories, disabled_cues);
 
@@ -759,7 +796,7 @@ mod tests {
     fn no_title_produces_no_match_or_commands() {
         let list = sample_list();
         let mut runtime = FilterRuntime::default();
-        let outcome = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), None, None, None, Instant::now());
+        let outcome = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), None, None, None, true, Instant::now());
         assert!(outcome.filter_match.is_none());
         assert!(outcome.commands.is_empty());
     }
@@ -771,21 +808,21 @@ mod tests {
         let now = Instant::now();
 
         // Before the cue: no commands.
-        let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(5.0), now);
+        let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(5.0), true, now);
         assert_eq!(o.filter_match.as_deref(), Some("Some Movie"));
         assert!(o.commands.is_empty());
 
         // Enters the mute range.
-        let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(12.0), now);
+        let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(12.0), true, now);
         assert_eq!(o.commands, vec![FilterCommand::Mute]);
         assert_eq!(o.filter_category.as_deref(), Some("language"));
 
         // Still inside: idempotent, no repeated Mute.
-        let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(15.0), now);
+        let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(15.0), true, now);
         assert!(o.commands.is_empty());
 
         // Leaves the range: unmute.
-        let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(25.0), now);
+        let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(25.0), true, now);
         assert_eq!(o.commands, vec![FilterCommand::Unmute]);
     }
 
@@ -795,17 +832,78 @@ mod tests {
         let mut runtime = FilterRuntime::default();
         let t0 = Instant::now();
 
-        let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(32.0), t0);
+        let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(32.0), true, t0);
         assert_eq!(o.commands, vec![FilterCommand::Skip(8.0)]); // end(40) - pos(32)
 
         // Immediately again (device hasn't caught up yet): no re-dispatch.
-        let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(32.0), t0);
+        let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(32.0), true, t0);
         assert!(o.commands.is_empty());
 
         // After the cooldown, still stuck in range: dispatch again.
         let later = t0 + Duration::from_secs(4);
-        let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(32.0), later);
+        let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(32.0), true, later);
         assert_eq!(o.commands, vec![FilterCommand::Skip(8.0)]);
+    }
+
+    #[test]
+    fn paused_skip_cue_does_not_dispatch_until_playing_resumes() {
+        let list = sample_list(); // skip cue at [30.0, 40.0)
+        let mut runtime = FilterRuntime::default();
+        let now = Instant::now();
+
+        // Paused inside the skip window: no dispatch, even though the
+        // position alone would normally trigger one.
+        let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(32.0), false, now);
+        assert_eq!(o.filter_match.as_deref(), Some("Some Movie"));
+        assert!(o.commands.is_empty());
+
+        // Still paused, same position: still nothing.
+        let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(32.0), false, now);
+        assert!(o.commands.is_empty());
+
+        // Resumes at the same position: now it fires.
+        let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(32.0), true, now);
+        assert_eq!(o.commands, vec![FilterCommand::Skip(8.0)]);
+    }
+
+    #[test]
+    fn paused_mute_cue_does_not_engage_until_playing_resumes() {
+        let list = sample_list(); // mute cue at [10.0, 20.0)
+        let mut runtime = FilterRuntime::default();
+        let now = Instant::now();
+
+        // Paused inside the mute window: no Mute command, and nothing ends
+        // up tracked as muted either -- there's nothing to release later.
+        let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(12.0), false, now);
+        assert!(o.commands.is_empty());
+        assert!(!runtime.is_muted());
+
+        // Resumes at the same position: mute engages now.
+        let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(12.0), true, now);
+        assert_eq!(o.commands, vec![FilterCommand::Mute]);
+    }
+
+    #[test]
+    fn pausing_leaves_an_already_engaged_mute_untouched() {
+        let list = sample_list(); // mute cue at [10.0, 20.0)
+        let mut runtime = FilterRuntime::default();
+        let now = Instant::now();
+
+        // Engages the mute while playing.
+        let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(12.0), true, now);
+        assert_eq!(o.commands, vec![FilterCommand::Mute]);
+        assert!(runtime.is_muted());
+
+        // Paused, now past the mute range -- if this weren't paused, the
+        // range ending would normally release the mute. It shouldn't while
+        // paused.
+        let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(25.0), false, now);
+        assert!(o.commands.is_empty());
+        assert!(runtime.is_muted());
+
+        // Resumes: now it releases.
+        let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(25.0), true, now);
+        assert_eq!(o.commands, vec![FilterCommand::Unmute]);
     }
 
     #[test]
@@ -815,13 +913,13 @@ mod tests {
         let now = Instant::now();
 
         // Establishes a "previous position" before the skip cue's start.
-        let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(25.0), now);
+        let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(25.0), true, now);
         assert!(o.commands.is_empty());
 
         // Next poll lands past the *entire* window (e.g. a background gap)
         // -- cue_at alone would never catch this, since pos is already past
         // `end`, but the catch-up pass should still fire a best-effort skip.
-        let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(45.0), now);
+        let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(45.0), true, now);
         assert_eq!(o.commands, vec![FilterCommand::Skip(0.1)]); // end(40) - pos(45), clamped to the minimum
     }
 
@@ -832,7 +930,7 @@ mod tests {
         // First-ever poll for this title lands already past the skip
         // window -- no prior position to compare against, so this must not
         // be treated as "missed while running" (vs. "just started here").
-        let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(45.0), Instant::now());
+        let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(45.0), true, Instant::now());
         assert!(o.commands.is_empty());
     }
 
@@ -841,16 +939,16 @@ mod tests {
         let list = sample_list();
         let mut runtime = FilterRuntime::default();
         let now = Instant::now();
-        evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(25.0), now);
-        let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(45.0), now);
+        evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(25.0), true, now);
+        let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(45.0), true, now);
         assert_eq!(o.commands, vec![FilterCommand::Skip(0.1)]);
 
         // Polled again at the same (or any later) position: no repeat --
         // `last_position` is now past this cue's start, so it can't look
         // "freshly jumped over" again.
-        let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(45.0), now);
+        let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(45.0), true, now);
         assert!(o.commands.is_empty());
-        let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(60.0), now);
+        let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(60.0), true, now);
         assert!(o.commands.is_empty());
     }
 
@@ -859,11 +957,11 @@ mod tests {
         let list = sample_list();
         let mut runtime = FilterRuntime::default();
         let now = Instant::now();
-        evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(25.0), now);
+        evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(25.0), true, now);
 
         let mut disabled = HashSet::new();
         disabled.insert("gore".to_string());
-        let o = evaluate(&list, &mut runtime, &disabled, &empty_disabled_cues(), Some("Some Movie"), None, Some(45.0), now);
+        let o = evaluate(&list, &mut runtime, &disabled, &empty_disabled_cues(), Some("Some Movie"), None, Some(45.0), true, now);
         assert!(o.commands.is_empty());
     }
 
@@ -872,11 +970,11 @@ mod tests {
         let list = sample_list();
         let mut runtime = FilterRuntime::default();
         let now = Instant::now();
-        evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(12.0), now);
+        evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(12.0), true, now);
 
         let mut disabled = HashSet::new();
         disabled.insert("language".to_string());
-        let o = evaluate(&list, &mut runtime, &disabled, &empty_disabled_cues(), Some("Some Movie"), None, Some(13.0), now);
+        let o = evaluate(&list, &mut runtime, &disabled, &empty_disabled_cues(), Some("Some Movie"), None, Some(13.0), true, now);
         assert_eq!(o.commands, vec![FilterCommand::Unmute]);
     }
 
@@ -886,7 +984,7 @@ mod tests {
         let mut runtime = FilterRuntime::default();
         let mut disabled = HashSet::new();
         disabled.insert("gore".to_string());
-        let o = evaluate(&list, &mut runtime, &disabled, &empty_disabled_cues(), Some("Some Movie"), None, Some(32.0), Instant::now());
+        let o = evaluate(&list, &mut runtime, &disabled, &empty_disabled_cues(), Some("Some Movie"), None, Some(32.0), true, Instant::now());
         assert!(o.commands.is_empty());
     }
 
@@ -895,9 +993,9 @@ mod tests {
         let list = sample_list();
         let mut runtime = FilterRuntime::default();
         let now = Instant::now();
-        evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(12.0), now);
+        evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(12.0), true, now);
 
-        let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("A Different Movie"), None, Some(1.0), now);
+        let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("A Different Movie"), None, Some(1.0), true, now);
         assert_eq!(o.commands, vec![FilterCommand::Unmute]);
         assert!(o.filter_match.is_none());
     }
@@ -916,13 +1014,13 @@ mod tests {
         };
         let mut runtime = FilterRuntime::default();
         let now = Instant::now();
-        let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), Some("Netflix"), Some(12.0), now);
+        let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), Some("Netflix"), Some(12.0), true, now);
         assert_eq!(o.commands, vec![FilterCommand::Mute]);
 
         // Switches service, same title, same position -- still inside the
         // new entry's mute range too, but the runtime must not assume the
         // mute is already accounted for.
-        let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), Some("Disney+"), Some(12.0), now);
+        let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), Some("Disney+"), Some(12.0), true, now);
         assert_eq!(o.commands, vec![FilterCommand::Unmute, FilterCommand::Mute]);
     }
 
@@ -939,7 +1037,7 @@ mod tests {
         // entry (which should win) has no cue there -- no command either
         // way confirms the generic entry's cue isn't the one being used.
         let o =
-            evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), Some("Netflix"), Some(12.0), Instant::now());
+            evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), Some("Netflix"), Some(12.0), true, Instant::now());
         assert!(o.commands.is_empty());
     }
 
@@ -959,11 +1057,11 @@ mod tests {
         disabled_cues.insert(("some movie".to_string(), String::new(), 0));
 
         // The disabled cue (index 0) never fires.
-        let o = evaluate(&list, &mut runtime, &empty_disabled(), &disabled_cues, Some("Some Movie"), None, Some(12.0), Instant::now());
+        let o = evaluate(&list, &mut runtime, &empty_disabled(), &disabled_cues, Some("Some Movie"), None, Some(12.0), true, Instant::now());
         assert!(o.commands.is_empty());
 
         // The still-enabled cue (index 1) fires normally.
-        let o = evaluate(&list, &mut runtime, &empty_disabled(), &disabled_cues, Some("Some Movie"), None, Some(22.0), Instant::now());
+        let o = evaluate(&list, &mut runtime, &empty_disabled(), &disabled_cues, Some("Some Movie"), None, Some(22.0), true, Instant::now());
         assert_eq!(o.commands, vec![FilterCommand::Mute]);
     }
 
@@ -972,11 +1070,11 @@ mod tests {
         let list = sample_list();
         let mut runtime = FilterRuntime::default();
         let now = Instant::now();
-        evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(12.0), now);
+        evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(12.0), true, now);
 
         let mut disabled_cues = HashSet::new();
         disabled_cues.insert(("some movie".to_string(), String::new(), 0)); // the mute cue is index 0
-        let o = evaluate(&list, &mut runtime, &empty_disabled(), &disabled_cues, Some("Some Movie"), None, Some(13.0), now);
+        let o = evaluate(&list, &mut runtime, &empty_disabled(), &disabled_cues, Some("Some Movie"), None, Some(13.0), true, now);
         assert_eq!(o.commands, vec![FilterCommand::Unmute]);
     }
 

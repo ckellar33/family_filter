@@ -9,8 +9,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { open, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { session } from "$lib/state/session.svelte";
 import { filterState } from "$lib/state/filter.svelte";
-import { parseTime } from "$lib/format";
-import type { CategoryDef, CategoryKind, CreationCue, DraftSummary, FilterSummary } from "$lib/types";
+import { parseTime, slugifyTitle } from "$lib/format";
+import type { CategoryDef, CategoryKind, CreationCue, CueMarkResult, DraftSummary, FilterSummary } from "$lib/types";
 
 export const DEFAULT_CATEGORIES: CategoryDef[] = [
   { name: "language", kind: "mute" },
@@ -65,7 +65,12 @@ export function resetCreation() {
 export async function pickNewDraft() {
   creationState.error = "";
   try {
-    const path = await saveDialog({ filters: [{ name: "Filter list", extensions: ["json"] }], defaultPath: "filter.json" });
+    // Defaults to whatever's on screen right now (e.g. "The Princess
+    // Bride" -> "the-princess-bride.json") so the dialog doesn't always
+    // open on the generic "filter.json" -- still just a suggestion, the
+    // dialog lets it be edited/overridden before saving.
+    const defaultPath = session.playback?.title ? `${slugifyTitle(session.playback.title)}.json` : "filter.json";
+    const path = await saveDialog({ filters: [{ name: "Filter list", extensions: ["json"] }], defaultPath });
     if (!path) return; // user cancelled
     creationState.draft = await invoke<DraftSummary>("creation_new_draft", { path });
     creationState.stage = "recording";
@@ -130,11 +135,28 @@ export async function renameService() {
   }
 }
 
+// `creation_mark_mute`/`creation_end_skip_mark` create a media entry
+// on-the-fly the first time a title+service is marked (see
+// `filter::FilterList::entry_mut`), but `creationState.draft.media_count`
+// is only ever set once, when the draft is opened/started -- it never
+// reflects titles recorded since. `index === 0` on the returned cue means
+// this mark just created that entry (a fresh `MediaEntry` always starts
+// with an empty `cues` vec, so its first cue always lands at index 0), so
+// bump the count then -- otherwise the draft card keeps showing "0 titles"
+// even once marks are actually landing on disk, which reads as "nothing
+// got saved".
+function noteNewEntryIfFirstCue(result: CueMarkResult) {
+  if (result.index === 0 && creationState.draft) {
+    creationState.draft.media_count += 1;
+  }
+}
+
 export async function markMute(category: string) {
   creationState.busy = true;
   creationState.error = "";
   try {
-    await invoke("creation_mark_mute", { category });
+    const result = await invoke<CueMarkResult>("creation_mark_mute", { category });
+    noteNewEntryIfFirstCue(result);
     await refreshCreationCues();
   } catch (e) {
     creationState.error = String(e);
@@ -152,7 +174,8 @@ export async function toggleSkipMark(category: string) {
   creationState.error = "";
   try {
     if (creationState.pendingSkipCategory === category) {
-      await invoke("creation_end_skip_mark");
+      const result = await invoke<CueMarkResult>("creation_end_skip_mark");
+      noteNewEntryIfFirstCue(result);
       creationState.pendingSkipCategory = null;
       await refreshCreationCues();
     } else if (creationState.pendingSkipCategory === null) {

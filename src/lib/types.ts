@@ -87,6 +87,20 @@ export interface CreationCue {
   category: string;
 }
 
+// Returned by creation_mark_mute/creation_end_skip_mark -- the cue that was
+// just recorded, plus which title it landed under. `index === 0` means this
+// was the first cue ever recorded for that (title, service) pair, i.e. it
+// just created a brand-new media entry -- see noteNewEntryIfFirstCue in
+// creation.svelte.ts.
+export interface CueMarkResult {
+  title: string;
+  index: number;
+  start: number;
+  end: number;
+  action: "mute" | "skip";
+  category: string;
+}
+
 export type CategoryKind = "mute" | "skip";
 export interface CategoryDef {
   name: string;

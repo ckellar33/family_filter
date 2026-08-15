@@ -99,6 +99,11 @@ async fn apply_filter(guard: &mut ControlState) -> (Option<String>, Option<Strin
     let title = playback.title().map(str::to_string);
     let service = playback.app_bundle_id().and_then(app_display_name);
     let position = playback.position_now();
+    // Cues only take effect while content is actually advancing -- see
+    // `filter::evaluate`'s `is_playing` doc. Paused/stopped/seeking/unknown
+    // all withhold new mute/skip commands (and leave any existing mute
+    // alone) until playback resumes.
+    let is_playing = playback.playback_state() == appletv::mrp::playback::PlaybackStateKind::Playing;
 
     let outcome = filter::evaluate(
         guard.filter_list.as_ref().expect("checked above"),
@@ -108,6 +113,7 @@ async fn apply_filter(guard: &mut ControlState) -> (Option<String>, Option<Strin
         title.as_deref(),
         service,
         position,
+        is_playing,
         Instant::now(),
     );
 

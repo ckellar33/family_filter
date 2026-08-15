@@ -139,46 +139,78 @@ fn service_hint(app_bundle_id: Option<&str>) -> Option<String> {
     app_display_name(app_bundle_id?).map(str::to_string)
 }
 
+/// Best-effort: if something's already playing when a draft opens (new or
+/// existing), seeds its `(title, service)` entry right away -- with no cues
+/// yet, just so the title/service themselves are stored and visible
+/// immediately -- rather than only appearing once the first mark is
+/// recorded. Silently does nothing if there's no live session, nothing
+/// playing, or the entry already exists (`ensure_entry` is a no-op then);
+/// none of those are errors worth surfacing here, just "nothing to seed
+/// yet".
+async fn seed_entry_from_live_playback(guard: &mut ControlState, draft: &mut FilterList) {
+    let Ok((title, _position, service_hint)) = live_title_and_position(guard).await else {
+        return;
+    };
+    let service = service_hint.unwrap_or_default();
+    if let Err(e) = draft.ensure_entry(&title, &service) {
+        eprintln!("[creation] failed to seed entry for {title:?}: {e}");
+    }
+}
+
 /// Starts a brand-new, empty draft at `path` (chosen via
 /// `@tauri-apps/plugin-dialog`'s `save()` picker on the frontend) and writes
 /// it immediately so the file exists at the chosen destination right away --
-/// the save dialog only picks a path, it doesn't create anything.
+/// the save dialog only picks a path, it doesn't create anything. If
+/// something's already playing, its title/service are seeded into the file
+/// at this point too (see `seed_entry_from_live_playback`), so starting a
+/// recording session against a movie that's already on screen stores its
+/// title/service right away instead of requiring a first mark first.
 #[tauri::command]
 pub async fn creation_new_draft(state: State<'_, ControlStateHandle>, path: String) -> Result<DraftSummary, String> {
     let path_buf = PathBuf::from(&path);
-    let draft = FilterList::default();
+    let mut guard = state.lock().await;
+
+    let mut draft = FilterList::default();
+    seed_entry_from_live_playback(&mut guard, &mut draft).await;
+
     draft.save(&path_buf).map_err(|e| describe(&e))?;
-    // Best-effort, same tolerance as everywhere else this is called: a
-    // brand-new draft has no titles/cues yet, so there's nothing for Select
-    // Filter to show until the first mark is recorded anyway, but this makes
-    // sure the file is tracked from the moment it exists.
+    // Best-effort, same tolerance as everywhere else this is called: even a
+    // draft with nothing seeded yet has nothing for Select Filter to show
+    // until the first mark is recorded anyway, but this makes sure the file
+    // is tracked from the moment it exists.
     if let Err(e) = library::register_filter_path(&path_buf) {
         eprintln!("[library] failed to persist filter_library.store: {e}");
     }
 
-    let mut guard = state.lock().await;
+    let media_count = draft.media.len();
     guard.creation.pending_skip = None;
     guard.creation.draft_path = Some(path_buf);
     guard.creation.draft = Some(draft);
 
-    Ok(DraftSummary { path, media_count: 0 })
+    Ok(DraftSummary { path, media_count })
 }
 
 /// Opens an existing filter file (chosen via the same `open()` picker
-/// `load_filter_file` uses) to keep recording marks into it.
+/// `load_filter_file` uses) to keep recording marks into it. Same live-seed
+/// as `creation_new_draft` -- if this file doesn't already have an entry
+/// for whatever's currently playing, one's added (still cue-less) so it
+/// shows up right away rather than only once a mark lands.
 #[tauri::command]
 pub async fn creation_open_draft(state: State<'_, ControlStateHandle>, path: String) -> Result<DraftSummary, String> {
     let path_buf = PathBuf::from(&path);
-    let draft = FilterList::load(&path_buf).map_err(|e| describe(&e))?;
-    let media_count = draft.media.len();
+    let mut draft = FilterList::load(&path_buf).map_err(|e| describe(&e))?;
     if let Err(e) = library::register_filter_path(&path_buf) {
         eprintln!("[library] failed to persist filter_library.store: {e}");
     }
 
     let mut guard = state.lock().await;
+    seed_entry_from_live_playback(&mut guard, &mut draft).await;
+
+    let media_count = draft.media.len();
     guard.creation.pending_skip = None;
     guard.creation.draft_path = Some(path_buf);
     guard.creation.draft = Some(draft);
+    autosave(&guard.creation);
 
     Ok(DraftSummary { path, media_count })
 }
