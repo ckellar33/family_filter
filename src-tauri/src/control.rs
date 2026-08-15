@@ -45,6 +45,12 @@ pub struct ControlState {
     session: Option<CompanionSession>,
     live: Option<LiveSession>,
     filter_list: Option<FilterList>,
+    /// Where `filter_list` was loaded from, if anywhere -- set alongside it
+    /// by `load_filter_file_inner`/`check_saved_filter_file`, and read back
+    /// by `update_filter_cue`/`delete_filter_cue` so an edit made from the
+    /// Filters tab can be written straight back to the same file, the same
+    /// way a creation-mode draft autosaves to `creation.draft_path`.
+    filter_list_path: Option<PathBuf>,
     /// Master auto-filter on/off -- a cue never fires unless this is also
     /// true, regardless of category/cue state.
     filter_enabled: bool,
@@ -169,6 +175,7 @@ async fn load_filter_file_inner(handle: &ControlStateHandle, path: String) -> Re
     guard.disabled_categories.clear();
     guard.disabled_cues.clear();
     guard.filter_list = Some(list);
+    guard.filter_list_path = Some(path_buf);
 
     Ok(FilterSummary { path, media_count, categories })
 }
@@ -205,6 +212,7 @@ pub async fn check_saved_filter_file(state: State<'_, ControlStateHandle>) -> Re
     guard.disabled_categories.clear();
     guard.disabled_cues.clear();
     guard.filter_list = Some(list);
+    guard.filter_list_path = Some(path.clone());
 
     Ok(Some(FilterSummary { path: path.to_string_lossy().into_owned(), media_count, categories }))
 }
@@ -270,6 +278,74 @@ pub async fn set_filter_cue_enabled(
     } else {
         guard.disabled_cues.insert(key);
     }
+    let _ = apply_filter(&mut guard).await;
+    Ok(())
+}
+
+/// Best-effort save of the active auto-filter list back to `filter_list_path`
+/// -- called after `update_filter_cue`/`delete_filter_cue` actually rewrite a
+/// cue, unlike `set_filter_category_enabled`/`set_filter_cue_enabled` above,
+/// which only ever touch this *session's* enabled/disabled overrides. Same
+/// "log, don't fail the caller" tolerance `load_filter_file_inner`'s own
+/// persistence calls use -- a failed write here would otherwise turn a
+/// perfectly good in-memory edit into a hard error the user can't do
+/// anything about from the Filters tab.
+fn persist_active_filter_list(guard: &ControlState) {
+    let (Some(list), Some(path)) = (guard.filter_list.as_ref(), guard.filter_list_path.as_ref()) else {
+        return;
+    };
+    if let Err(e) = list.save(path) {
+        eprintln!("[filter] failed to persist edit to {}: {e}", path.display());
+    }
+}
+
+/// Drops every per-cue enabled/disabled override recorded for one (title,
+/// service) entry -- called after `update_filter_cue`/`delete_filter_cue`
+/// change that entry's cue order (both re-sort; delete also shifts every
+/// later index down by one), since `disabled_cues` is keyed by index and a
+/// stale entry would otherwise silently start applying to a different cue
+/// than the one the user actually turned off. The user re-toggling whichever
+/// cues they'd disabled is a fair trade against that happening quietly.
+fn clear_disabled_cues_for(guard: &mut ControlState, title_key: &str, service_key: &str) {
+    guard.disabled_cues.retain(|(t, s, _)| t != title_key || s != service_key);
+}
+
+/// Corrects an existing cue's timing in the *active* auto-filter list -- the
+/// one loaded into Select Filter's detail view, as opposed to
+/// `creation::creation_update_cue`, which only ever edits a recording draft
+/// and needs something currently playing to know which entry to target. This
+/// acts on whatever (title, service) the frontend already has open, so it
+/// works from the Filters tab regardless of what's on screen right now, and
+/// persists straight back to `filter_list_path` rather than staying
+/// session-only like the enabled/disabled toggles above.
+#[tauri::command]
+pub async fn update_filter_cue(
+    state: State<'_, ControlStateHandle>,
+    title: String,
+    service: String,
+    index: usize,
+    start: f64,
+    end: f64,
+) -> Result<(), String> {
+    let mut guard = state.lock().await;
+    let list = guard.filter_list.as_mut().ok_or_else(|| "no filter list loaded".to_string())?;
+    list.update_cue(&title, &service, index, start, end).map_err(|e| describe(&e))?;
+    persist_active_filter_list(&guard);
+    clear_disabled_cues_for(&mut guard, &filter::normalize_title(&title), &filter::normalize_service(&service));
+    let _ = apply_filter(&mut guard).await;
+    Ok(())
+}
+
+/// Removes a cue outright from the *active* auto-filter list -- the
+/// Filters-tab counterpart to `creation::creation_delete_cue`, same
+/// distinction as `update_filter_cue` above.
+#[tauri::command]
+pub async fn delete_filter_cue(state: State<'_, ControlStateHandle>, title: String, service: String, index: usize) -> Result<(), String> {
+    let mut guard = state.lock().await;
+    let list = guard.filter_list.as_mut().ok_or_else(|| "no filter list loaded".to_string())?;
+    list.delete_cue(&title, &service, index).map_err(|e| describe(&e))?;
+    persist_active_filter_list(&guard);
+    clear_disabled_cues_for(&mut guard, &filter::normalize_title(&title), &filter::normalize_service(&service));
     let _ = apply_filter(&mut guard).await;
     Ok(())
 }

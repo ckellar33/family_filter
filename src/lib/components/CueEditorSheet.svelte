@@ -1,15 +1,16 @@
 <script lang="ts">
-  // Cue editor sheet -- opens from a recorded cue in Create Filter's table.
-  // Nudges the cue's edges a second at a time against a ±30s window, so
-  // "how much am I trimming" is visible rather than guessed from two
-  // numbers. Commits through the same creation_update_cue / creation_delete_cue
-  // path the inline table inputs already use.
+  // Cue editor sheet -- opens from a recorded cue in Create Filter's table,
+  // or a cue row in Select Filter's detail view. Nudges the cue's edges a
+  // second at a time against a ±30s window, so "how much am I trimming" is
+  // visible rather than guessed from two numbers.
   //
   // Deliberately dumb: it owns only the draft values while open and hands
-  // the result back through onSave -- the caller decides what to persist.
-  // (There is currently no backend command to retime a cue in an *applied*
-  // filter file, only in a draft, which is why Select Filter's cue rows
-  // still only toggle enabled/disabled.)
+  // the result back through onSave/onDelete -- the caller decides what to
+  // persist. Create Filter commits through creation_update_cue/
+  // creation_delete_cue (a recording draft); Select Filter commits through
+  // update_filter_cue/delete_filter_cue (the active, already-applied list,
+  // persisted straight back to its file) -- see filter.svelte.ts's
+  // updateDetailCueTime/deleteDetailCue.
   import { fmtTime, parseTime } from "$lib/format";
   import type { CategoryDef } from "$lib/types";
 
@@ -18,7 +19,11 @@
     end,
     category,
     action,
-    categories,
+    // Unused in this sheet today (nothing here lets you re-pick a cue's
+    // category) -- kept as a prop for a future "change category" control
+    // rather than plumbed through and dropped, so it's optional for callers
+    // (like SelectFilterPage) that have no CategoryDef list of their own.
+    categories = [],
     busy = false,
     onSave,
     onDelete,
@@ -28,7 +33,7 @@
     end: number;
     category: string;
     action: "mute" | "skip";
-    categories: CategoryDef[];
+    categories?: CategoryDef[];
     busy?: boolean;
     onSave: (cue: { start: number; end: number }) => void;
     onDelete: () => void;

@@ -47,6 +47,8 @@ pub fn run() {
             control::set_filter_enabled,
             control::set_filter_category_enabled,
             control::set_filter_cue_enabled,
+            control::update_filter_cue,
+            control::delete_filter_cue,
             control::add_filter_files,
             control::add_filter_directory,
             control::list_filter_tiles,

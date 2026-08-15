@@ -8,6 +8,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { session, refreshPlayback } from "$lib/state/session.svelte";
+import { parseTime } from "$lib/format";
 import type { Cue, FilterEntryDetail, FilterSummary, FilterTile, ServiceOption } from "$lib/types";
 
 export const filterState = $state({
@@ -224,6 +225,48 @@ export async function toggleDetailCue(cue: Cue) {
       index: cue.index,
       enabled: !cue.enabled,
     });
+    await refreshDetail();
+    await refreshPlayback();
+  } catch (e) {
+    filterState.detailError = String(e);
+  }
+}
+
+// Retimes one cue in the open detail's entry -- the Filters tab's own cue
+// editor (see SelectFilterPage.svelte's CueEditorSheet), as opposed to
+// creation.svelte.ts's updateCueTime, which only ever edits a recording
+// draft and needs something currently playing to know which entry to target.
+// This acts on whatever (title, service) is already open in `detail`, so it
+// works regardless of what's on screen right now, and persists straight to
+// the filter file on the backend (see control::update_filter_cue) rather
+// than just this session's enabled/disabled overrides.
+export async function updateDetailCueTime(cue: Cue, field: "start" | "end", text: string) {
+  if (!filterState.detail) return;
+  const seconds = parseTime(text);
+  if (seconds == null) {
+    filterState.detailError = `"${text}" isn't a valid m:ss time`;
+    return;
+  }
+  filterState.detailError = "";
+  try {
+    const start = field === "start" ? seconds : cue.start;
+    const end = field === "end" ? seconds : cue.end;
+    await invoke("update_filter_cue", { title: filterState.detail.title, service: filterState.detail.service, index: cue.index, start, end });
+    await refreshDetail();
+    await refreshPlayback();
+  } catch (e) {
+    filterState.detailError = String(e);
+  }
+}
+
+// Removes a cue outright from the open detail's entry -- the Filters-tab
+// counterpart to creation.svelte.ts's deleteCue, same distinction as
+// updateDetailCueTime above.
+export async function deleteDetailCue(cue: Cue) {
+  if (!filterState.detail) return;
+  filterState.detailError = "";
+  try {
+    await invoke("delete_filter_cue", { title: filterState.detail.title, service: filterState.detail.service, index: cue.index });
     await refreshDetail();
     await refreshPlayback();
   } catch (e) {

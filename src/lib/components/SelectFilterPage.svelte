@@ -16,14 +16,33 @@
     toggleFilterEnabled,
     toggleDetailCategory,
     toggleDetailCue,
+    updateDetailCueTime,
+    deleteDetailCue,
     closeDetail,
   } from "$lib/state/filter.svelte";
   import type { Cue } from "$lib/types";
   import { fmtTime } from "$lib/format";
   import PosterTile from "$lib/components/PosterTile.svelte";
   import EmptyState from "$lib/components/EmptyState.svelte";
+  import CueEditorSheet from "$lib/components/CueEditorSheet.svelte";
 
   let { onRecordInstead }: { onRecordInstead: () => void } = $props();
+
+  // Which cue the editor sheet is open on, if any -- tapping a cue's time/
+  // pill (rather than its enabled switch) opens this, same trigger
+  // CreateFilterPage's recorded-cues table uses.
+  let editingCue = $state<Cue | null>(null);
+
+  async function saveEditedCue(cue: Cue, next: { start: number; end: number }) {
+    if (next.start !== cue.start) await updateDetailCueTime(cue, "start", fmtTime(next.start));
+    if (next.end !== cue.end) await updateDetailCueTime(cue, "end", fmtTime(next.end));
+    editingCue = null;
+  }
+
+  async function deleteEditedCue(cue: Cue) {
+    await deleteDetailCue(cue);
+    editingCue = null;
+  }
 
   $effect(() => {
     loadTiles();
@@ -153,9 +172,10 @@
               <ul class="list nested-list">
                 {#each cues as cue (cue.index)}
                   <li class="list-row cue-row static" class:cue-past={!cue.enabled}>
-                    <span class="cue-time">{fmtTime(cue.start)}–{fmtTime(cue.end)}</span>
-                    <span class="cue-action"></span>
-                    <span class="cue-pill" data-action={cue.action}>{cue.action === "mute" ? "MUTE" : "SKIP"}</span>
+                    <button type="button" class="cue-edit-trigger" onclick={() => (editingCue = cue)}>
+                      <span class="cue-time">{fmtTime(cue.start)}–{fmtTime(cue.end)}</span>
+                      <span class="cue-pill" data-action={cue.action}>{cue.action === "mute" ? "MUTE" : "SKIP"}</span>
+                    </button>
                     <label class="switch switch-sm">
                       <input type="checkbox" checked={cue.enabled} onchange={() => toggleDetailCue(cue)} />
                       <span class="switch-track"><span class="switch-thumb"></span></span>
@@ -193,3 +213,16 @@
     {/if}
   {/if}
 </section>
+
+{#if editingCue}
+  {@const cue = editingCue}
+  <CueEditorSheet
+    start={cue.start}
+    end={cue.end}
+    category={cue.category}
+    action={cue.action}
+    onSave={(next) => saveEditedCue(cue, next)}
+    onDelete={() => deleteEditedCue(cue)}
+    onClose={() => (editingCue = null)}
+  />
+{/if}

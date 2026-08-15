@@ -442,6 +442,24 @@ button.list-row:active:not(:disabled) {
   padding-left: 10px;
 }
 
+/* Wraps a cue row's time + pill as a tap target that opens the cue editor
+   sheet (see CueEditorSheet.svelte), separate from the row's own enabled
+   switch alongside it. */
+.cue-edit-trigger {
+  all: unset;
+  box-sizing: border-box;
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+}
+
+.cue-edit-trigger:active {
+  opacity: 0.7;
+}
+
 /* Pill form of the mute/skip label: <span class="cue-pill" data-action="mute"> */
 .cue-pill {
   padding: 4px 8px;
