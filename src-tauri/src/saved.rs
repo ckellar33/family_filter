@@ -7,8 +7,6 @@
 use std::time::Duration;
 
 use appletv::storage;
-use tokio::net::TcpStream;
-use tokio::time::timeout;
 
 /// Same reasoning as `control::CONNECT_TIMEOUT` -- an unreachable host would
 /// otherwise hang `TcpStream::connect` far longer than this, leaving
@@ -53,14 +51,22 @@ pub fn check_saved_pairing() -> Option<SavedPairingInfo> {
 /// pairing ceremony.
 #[tauri::command]
 pub async fn verify_saved_pairing() -> Result<(), String> {
-    let saved = storage::load_pairing()
+    let mut saved = storage::load_pairing()
         .map_err(|e| describe(&e))?
         .ok_or_else(|| "No saved pairing found".to_string())?;
 
-    let mut stream = timeout(CONNECT_TIMEOUT, TcpStream::connect(format!("{}:{}", saved.companion.host, saved.companion.port)))
+    let (mut stream, port) = appletv::connect_companion(&saved.companion.host, saved.companion.port, CONNECT_TIMEOUT)
         .await
-        .map_err(|_| format!("timed out connecting to {}:{}", saved.companion.host, saved.companion.port))?
-        .map_err(|e| format!("failed to connect: {e}"))?;
+        .map_err(|e| describe(&e))?;
+    if port != saved.companion.port {
+        // See the matching comment in control.rs::start_control_session --
+        // same stale-port recovery, persisted here too so this button
+        // actually fixes future auto-connects, not just this one check.
+        saved.companion.port = port;
+        if let Err(e) = storage::save_pairing(&saved.companion, saved.mrp.as_ref(), saved.airplay.as_ref()) {
+            eprintln!("[pairing] failed to persist refreshed Companion port: {}", describe(&e));
+        }
+    }
 
     appletv::hap_pair::pair_verify(&mut stream, &saved.companion.creds)
         .await

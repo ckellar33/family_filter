@@ -29,9 +29,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tauri::{AppHandle, State};
-use tokio::net::TcpStream;
 use tokio::sync::Mutex;
-use tokio::time::timeout;
 
 use appletv::companion::{CompanionSession, HidButton};
 use appletv::{storage, LiveSession};
@@ -625,14 +623,22 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(6);
 /// Replaces whatever control session (if any) was already active.
 #[tauri::command]
 pub async fn start_control_session(state: State<'_, ControlStateHandle>) -> Result<ControlInfo, String> {
-    let saved = storage::load_pairing()
+    let mut saved = storage::load_pairing()
         .map_err(|e| describe(&e))?
         .ok_or_else(|| "No saved pairing found".to_string())?;
 
-    let mut stream = timeout(CONNECT_TIMEOUT, TcpStream::connect(format!("{}:{}", saved.companion.host, saved.companion.port)))
+    let (mut stream, port) = appletv::connect_companion(&saved.companion.host, saved.companion.port, CONNECT_TIMEOUT)
         .await
-        .map_err(|_| format!("timed out connecting to {}:{}", saved.companion.host, saved.companion.port))?
-        .map_err(|e| format!("failed to connect: {e}"))?;
+        .map_err(|e| describe(&e))?;
+    if port != saved.companion.port {
+        // The Apple TV re-advertised Companion on a different port (common
+        // after a reboot or tvOS update); persist it now so the next
+        // launch connects directly instead of needing this fallback again.
+        saved.companion.port = port;
+        if let Err(e) = storage::save_pairing(&saved.companion, saved.mrp.as_ref(), saved.airplay.as_ref()) {
+            eprintln!("[pairing] failed to persist refreshed Companion port: {}", describe(&e));
+        }
+    }
     let keys = appletv::hap_pair::pair_verify(&mut stream, &saved.companion.creds)
         .await
         .map_err(|e| describe(&e))?;

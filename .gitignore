@@ -33,3 +33,4 @@ vite.config.ts.timestamp-*
 
 # Tauri mobile build outputs
 src-tauri/gen
+scripts/__pycache__/build_language_filter.cpython-312.pyc
