@@ -326,8 +326,8 @@ def main() -> int:
     parser.add_argument("--output", "-o", required=True, type=Path, help="Filter JSON path to write/merge into.")
     parser.add_argument("--wordlist", type=Path, default=DEFAULT_WORDLIST_PATH, help="Word list JSON to scan with.")
     parser.add_argument(
-        "--min-severity", choices=["mild", "moderate", "strong"], default="moderate",
-        help="Ignore word-list entries below this severity. Default: moderate.",
+        "--min-severity", choices=["mild", "moderate", "strong"], default="mild",
+        help="Ignore word-list entries below this severity. Default: mild (all entries).",
     )
     parser.add_argument("--action", choices=["mute", "skip"], default="mute", help="Cue action. Default: mute.")
     parser.add_argument("--pad", type=float, default=0.15, help="Seconds padded before/after each hit. Default: 0.15.")
