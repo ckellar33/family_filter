@@ -1,0 +1,195 @@
+{
+  "//": "Editable word list for build_language_filter.py. 'word_b64' is the",
+  "//2": "matched word/phrase, base64-encoded so this file doesn't show profanity",
+  "//3": "in plaintext when you open it -- manage entries with",
+  "//4": "scripts/wordlist_tool.py instead of hand-editing (add/list/remove/reveal),",
+  "//5": "which never prints a word to your terminal unless you explicitly ask.",
+  "//6": "Matching is case-insensitive against normalized subtitle text (punctuation",
+  "//7": "stripped, whitespace collapsed). Multi-word phrases match as substrings,",
+  "//8": "single words match on word boundaries so 'ass' doesn't hit 'class'.",
+  "//9": "'severity' is filtered by --min-severity (mild < moderate < strong).",
+  "profanity": [
+    {
+      "word_b64": "ZnVjaw==",
+      "severity": "strong"
+    },
+    {
+      "word_b64": "ZnVja2luZw==",
+      "severity": "strong"
+    },
+    {
+      "word_b64": "ZnVja2Vy",
+      "severity": "strong"
+    },
+    {
+      "word_b64": "bW90aGVyZnVja2Vy",
+      "severity": "strong"
+    },
+    {
+      "word_b64": "c2hpdA==",
+      "severity": "strong"
+    },
+    {
+      "word_b64": "YnVsbHNoaXQ=",
+      "severity": "strong"
+    },
+    {
+      "word_b64": "Yml0Y2g=",
+      "severity": "strong"
+    },
+    {
+      "word_b64": "YXNzaG9sZQ==",
+      "severity": "strong"
+    },
+    {
+      "word_b64": "ZHVtYmFzcw==",
+      "severity": "moderate"
+    },
+    {
+      "word_b64": "Y3VudA==",
+      "severity": "strong"
+    },
+    {
+      "word_b64": "Y29jaw==",
+      "severity": "strong"
+    },
+    {
+      "word_b64": "ZGljaw==",
+      "severity": "moderate"
+    },
+    {
+      "word_b64": "cHJpY2s=",
+      "severity": "moderate"
+    },
+    {
+      "word_b64": "cGlzcw==",
+      "severity": "moderate"
+    },
+    {
+      "word_b64": "cGlzc2Vk",
+      "severity": "moderate"
+    },
+    {
+      "word_b64": "YXNz",
+      "severity": "mild"
+    },
+    {
+      "word_b64": "ZGFtbg==",
+      "severity": "mild"
+    },
+    {
+      "word_b64": "ZGFtbml0",
+      "severity": "mild"
+    },
+    {
+      "word_b64": "ZGFtbWl0",
+      "severity": "mild"
+    },
+    {
+      "word_b64": "aGVsbA==",
+      "severity": "mild"
+    },
+    {
+      "word_b64": "Y3JhcA==",
+      "severity": "mild"
+    },
+    {
+      "word_b64": "YmFzdGFyZA==",
+      "severity": "moderate"
+    },
+    {
+      "word_b64": "ZG91Y2hl",
+      "severity": "moderate"
+    },
+    {
+      "word_b64": "ZG91Y2hlYmFn",
+      "severity": "moderate"
+    },
+    {
+      "word_b64": "d2hvcmU=",
+      "severity": "strong"
+    },
+    {
+      "word_b64": "c2x1dA==",
+      "severity": "strong"
+    },
+    {
+      "word_b64": "cmV0YXJk",
+      "severity": "moderate"
+    },
+    {
+      "word_b64": "cmV0YXJkZWQ=",
+      "severity": "moderate"
+    }
+  ],
+  "blasphemy": [
+    {
+      "word_b64": "Z29kZGFtbg==",
+      "severity": "strong"
+    },
+    {
+      "word_b64": "Z29kZGFtbWl0",
+      "severity": "strong"
+    },
+    {
+      "word_b64": "Z29kIGRhbW4=",
+      "severity": "strong"
+    },
+    {
+      "word_b64": "Z29kIGRhbW1pdA==",
+      "severity": "strong"
+    },
+    {
+      "word_b64": "Z29kIGRhbW4gaXQ=",
+      "severity": "strong"
+    },
+    {
+      "word_b64": "amVzdXMgY2hyaXN0",
+      "severity": "moderate"
+    },
+    {
+      "word_b64": "Y2hyaXN0IGFsbWlnaHR5",
+      "severity": "moderate"
+    },
+    {
+      "word_b64": "Zm9yIGNocmlzdCdzIHNha2U=",
+      "severity": "moderate"
+    },
+    {
+      "word_b64": "Zm9yIGNocmlzdHMgc2FrZQ==",
+      "severity": "moderate"
+    },
+    {
+      "word_b64": "aG9seSBjaHJpc3Q=",
+      "severity": "moderate"
+    },
+    {
+      "word_b64": "amVzdXMgZnVja2luZyBjaHJpc3Q=",
+      "severity": "strong"
+    },
+    {
+      "word_b64": "amVzdXM=",
+      "severity": "moderate"
+    },
+    {
+      "word_b64": "Y2hyaXN0",
+      "severity": "moderate"
+    },
+    {
+      "word_b64": "b2ggbXkgZ29k",
+      "severity": "moderate"
+    },
+    {
+      "word_b64": "b21n",
+      "severity": "mild"
+    },
+    {
+      "word_b64": "c3dlYXIgdG8gZ29k",
+      "severity": "moderate"
+    },
+    {
+      "word_b64": "Z29k",
+      "severity": "mild"
+    }
+  ]
+}
