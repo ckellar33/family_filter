@@ -12,6 +12,7 @@
   // persisted straight back to its file) -- see filter.svelte.ts's
   // updateDetailCueTime/deleteDetailCue.
   import { fmtTime, parseTime } from "$lib/format";
+  import { session, doSkip } from "$lib/state/session.svelte";
   import type { CategoryDef } from "$lib/types";
 
   let {
@@ -63,6 +64,31 @@
     if (field === "start") draftStart = Math.min(draftEnd - 1, seconds);
     else draftEnd = Math.max(draftStart + 1, seconds);
   }
+
+  // How far ahead of the cue's (draft) start to land -- enough runway to
+  // hear/see normal content before the cue should kick in, without
+  // rewinding so far the test drags on.
+  const TEST_LEAD_IN = 10;
+
+  // Needs the live (MRP/AirPlay) transport, not just Companion -- `doSkip`
+  // itself only needs a control session, but landing *at* a specific time
+  // rather than just nudging by a few seconds means knowing where playback
+  // currently is (`session.playback.position`), which only a live session
+  // reports.
+  let canTest = $derived(session.page === "control" && session.hasLive && session.playback?.position != null);
+
+  // Relative skip (Companion's fast-forward/rewind, same transport as the
+  // Now Playing screen's ±15s buttons) by however far current position is
+  // from `draftStart - TEST_LEAD_IN` -- there's no absolute-seek command
+  // exposed to the frontend, so this is "jump to" built out of "jump by".
+  // Uses the *draft* value, not the saved cue, so nudging start/end and
+  // testing again reflects whatever's on screen right now.
+  async function jumpToTest() {
+    const position = session.playback?.position;
+    if (position == null) return;
+    const target = Math.max(0, draftStart - TEST_LEAD_IN);
+    await doSkip(target - position);
+  }
 </script>
 
 <div
@@ -106,6 +132,15 @@
     {/each}
 
     <p class="footnote">One second at a time, or type the time directly as {fmtTime(draftStart)}.</p>
+
+    <button type="button" class="btn-secondary" onclick={jumpToTest} disabled={!canTest || session.controlBusy}>
+      ↻ Jump to {TEST_LEAD_IN}s before start
+    </button>
+    <p class="footnote">
+      {canTest
+        ? `Skips playback to ${fmtTime(Math.max(0, draftStart - TEST_LEAD_IN))} so you can watch this cue trigger.`
+        : "Open Controls with a live device to test this cue against playback."}
+    </p>
 
     <div style="display:flex; gap:10px">
       <button type="button" class="btn-destructive" style="width:auto" onclick={onDelete} disabled={busy}>Delete</button>
