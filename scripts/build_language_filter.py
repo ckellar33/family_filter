@@ -303,28 +303,14 @@ def write_filter_file(output_path: Path, title: str, service: str, cues: list[Cu
     if service:
         entry["service"] = service
 
-    if output_path.exists():
-        with open(output_path, "r", encoding="utf-8") as f:
-            doc = json.load(f)
-    else:
-        doc = {"media": []}
-
-    media = doc.setdefault("media", [])
-    replaced = False
-    for i, existing in enumerate(media):
-        if existing.get("title") == title and existing.get("service", "") == service:
-            media[i] = entry
-            replaced = True
-            break
-    if not replaced:
-        media.append(entry)
+    doc = {"media": [entry]}
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(doc, f, indent=2)
         f.write("\n")
 
-    print(f"{'Updated' if replaced else 'Added'} entry for {title!r} in {output_path} ({len(cues)} cues).")
+    print(f"Wrote entry for {title!r} to {output_path} ({len(cues)} cues).")
 
 
 # --------------------------------------------------------------------------
