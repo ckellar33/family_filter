@@ -1,3 +1,4 @@
+mod clock_sync;
 mod control;
 mod creation;
 mod filter;
@@ -26,6 +27,14 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage::<PairingStateHandle>(std::sync::Arc::new(std::sync::Mutex::new(PairingState::default())))
         .manage::<ControlStateHandle>(Default::default())
+        .setup(|_app| {
+            // Backgrounded, not awaited -- see `clock_sync::sync_clock_offset`'s
+            // doc for why app startup shouldn't block on it. Every playback
+            // position calculation self-corrects the moment this resolves,
+            // with no restart or reconnect needed.
+            tauri::async_runtime::spawn(clock_sync::sync_clock_offset());
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             greet,
             pairing::discover_devices,
