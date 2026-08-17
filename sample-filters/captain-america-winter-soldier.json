@@ -16,6 +16,30 @@
         { "start": 2280.0, "end": 2283.0, "action": "skip", "category": "intense" },
         { "start": 2290.0, "end": 2293.0, "action": "skip", "category": "nudity" }
       ]
+    },
+    {
+      "title": "Captain America: Winter Soldier",
+      "service": "Disney+",
+      "cues": [
+        { "start": 764.37, "end": 766.0, "action": "mute", "category": "language-profanity" },
+        { "start": 804.78, "end": 806.41, "action": "mute", "category": "language-profanity" },
+        { "start": 1067.33, "end": 1071.6, "action": "mute", "category": "language-profanity" },
+        { "start": 1411.39, "end": 1413.4, "action": "mute", "category": "language-profanity" },
+        { "start": 1496.47, "end": 1499.57, "action": "mute", "category": "language-profanity" },
+        { "start": 1576.18, "end": 1580.11, "action": "mute", "category": "language-profanity" },
+        { "start": 1601.58, "end": 1602.88, "action": "mute", "category": "language-profanity" },
+        { "start": 1707.27, "end": 1708.57, "action": "mute", "category": "language-profanity" },
+        { "start": 4551.82, "end": 4554.54, "action": "mute", "category": "language-profanity" },
+        { "start": 4566.04, "end": 4568.13, "action": "mute", "category": "language-blasphemy" },
+        { "start": 4643.74, "end": 4645.25, "action": "mute", "category": "language-profanity" },
+        { "start": 5017.12, "end": 5018.84, "action": "mute", "category": "language-profanity" },
+        { "start": 5188.96, "end": 5191.47, "action": "mute", "category": "language-profanity" },
+        { "start": 5200.43, "end": 5202.44, "action": "mute", "category": "language-profanity" },
+        { "start": 5826.84, "end": 5828.77, "action": "mute", "category": "language-profanity" },
+        { "start": 6127.6, "end": 6128.94, "action": "mute", "category": "language-profanity" },
+        { "start": 6744.18, "end": 6746.85, "action": "mute", "category": "language-profanity" },
+        { "start": 7045.52, "end": 7047.32, "action": "mute", "category": "language-profanity" }
+      ]
     }
   ]
 }
