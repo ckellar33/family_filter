@@ -292,6 +292,43 @@ def subdl_download(download_url: str) -> str:
 # Output file
 # --------------------------------------------------------------------------
 
+def _dump_json(obj, level: int = 0) -> str:
+    """Like json.dumps(obj, indent=2), except any list found under a "cues"
+    key is rendered with each cue object on a single line -- matching the
+    compact style used across sample-filters/*.json."""
+    pad = "  " * level
+    pad_in = "  " * (level + 1)
+    if isinstance(obj, dict):
+        if not obj:
+            return "{}"
+        items = []
+        for k, v in obj.items():
+            if k == "cues" and isinstance(v, list):
+                rendered = _dump_cues(v, level + 1)
+            else:
+                rendered = _dump_json(v, level + 1)
+            items.append(f'{pad_in}"{k}": {rendered}')
+        return "{\n" + ",\n".join(items) + "\n" + pad + "}"
+    if isinstance(obj, list):
+        if not obj:
+            return "[]"
+        items = [pad_in + _dump_json(x, level + 1) for x in obj]
+        return "[\n" + ",\n".join(items) + "\n" + pad + "]"
+    return json.dumps(obj)
+
+
+def _dump_cues(cues: list[dict], level: int) -> str:
+    pad = "  " * level
+    pad_in = "  " * (level + 1)
+    if not cues:
+        return "[]"
+    lines = [
+        pad_in + "{ " + ", ".join(f'"{k}": {json.dumps(v)}' for k, v in cue.items()) + " }"
+        for cue in cues
+    ]
+    return "[\n" + ",\n".join(lines) + "\n" + pad + "]"
+
+
 def write_filter_file(output_path: Path, title: str, service: str, cues: list[Cue]) -> None:
     entry = {
         "title": title,
@@ -307,7 +344,7 @@ def write_filter_file(output_path: Path, title: str, service: str, cues: list[Cu
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(doc, f, indent=2)
+        f.write(_dump_json(doc))
         f.write("\n")
 
     print(f"Wrote entry for {title!r} to {output_path} ({len(cues)} cues).")
