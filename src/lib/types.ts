@@ -45,6 +45,11 @@ export interface PlaybackStatus {
   position: number | null;
   duration: number | null;
   playback_state: string;
+  // Whether `position` is actually advancing right now -- see
+  // session.svelte.ts's `livePosition`, the only consumer: it uses this
+  // (not `playback_state` alone, which some apps leave stale on pause) to
+  // decide whether to keep interpolating `position` forward between polls.
+  is_advancing: boolean;
   // Bundle id of whatever app is currently "now playing" (e.g.
   // "com.netflix.Netflix"), or null until the device has announced one.
   app_bundle_id: string | null;

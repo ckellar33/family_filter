@@ -51,6 +51,17 @@ export const session = $state({
 
   hasLive: false,
   playback: null as PlaybackStatus | null,
+  // Local monotonic timestamp (performance.now()) at which `playback` was
+  // captured -- lets `livePosition()` below interpolate `playback.position`
+  // forward between polls instead of it sitting frozen for up to a full
+  // second (see +page.svelte's 1s poll interval). Reset alongside
+  // `playback` every time refreshPlayback() gets a fresh snapshot.
+  playbackAnchoredAt: null as number | null,
+  // Incremented on a fast local interval (see +page.svelte) purely to give
+  // a `$derived.by` that calls `livePosition()` a reason to keep
+  // re-evaluating between polls -- the value itself is never read, only
+  // written to.
+  tick: 0,
   controlBusy: false,
   controlError: "",
 
@@ -190,6 +201,26 @@ export async function doUnmute() {
 // have their own busy/error state to manage around it.
 export async function refreshPlayback() {
   session.playback = await invoke<PlaybackStatus | null>("control_playback_status");
+  session.playbackAnchoredAt = performance.now();
+}
+
+// Interpolates `playback.position` forward using real elapsed time since it
+// was captured, the same anchor-a-value-plus-a-monotonic-instant approach
+// the Rust backend already uses for its own extrapolation
+// (PlayerSnapshot::position_now) -- so the number on screen keeps advancing
+// smoothly instead of sitting frozen for up to a full second between polls.
+// Reads `session.tick` purely so a caller's `$derived.by(() => livePosition())`
+// picks up the fast local ticker as a dependency; its value is otherwise
+// unused. Frozen (not extrapolated) whenever `is_advancing` is false --
+// same rule the backend applies, so a paused position doesn't drift ahead
+// of what's actually on screen.
+export function livePosition(): number | null {
+  session.tick;
+  const p = session.playback;
+  if (p?.position == null) return null;
+  if (!p.is_advancing || session.playbackAnchoredAt == null) return p.position;
+  const live = p.position + (performance.now() - session.playbackAnchoredAt) / 1000;
+  return p.duration != null ? Math.min(live, p.duration) : live;
 }
 
 export async function scan(protocol: Protocol) {

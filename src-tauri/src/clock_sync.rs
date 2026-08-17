@@ -111,6 +111,12 @@ pub async fn sync_clock_offset() {
     for server in NTP_SERVERS {
         match query_offset(server).await {
             Ok(offset_secs) => {
+                // Logged unconditionally (not just past some "this matters"
+                // threshold) -- the failure branch below is already visible
+                // in the logs, so a silent success would make "did this
+                // actually run" indistinguishable from "it ran and found
+                // ~0 drift" from the log alone.
+                eprintln!("[clock] synced against {server}: offset {offset_secs:+.3}s");
                 appletv::set_wall_clock_offset_secs(offset_secs);
                 return;
             }

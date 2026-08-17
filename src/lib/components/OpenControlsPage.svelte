@@ -4,7 +4,7 @@
   // toggling its categories/cues now lives entirely in Select Filter --
   // this screen only shows the *result* of that (filter_action/filter_cues
   // already reflect whatever's currently selected there).
-  import { session, doSkip, doMute, doUnmute, doButton } from "$lib/state/session.svelte";
+  import { session, doSkip, doMute, doUnmute, doButton, livePosition } from "$lib/state/session.svelte";
   import { filterState } from "$lib/state/filter.svelte";
   import { fmtTime } from "$lib/format";
   import EmptyState from "$lib/components/EmptyState.svelte";
@@ -54,6 +54,13 @@
     if (!p) return null;
     return p.filter_cues.find((c) => c.enabled && (p.position == null || c.end > p.position)) ?? null;
   });
+
+  // Interpolated between polls -- see livePosition()'s doc. Used for the
+  // progress bar and the position readout, both of which visibly benefit
+  // from smooth movement; nextCue above intentionally keeps using the raw
+  // polled position instead, since "what's coming up" only needs to be
+  // right to within a poll tick, not visually smooth.
+  let displayPosition = $derived.by(() => livePosition());
 
   // The cue firing *right now*, if any -- filter_action is only ever set
   // while auto-filter mode is on, so this is the honest "something is
@@ -144,7 +151,7 @@
         {/if}
 
         {#if p?.duration}
-          {@const pct = p.position != null ? Math.min(100, (p.position / p.duration) * 100) : 0}
+          {@const pct = displayPosition != null ? Math.min(100, (displayPosition / p.duration) * 100) : 0}
           <div class="progress-track">
             <div class="progress-fill" style={`width: ${pct}%`}></div>
             <!-- One pip per cue, so the whole shape of the movie's filtering
@@ -159,7 +166,7 @@
             {/each}
           </div>
         {/if}
-        <p class="position"><span>{fmtTime(p?.position)}</span><span>{fmtTime(p?.duration)}</span></p>
+        <p class="position"><span>{fmtTime(displayPosition)}</span><span>{fmtTime(p?.duration)}</span></p>
       </div>
 
       {#if banner}

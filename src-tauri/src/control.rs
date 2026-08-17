@@ -766,6 +766,14 @@ pub struct PlaybackStatus {
     pub position: Option<f64>,
     pub duration: Option<f64>,
     pub playback_state: String,
+    /// Whether `position` is actually advancing right now -- same
+    /// state-and-rate check `filter::evaluate`'s `is_playing` gate uses
+    /// (`PlaybackState::is_advancing`), exposed here so the frontend can
+    /// locally interpolate `position` between polls (see
+    /// `session.svelte.ts`'s `livePosition`) without re-deriving "is this
+    /// actually playing" from `playback_state` alone -- which some apps
+    /// leave stale on pause (see that function's doc for why).
+    pub is_advancing: bool,
     /// Bundle id of whatever app is currently "now playing" (e.g.
     /// `com.netflix.Netflix`), straight from MRP's
     /// `SetNowPlayingClientMessage`. `None` until the device has announced
@@ -856,6 +864,7 @@ pub async fn control_playback_status(state: State<'_, ControlStateHandle>) -> Re
     let position = playback.position_now();
     let duration = playback.duration();
     let playback_state = format!("{:?}", playback.playback_state());
+    let is_advancing = playback.is_advancing();
     let app_bundle_id = playback.app_bundle_id().map(str::to_string);
     let app_name = app_bundle_id.as_deref().and_then(app_display_name).map(str::to_string);
 
@@ -903,6 +912,7 @@ pub async fn control_playback_status(state: State<'_, ControlStateHandle>) -> Re
         position,
         duration,
         playback_state,
+        is_advancing,
         app_bundle_id,
         app_name,
         filter_cues,

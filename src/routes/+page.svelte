@@ -63,6 +63,20 @@
     return () => clearInterval(id);
   });
 
+  // Ticks session.playback's *display* forward smoothly between the polls
+  // above -- see livePosition() in session.svelte.ts, the sole consumer.
+  // Same gating as the poll effect (no point ticking a position nothing is
+  // showing), and deliberately much faster than the 1s poll interval itself
+  // since this only drives a local interpolation, not a real device
+  // round trip.
+  $effect(() => {
+    if (session.page !== "control" || !session.hasLive) return;
+    const id = setInterval(() => {
+      session.tick++;
+    }, 200);
+    return () => clearInterval(id);
+  });
+
   // Re-checks whether a filter is available for whatever's playing now
   // (Open Controls' "tap to enable" banner) whenever the title, the app
   // it's playing in, or the enabled state changes -- kept here rather than
