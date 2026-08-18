@@ -68,7 +68,7 @@
   // How far ahead of the cue's (draft) start to land -- enough runway to
   // hear/see normal content before the cue should kick in, without
   // rewinding so far the test drags on.
-  const TEST_LEAD_IN = 10;
+  const TEST_LEAD_IN = 5;
 
   // Needs the live (MRP/AirPlay) transport, not just Companion -- `doSeek`
   // dispatches MRP's absolute SeekToPlaybackPosition, same as a real skip
