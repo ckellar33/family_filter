@@ -44,8 +44,7 @@
   // no longer exists (or whose index just shifted) is the one failure mode
   // worth guarding here.
   async function saveEditedCue(cue: CreationCue, next: { start: number; end: number }) {
-    if (next.start !== cue.start) await updateCueTime(cue, "start", fmtTime(next.start));
-    if (next.end !== cue.end) await updateCueTime(cue, "end", fmtTime(next.end));
+    if (next.start !== cue.start || next.end !== cue.end) await updateCueTime(cue, next.start, next.end);
     editingCue = null;
   }
 

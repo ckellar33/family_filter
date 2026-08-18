@@ -24,7 +24,7 @@
 //! Companion sessions and exposes it to the frontend.
 
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -506,7 +506,19 @@ pub struct FilterEntryDetail {
     pub title: String,
     pub service: String,
     pub categories: Vec<String>,
+    /// Which of `categories` are currently off (see `ControlState::
+    /// disabled_categories`) -- lets the frontend mirror the real
+    /// category-switch state on every (re-)selection instead of assuming
+    /// everything's on, which used to silently paper over a category the
+    /// user had actually disabled.
+    pub disabled_categories: Vec<String>,
     pub cues: Vec<CueStatus>,
+    /// Master auto-filter toggle's *actual* current state -- lets the
+    /// frontend mirror it exactly rather than assuming `false`, which used
+    /// to make the master switch flash "off" every time a tile's detail was
+    /// (re-)opened even when the backend had left it on the whole time (see
+    /// `select_filter_tile`'s doc comment).
+    pub enabled: bool,
 }
 
 /// Loads `path` as the active auto-filter list (exactly like
@@ -517,6 +529,18 @@ pub struct FilterEntryDetail {
 /// even before this command existed (see `FilterList`'s doc comment), so
 /// this doesn't change that, just gives the frontend an entry-scoped view
 /// of the result.
+///
+/// Only actually goes through `load_filter_file_inner`'s disarm-and-reset
+/// when `path` isn't already the active list. This is also what
+/// `filter.svelte.ts`'s `refreshDetail()` calls to re-fetch the open detail
+/// view after *every* toggle/cue-edit/delete in the Filters tab -- routing
+/// those through the full reload used to force `filter_enabled` back off
+/// (persisted to disk!) and wipe every disabled category/cue on every single
+/// edit, which looked like "the filter turns itself off" from the frontend
+/// (its local `filterEnabled` mirror isn't touched by this call, so the
+/// switch kept showing "on" while the backend had already silently turned
+/// it off). Selecting a tile that belongs to a *different* file still needs
+/// the full reset -- see `load_filter_file_inner`'s own doc for why.
 #[tauri::command]
 pub async fn select_filter_tile(
     state: State<'_, ControlStateHandle>,
@@ -524,7 +548,10 @@ pub async fn select_filter_tile(
     title: String,
     service: String,
 ) -> Result<FilterEntryDetail, String> {
-    load_filter_file_inner(state.inner(), path).await?;
+    let already_active = state.lock().await.filter_list_path.as_deref() == Some(Path::new(&path));
+    if !already_active {
+        load_filter_file_inner(state.inner(), path).await?;
+    }
 
     let guard = state.lock().await;
     let entry = guard
@@ -559,8 +586,10 @@ pub async fn select_filter_tile(
         .collect();
     let resolved_title = entry.title.clone();
     let resolved_service = entry.service.clone();
+    let disabled_categories: Vec<String> = categories.iter().filter(|c| guard.disabled_categories.contains(*c)).cloned().collect();
+    let enabled = guard.filter_enabled;
 
-    Ok(FilterEntryDetail { title: resolved_title, service: resolved_service, categories, cues })
+    Ok(FilterEntryDetail { title: resolved_title, service: resolved_service, categories, disabled_categories, cues, enabled })
 }
 
 /// One service variant of a title, as known anywhere in the library (not
@@ -607,6 +636,13 @@ pub struct ControlInfo {
     /// Whether MRP or AirPlay is also paired, unlocking mute/unmute and
     /// playback title/position. Skip works either way (Companion only).
     pub has_live: bool,
+    /// Which saved device this session connected to -- echoed back so the
+    /// frontend can update its "connected" label/highlight without having
+    /// to already know the id going in (e.g. after the pairing wizard's
+    /// "Open controls", or an auto-reconnect on launch).
+    pub id: String,
+    pub name: String,
+    pub host: String,
 }
 
 /// How long to wait for the initial TCP connect to the saved Companion host
@@ -618,14 +654,15 @@ pub struct ControlInfo {
 /// "connecting" state -- indistinguishable from having never tried at all.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(6);
 
-/// Loads `pairing.store`, runs Pair-Verify + bootstraps a Companion control
-/// session, and connects a live (MRP/AirPlay) session if one was paired.
-/// Replaces whatever control session (if any) was already active.
+/// Loads the saved device `id`, runs Pair-Verify + bootstraps a Companion
+/// control session, and connects a live (MRP/AirPlay) session if one was
+/// paired. Replaces whatever control session (if any) was already active --
+/// switching devices while connected is just calling this again with a
+/// different id. Marks `id` as the last-used device on success, so the next
+/// launch offers to auto-reconnect to it (see `saved::last_saved_device_id`).
 #[tauri::command]
-pub async fn start_control_session(state: State<'_, ControlStateHandle>) -> Result<ControlInfo, String> {
-    let mut saved = storage::load_pairing()
-        .map_err(|e| describe(&e))?
-        .ok_or_else(|| "No saved pairing found".to_string())?;
+pub async fn start_control_session(state: State<'_, ControlStateHandle>, id: String) -> Result<ControlInfo, String> {
+    let mut saved = storage::load_device(&id).map_err(|e| describe(&e))?;
 
     let (mut stream, port) = appletv::connect_companion(&saved.companion.host, saved.companion.port, CONNECT_TIMEOUT)
         .await
@@ -635,7 +672,7 @@ pub async fn start_control_session(state: State<'_, ControlStateHandle>) -> Resu
         // after a reboot or tvOS update); persist it now so the next
         // launch connects directly instead of needing this fallback again.
         saved.companion.port = port;
-        if let Err(e) = storage::save_pairing(&saved.companion, saved.mrp.as_ref(), saved.airplay.as_ref()) {
+        if let Err(e) = storage::update_device(&id, &saved.name, &saved.companion, saved.mrp.as_ref(), saved.airplay.as_ref()) {
             eprintln!("[pairing] failed to persist refreshed Companion port: {}", describe(&e));
         }
     }
@@ -656,7 +693,16 @@ pub async fn start_control_session(state: State<'_, ControlStateHandle>) -> Resu
     // -- the frontend re-checks for a saved one right after this via
     // `check_saved_filter_file`, same as it re-checks pairing on mount.
     *state.lock().await = ControlState { session: Some(session), live, ..Default::default() };
-    Ok(ControlInfo { has_live })
+
+    // Best-effort, same tolerance as the port refresh above -- a failure to
+    // persist just means the next launch falls back to the device chooser
+    // instead of auto-reconnecting, not something worth failing this
+    // already-successful connect over.
+    if let Err(e) = storage::save_last_device_id(&id) {
+        eprintln!("[pairing] failed to persist last_device.store: {e}");
+    }
+
+    Ok(ControlInfo { has_live, id, name: saved.name, host: saved.companion.host })
 }
 
 #[tauri::command]

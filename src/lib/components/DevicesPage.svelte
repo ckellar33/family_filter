@@ -19,6 +19,8 @@
     skipStep,
     save,
     verifySaved,
+    deleteDevice,
+    startPairingWizard,
   } from "$lib/state/session.svelte";
   import type { Protocol, Step } from "$lib/types";
   import PinKeypad from "$lib/components/PinKeypad.svelte";
@@ -29,9 +31,23 @@
     onClose,
   }: {
     sessionActive?: boolean;
-    onOpenControls: () => void | Promise<void>;
+    onOpenControls: (id: string) => void | Promise<void>;
     onClose?: () => void;
   } = $props();
+
+  // Per-card "remove this device?" confirmation -- a bare tap deletes
+  // nothing; a second tap on the same card within the confirm state does.
+  // Reset on mount so reopening Devices never lands mid-confirm.
+  let confirmDeleteId = $state<string | null>(null);
+
+  function requestDelete(id: string) {
+    if (confirmDeleteId === id) {
+      confirmDeleteId = null;
+      deleteDevice(id);
+    } else {
+      confirmDeleteId = id;
+    }
+  }
 
   // One sentence per wizard step, so each screen says what it's for and
   // whether it matters -- previously only the optional-ness was stated.
@@ -50,20 +66,22 @@
     },
     save: {
       title: "Save this pairing",
-      body: "Credentials get written to pairing.store so the next launch reconnects on its own.",
+      body: "Give it a name you'll recognize -- Family Filter can remember more than one Apple TV, and you'll pick between them later from Devices.",
     },
     done: {
       title: "You're paired",
-      body: "Family Filter will reconnect to this Apple TV on its own next time.",
+      body: "Family Filter will offer to reconnect to this Apple TV on its own next time.",
     },
   };
 
-  // On mount: check for a saved pairing.store, and if one exists, connect
-  // automatically (VidAngel-style auto-connect) rather than waiting for a
-  // manual "Open Controls" tap. This is now the one place in the app that
-  // decides connection status -- the root page just lands on Select Filter
-  // and leaves connecting up to whoever opens this view (a NavBar tap, or
-  // Open Controls' own "connect a device" prompt).
+  // On mount: check for saved devices, and if the last one connected to is
+  // still among them, connect to it automatically (VidAngel-style
+  // auto-connect) rather than waiting for a manual tap. Every *other* saved
+  // device stays one tap away in the list below -- that's this feature's
+  // "switch device" option, not a separate screen. This is now the one
+  // place in the app that decides connection status -- the root page just
+  // lands on Select Filter and leaves connecting up to whoever opens this
+  // view (a NavBar tap, or Open Controls' own "connect a device" prompt).
   //
   // Skipped once already connected (session.page === "control"): this
   // effect re-runs every time Devices is opened (it's mounted fresh each
@@ -84,9 +102,10 @@
   $effect(() => {
     (async () => {
       if (untrack(() => session.page) === "control") return;
+      confirmDeleteId = null;
       await checkSaved();
-      if (session.page === "saved") {
-        await onOpenControls();
+      if (session.page === "saved" && session.lastDeviceId && session.savedDevices.some((d) => d.id === session.lastDeviceId)) {
+        await onOpenControls(session.lastDeviceId);
       }
     })();
   });
@@ -101,7 +120,7 @@
 
 {#if session.page === "checking"}
   <section class="screen">
-    <p class="hint centered">Checking for a saved pairing…</p>
+    <p class="hint centered">Checking for saved devices…</p>
   </section>
 {:else if session.page === "wizard"}
   {@const copy = STEP_COPY[session.step]}
@@ -168,7 +187,20 @@
         </div>
       {/if}
     {:else if session.step === "save"}
-      <button class="btn-primary" onclick={save} disabled={session.pairing}>{session.pairing ? "Saving…" : "Save this pairing"}</button>
+      <div class="stack">
+        <label class="footnote" for="device-name" style="display:block; margin-bottom:6px">Name this device</label>
+        <input
+          id="device-name"
+          class="field"
+          type="text"
+          bind:value={session.deviceName}
+          placeholder={session.pairedHost}
+          maxlength="60"
+        />
+      </div>
+      <button class="btn-primary" onclick={() => save(session.deviceName)} disabled={session.pairing}>
+        {session.pairing ? "Saving…" : "Save this pairing"}
+      </button>
     {:else if session.step === "done"}
       <div style="display:flex; flex-direction:column; align-items:center; gap:16px">
         <div
@@ -176,66 +208,96 @@
         >
           ✓
         </div>
-        <p class="footnote" style="text-align:center">Saved to <code>pairing.store</code>.</p>
+        <p class="footnote" style="text-align:center">Saved as “{session.deviceName || session.pairedHost}”.</p>
       </div>
-      <button class="btn-primary" onclick={onOpenControls}>Open controls</button>
+      <button class="btn-primary" onclick={() => session.newDeviceId && onOpenControls(session.newDeviceId)}>Open controls</button>
     {/if}
   </section>
-{:else if session.savedPairing}
+{:else if session.savedDevices.length > 0}
   <section class="screen">
-    <div class="device-card">
-      <div class="device-card-head">
-        <span class="device-icon" style="background: rgba(245,241,234,.12); width:44px; height:44px; border-radius:14px; font-size:17px">📺</span>
-        <div style="flex:1; min-width:0">
-          <p class="name">{session.savedPairing.host}</p>
-          <p class="addr">{session.savedPairing.host}:{session.savedPairing.port}</p>
-        </div>
-        <span class="shield" data-state={session.verifyResult === "ok" ? "on" : "off"}>
-          {session.verifying ? "CHECKING" : session.verifyResult === "ok" ? "VERIFIED" : "SAVED"}
-        </span>
-      </div>
-      <div class="protocol-tiles">
-        <div class="protocol-tile">
-          <span class="name">Companion</span>
-          <span class="state paired">Paired</span>
-        </div>
-        <div class="protocol-tile">
-          <span class="name">MRP</span>
-          <span class="state" class:paired={session.savedPairing.has_mrp}>{session.savedPairing.has_mrp ? "Paired" : "Not paired"}</span>
-        </div>
-        <div class="protocol-tile">
-          <span class="name">AirPlay</span>
-          <span class="state" class:paired={session.savedPairing.has_airplay}>
-            {session.savedPairing.has_airplay ? "Paired" : "Not paired"}
-          </span>
-        </div>
-      </div>
-    </div>
-
     <p class="hint">
       Companion is what lets Family Filter mute and skip. MRP or AirPlay adds the live playback position the cues are timed against.
     </p>
 
-    {#if session.connecting}
-      <p class="hint centered">Connecting…</p>
-    {:else if session.verifyResult === "failed"}
-      <p class="banner error">{session.verifyError}</p>
-    {:else if session.error}
+    {#if session.error}
       <p class="banner error">{session.error}</p>
     {/if}
 
+    <div style="display:flex; flex-direction:column; gap:12px">
+      {#each session.savedDevices as device (device.id)}
+        {@const isActive = sessionActive && session.activeDevice?.id === device.id}
+        {@const isConnecting = session.connectingId === device.id}
+        {@const isVerifying = session.verifyingId === device.id}
+        {@const justVerified = session.verifiedId === device.id}
+        <div class="device-card">
+          <div class="device-card-head">
+            <span class="device-icon" style="background: rgba(245,241,234,.12); width:44px; height:44px; border-radius:14px; font-size:17px">📺</span>
+            <div style="flex:1; min-width:0">
+              <p class="name">{device.name}</p>
+              <p class="addr">{device.host}:{device.port}</p>
+            </div>
+            <span class="shield" data-state={isActive || (justVerified && session.verifyResult === "ok") ? "on" : "off"}>
+              {isVerifying
+                ? "CHECKING"
+                : isActive
+                  ? "CONNECTED"
+                  : justVerified && session.verifyResult === "ok"
+                    ? "VERIFIED"
+                    : device.id === session.lastDeviceId
+                      ? "LAST USED"
+                      : "SAVED"}
+            </span>
+          </div>
+          <div class="protocol-tiles">
+            <div class="protocol-tile">
+              <span class="name">Companion</span>
+              <span class="state paired">Paired</span>
+            </div>
+            <div class="protocol-tile">
+              <span class="name">MRP</span>
+              <span class="state" class:paired={device.has_mrp}>{device.has_mrp ? "Paired" : "Not paired"}</span>
+            </div>
+            <div class="protocol-tile">
+              <span class="name">AirPlay</span>
+              <span class="state" class:paired={device.has_airplay}>{device.has_airplay ? "Paired" : "Not paired"}</span>
+            </div>
+          </div>
+
+          {#if justVerified && session.verifyResult === "failed"}
+            <p class="banner error" style="margin:0">{session.verifyError}</p>
+          {/if}
+
+          <div class="stack">
+            {#if isActive}
+              <p class="hint centered" style="margin:0">This is the connected device.</p>
+            {:else}
+              <button class="btn-primary" onclick={() => onOpenControls(device.id)} disabled={session.connecting || session.verifying}>
+                {isConnecting ? "Connecting…" : sessionActive ? "Switch to this device" : "Open controls"}
+              </button>
+            {/if}
+            <div style="display:flex; gap:10px">
+              <button class="btn-secondary" onclick={() => verifySaved(device.id)} disabled={session.connecting || session.verifying}>
+                {isVerifying ? "Verifying…" : "Verify"}
+              </button>
+              <button
+                class="btn-secondary"
+                style={confirmDeleteId === device.id ? "color: var(--destructive); border-color: var(--error-line)" : ""}
+                onclick={() => requestDelete(device.id)}
+                disabled={session.connecting || session.verifying}
+              >
+                {confirmDeleteId === device.id ? "Tap again to remove" : "Remove"}
+              </button>
+            </div>
+          </div>
+        </div>
+      {/each}
+    </div>
+
     <div class="stack">
       {#if sessionActive}
-        <button class="btn-primary" onclick={onClose} disabled={session.verifying}>Done</button>
-      {:else}
-        <button class="btn-primary" onclick={onOpenControls} disabled={session.verifying || session.connecting}>
-          {session.connecting ? "Connecting…" : "Open controls"}
-        </button>
+        <button class="btn-primary" onclick={onClose}>Done</button>
       {/if}
-      <button class="btn-secondary" onclick={verifySaved} disabled={session.verifying || session.connecting}>
-        {session.verifying ? "Verifying…" : "Verify this device"}
-      </button>
-      <button class="btn-secondary" onclick={() => { session.page = "wizard"; }} disabled={session.verifying || session.connecting}>
+      <button class="btn-secondary" onclick={startPairingWizard} disabled={session.verifying || session.connecting}>
         Pair a new device
       </button>
     </div>

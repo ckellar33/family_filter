@@ -34,8 +34,7 @@
   let editingCue = $state<Cue | null>(null);
 
   async function saveEditedCue(cue: Cue, next: { start: number; end: number }) {
-    if (next.start !== cue.start) await updateDetailCueTime(cue, "start", fmtTime(next.start));
-    if (next.end !== cue.end) await updateDetailCueTime(cue, "end", fmtTime(next.end));
+    if (next.start !== cue.start || next.end !== cue.end) await updateDetailCueTime(cue, next.start, next.end);
     editingCue = null;
   }
 

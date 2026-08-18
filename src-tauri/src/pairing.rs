@@ -209,12 +209,17 @@ pub fn submit_pin(state: State<'_, PairingStateHandle>, protocol: String, pin: S
     }
 }
 
-/// Writes whatever pairing results have accumulated so far to
-/// `pairing.store` and resets the session. Companion is required (matches
-/// `storage::save_pairing`'s signature); MRP/AirPlay are included only if
-/// that step was attempted and succeeded.
+/// Writes whatever pairing results have accumulated so far as a brand-new
+/// entry in the multi-device store and resets the session, returning the
+/// new device's id so the frontend can select it immediately (e.g. the
+/// wizard's "Open controls" button on the done screen) without a round trip
+/// through `saved::list_saved_devices`. Companion is required (matches
+/// `storage::save_new_device`'s signature); MRP/AirPlay are included only if
+/// that step was attempted and succeeded. `name` is the nickname entered on
+/// the save step; an empty/whitespace-only one falls back to the Companion
+/// host, same as a device that predates nicknames.
 #[tauri::command]
-pub fn finish_pairing(state: State<'_, PairingStateHandle>) -> Result<(), String> {
+pub fn finish_pairing(state: State<'_, PairingStateHandle>, name: String) -> Result<String, String> {
     let mut guard = state.lock().unwrap();
     let companion = guard
         .companion
@@ -224,5 +229,7 @@ pub fn finish_pairing(state: State<'_, PairingStateHandle>) -> Result<(), String
     let airplay = guard.airplay.take();
     drop(guard);
 
-    storage::save_pairing(&companion, mrp.as_ref(), airplay.as_ref()).map_err(|e| describe(&e))
+    let name = name.trim();
+    let name = if name.is_empty() { companion.host.as_str() } else { name };
+    storage::save_new_device(name, &companion, mrp.as_ref(), airplay.as_ref()).map_err(|e| describe(&e))
 }

@@ -7,7 +7,7 @@
 // is what every setter function below (and every consuming component) does.
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { ControlInfo, Device, PlaybackStatus, Protocol, RemoteButton, SavedPairingInfo, Step } from "$lib/types";
+import type { ControlInfo, Device, PlaybackStatus, Protocol, RemoteButton, SavedDeviceInfo, Step } from "$lib/types";
 
 // Companion is required (it's what unlocks mute/skip control); MRP and
 // AirPlay are each their own optional pairing ceremony against their own
@@ -24,30 +24,54 @@ export function isProtocol(s: Step): s is Protocol {
   return s === "companion" || s === "mrp" || s === "airplay";
 }
 
-// Top-level pairing state: "checking" while we ask the backend for a saved
-// pairing.store on mount, "saved" if one was found (offer to verify it
-// instead of re-pairing from scratch), "wizard" for the discover-and-pair
-// flow -- either because there was nothing saved, or the user chose to pair
-// a different device anyway -- and "control" once a control session is open
-// (mute/unmute, skip, now playing). Unlike the old single-page version,
-// "control" no longer means one specific screen -- see +page.svelte's
-// devicesOpen/activeTab for what's actually shown once a session is active.
+// Top-level pairing state: "checking" while we ask the backend for saved
+// devices on mount, "saved" if at least one was found (a chooser listing
+// every saved device -- auto-connects to whichever was last used, but any
+// other saved device is a tap away, doubling as "switch device" once a
+// session is already active), "wizard" for the discover-and-pair flow --
+// either because nothing was saved yet, or the user chose to pair another
+// device -- and "control" once a control session is open (mute/unmute,
+// skip, now playing). Unlike the old single-page version, "control" no
+// longer means one specific screen -- see +page.svelte's devicesOpen/
+// activeTab for what's actually shown once a session is active.
 export type Page = "checking" | "saved" | "wizard" | "control";
 
 export const session = $state({
   page: "checking" as Page,
-  savedPairing: null as SavedPairingInfo | null,
+  savedDevices: [] as SavedDeviceInfo[],
+  // The id `checkSaved()` found as last-used -- drives the auto-connect
+  // attempt on mount and, once connected, which card the "saved" chooser
+  // highlights as current. Distinct from `activeDevice` below: this can
+  // point at a device that hasn't actually been (re)connected to yet this
+  // launch (e.g. its auto-connect failed and the user hasn't picked
+  // anything since).
+  lastDeviceId: null as string | null,
+  // The device the *current* control session is actually talking to --
+  // set from start_control_session's own response, so it's always accurate
+  // even after switching devices mid-session. `null` whenever page !==
+  // "control".
+  activeDevice: null as SavedDeviceInfo | null,
   verifying: false,
   verifyResult: null as "ok" | "failed" | null,
   verifyError: "",
+  // Which device verifySaved() is currently acting on / most recently
+  // finished acting on, so the chooser can show a per-row spinner and
+  // per-row result instead of a page-wide one -- several saved devices sit
+  // on screen at once, unlike the old single-card layout. `verifyingId` is
+  // only set while the call is in flight; `verifiedId` sticks around after
+  // it resolves so the result banner/badge knows which card it belongs to.
+  verifyingId: null as string | null,
+  verifiedId: null as string | null,
 
   // True for the duration of one openControls() call -- covers both the
-  // auto-connect attempt on launch and a manual "Open Controls" tap. The
-  // underlying connect can take several seconds (or, now bounded, time out)
-  // against a slow/unreachable Apple TV; without this the saved-pairing
-  // screen looked identical whether nothing had been tried yet or an
-  // attempt was quietly still in flight.
+  // auto-connect attempt on launch and a manual device tap. The underlying
+  // connect can take several seconds (or, now bounded, time out) against a
+  // slow/unreachable Apple TV; without this the chooser looked identical
+  // whether nothing had been tried yet or an attempt was quietly still in
+  // flight. `connectingId` is which device, for the same per-row reason as
+  // `verifyingId`.
   connecting: false,
+  connectingId: null as string | null,
 
   hasLive: false,
   playback: null as PlaybackStatus | null,
@@ -76,22 +100,36 @@ export const session = $state({
   // Apple TV and the backend is awaiting `submit_pin`.
   awaitingPinFor: null as Protocol | null,
   pin: "",
+
+  // The host the user tapped on the Companion step -- the save step's
+  // nickname field defaults to this (most Apple TVs' mDNS host strings are
+  // at least somewhat readable, e.g. "Living-Room-Apple-TV"), and it's the
+  // fallback name if the field is left untouched. Set in pair(), reset by
+  // startPairingWizard().
+  pairedHost: "",
+  // The save step's editable nickname field.
+  deviceName: "",
+  // The id finish_pairing() handed back, for the "done" screen's "Open
+  // controls" button -- connects straight to the device that was just
+  // paired without waiting on a fresh list_saved_devices round trip.
+  newDeviceId: null as string | null,
 });
 
 // Runs once on mount to decide the starting page: straight into the wizard
-// if there's nothing saved yet, or the saved-pairing screen if
-// libs/appletv-cli (or an earlier run of this app) already produced a
-// pairing.store. Callers decide what to do next (see +page.svelte, which
-// auto-runs openControls() when this finds a saved pairing).
+// if nothing's ever been saved, or the chooser (session.page = "saved") if
+// libs/appletv-cli (or an earlier run of this app) already produced at
+// least one saved device. Callers decide what to do next (see
+// DevicesPage.svelte, which auto-runs openControls(lastDeviceId) when one
+// is set and still among the saved devices).
 export async function checkSaved() {
   try {
-    const found = await invoke<SavedPairingInfo | null>("check_saved_pairing");
-    if (found) {
-      session.savedPairing = found;
-      session.page = "saved";
-    } else {
-      session.page = "wizard";
-    }
+    const [devices, lastId] = await Promise.all([
+      invoke<SavedDeviceInfo[]>("list_saved_devices"),
+      invoke<string | null>("last_saved_device_id"),
+    ]);
+    session.savedDevices = devices;
+    session.lastDeviceId = lastId;
+    session.page = devices.length > 0 ? "saved" : "wizard";
   } catch (e) {
     // Backend couldn't even check -- fall through to the normal pairing
     // wizard rather than get stuck on "checking...".
@@ -100,33 +138,82 @@ export async function checkSaved() {
   }
 }
 
-export async function verifySaved() {
+export async function verifySaved(id: string) {
   session.verifying = true;
+  session.verifyingId = id;
   session.verifyResult = null;
   session.verifyError = "";
   try {
-    await invoke("verify_saved_pairing");
+    await invoke("verify_saved_pairing", { id });
     session.verifyResult = "ok";
   } catch (e) {
     session.verifyResult = "failed";
     session.verifyError = String(e);
   } finally {
     session.verifying = false;
+    session.verifyingId = null;
+    session.verifiedId = id;
   }
 }
 
-// Runs Pair-Verify + bootstraps a Companion control session (plus a live
-// MRP/AirPlay session if one was paired). Available from the saved-pairing
-// screen, right after a fresh pairing finishes, or automatically on launch
-// (see +page.svelte). Returns whether it succeeded so callers can decide
-// what to show next -- doesn't touch filter/creation state itself (that's
-// each module's own job; +page.svelte composes them after this resolves).
-export async function openControls(): Promise<boolean> {
+// Renames a saved device in place -- updates the local list optimistically
+// on success rather than re-fetching the whole list for a one-field change.
+export async function renameDevice(id: string, name: string) {
+  try {
+    await invoke("rename_saved_device", { id, name });
+    const device = session.savedDevices.find((d) => d.id === id);
+    if (device) device.name = name;
+    if (session.activeDevice?.id === id) session.activeDevice.name = name;
+  } catch (e) {
+    session.error = String(e);
+  }
+}
+
+// Removes a saved device. Clears lastDeviceId locally too if it pointed at
+// the device just removed, matching what storage::delete_device already
+// does backend-side -- otherwise a stale id could linger in memory for the
+// rest of this session even though the file (and last_device.store) is
+// gone.
+export async function deleteDevice(id: string) {
+  try {
+    await invoke("delete_saved_device", { id });
+    session.savedDevices = session.savedDevices.filter((d) => d.id !== id);
+    if (session.lastDeviceId === id) session.lastDeviceId = null;
+  } catch (e) {
+    session.error = String(e);
+  }
+}
+
+// Runs Pair-Verify + bootstraps a Companion control session for the saved
+// device `id` (plus a live MRP/AirPlay session if one was paired for it).
+// Available from the chooser, right after a fresh pairing finishes, or
+// automatically on launch for the last-used device (see DevicesPage.svelte).
+// Replaces whatever control session was already active, so this doubles as
+// "switch device" when called again with a different id while page ===
+// "control". Returns whether it succeeded so callers can decide what to
+// show next -- doesn't touch filter/creation state itself (that's each
+// module's own job; +page.svelte composes them after this resolves).
+export async function openControls(id: string): Promise<boolean> {
   session.error = "";
   session.connecting = true;
+  session.connectingId = id;
   try {
-    const info = await invoke<ControlInfo>("start_control_session");
+    const info = await invoke<ControlInfo>("start_control_session", { id });
     session.hasLive = info.has_live;
+    // Prefer the full record from the last list_saved_devices fetch (it has
+    // port/has_mrp/has_airplay, which ControlInfo doesn't carry) -- falls
+    // back to a partial one built from ControlInfo alone for a device
+    // that's not in that list yet (freshly paired this launch; checkSaved()
+    // hasn't re-run since).
+    session.activeDevice = session.savedDevices.find((d) => d.id === info.id) ?? {
+      id: info.id,
+      name: info.name,
+      host: info.host,
+      port: 0,
+      has_mrp: false,
+      has_airplay: false,
+    };
+    session.lastDeviceId = info.id;
     session.playback = null;
     session.controlError = "";
     session.page = "control";
@@ -136,6 +223,7 @@ export async function openControls(): Promise<boolean> {
     return false;
   } finally {
     session.connecting = false;
+    session.connectingId = null;
   }
 }
 
@@ -272,6 +360,14 @@ export async function pair(protocol: Protocol, device: Device) {
       }
     });
     await invoke(`pair_${protocol}`, { host: device.host, port: device.port });
+    if (protocol === "companion") {
+      // Companion is the required first step, so its host is what the save
+      // step's nickname field should default to -- set it here rather than
+      // wherever the wizard lands on "save", since that's the one place we
+      // definitely still have the tapped device on hand.
+      session.pairedHost = device.host;
+      session.deviceName = device.host;
+    }
     advance();
   } catch (e) {
     session.error = String(e);
@@ -302,11 +398,26 @@ export function skipStep() {
   advance();
 }
 
-export async function save() {
+// Resets the discover-and-pair flow back to its first step and clears out
+// whatever the previous run left behind (a stale "done", a leftover device
+// list/nickname) -- the entry point for both "nothing saved yet" and "pair
+// another device" from the chooser, so either always lands on a clean
+// Companion step rather than wherever session.step happened to be left.
+export function startPairingWizard() {
+  session.page = "wizard";
+  session.step = "companion";
+  session.devices = [];
+  session.error = "";
+  session.pairedHost = "";
+  session.deviceName = "";
+  session.newDeviceId = null;
+}
+
+export async function save(name: string) {
   session.pairing = true;
   session.error = "";
   try {
-    await invoke("finish_pairing");
+    session.newDeviceId = await invoke<string>("finish_pairing", { name });
     session.step = "done";
   } catch (e) {
     session.error = String(e);

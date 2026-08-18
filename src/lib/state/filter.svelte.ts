@@ -8,7 +8,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { session, refreshPlayback } from "$lib/state/session.svelte";
-import { parseTime } from "$lib/format";
 import type { Cue, FilterEntryDetail, FilterSummary, FilterTile, ServiceOption } from "$lib/types";
 
 export const filterState = $state({
@@ -172,6 +171,13 @@ function currentlyPlayingService(title: string): string | null {
 // SelectFilterPage.svelte) re-selects a sibling variant. Also refreshes
 // `filterSummary`/`categoryEnabled` the same way `checkSavedFilter` does,
 // since this *is* a filter-file load.
+//
+// Mirrors `detail.enabled`/`disabled_categories` rather than assuming
+// "false"/"all on" -- select_filter_tile only actually disarms and clears
+// overrides when `path` is a genuinely different file than what's already
+// active (see control::select_filter_tile's doc comment), so re-opening a
+// tile from the file that's already loaded and armed must reflect that it's
+// still armed, not flash the master switch to "off" for no backend reason.
 export async function selectTile(path: string, title: string, service: string) {
   filterState.detailLoading = true;
   filterState.detailError = "";
@@ -179,14 +185,14 @@ export async function selectTile(path: string, title: string, service: string) {
     const detail = await invoke<FilterEntryDetail>("select_filter_tile", { path, title, service });
     filterState.detail = detail;
     filterState.selectedPath = path;
-    filterState.filterEnabled = false;
-    filterState.categoryEnabled = Object.fromEntries(detail.categories.map((c) => [c, true]));
+    filterState.filterEnabled = detail.enabled;
+    filterState.categoryEnabled = Object.fromEntries(detail.categories.map((c) => [c, !detail.disabled_categories.includes(c)]));
     // FilterSummary isn't part of select_filter_tile's response -- re-derive
     // just enough of it (path/category list) for the rest of the app (e.g.
     // Open Controls' "no filter list loaded" check) without a second
     // round trip; media_count isn't shown anywhere that matters here, so 0
     // is fine as a placeholder.
-    filterState.filterSummary = { path, media_count: 0, categories: detail.categories, enabled: false };
+    filterState.filterSummary = { path, media_count: 0, categories: detail.categories, enabled: detail.enabled };
     await refreshPlayback();
   } catch (e) {
     filterState.detailError = String(e);
@@ -243,18 +249,16 @@ export async function toggleDetailCue(cue: Cue) {
 // This acts on whatever (title, service) is already open in `detail`, so it
 // works regardless of what's on screen right now, and persists straight to
 // the filter file on the backend (see control::update_filter_cue) rather
-// than just this session's enabled/disabled overrides.
-export async function updateDetailCueTime(cue: Cue, field: "start" | "end", text: string) {
+// than just this session's enabled/disabled overrides. Takes both `start`
+// and `end` together (the sheet's full draft, already parsed to seconds) in
+// one call -- calling this twice in a row, once per changed field, used to
+// let the second call's "unchanged" field fall back to the *original* cue's
+// value instead of the first call's just-saved one, silently reverting
+// whichever field was set first whenever both changed in the same edit.
+export async function updateDetailCueTime(cue: Cue, start: number, end: number) {
   if (!filterState.detail) return;
-  const seconds = parseTime(text);
-  if (seconds == null) {
-    filterState.detailError = `"${text}" isn't a valid m:ss time`;
-    return;
-  }
   filterState.detailError = "";
   try {
-    const start = field === "start" ? seconds : cue.start;
-    const end = field === "end" ? seconds : cue.end;
     await invoke("update_filter_cue", { title: filterState.detail.title, service: filterState.detail.service, index: cue.index, start, end });
     await refreshDetail();
     await refreshPlayback();
@@ -281,13 +285,19 @@ export async function deleteDetailCue(cue: Cue) {
 // Re-fetches the open detail view from the backend -- cheap even though it
 // re-selects the whole tile (poster lookups are disk-cached by then), used
 // after every toggle so the tree reflects the new enabled state immediately
-// rather than waiting on a poll.
+// rather than waiting on a poll. Also re-syncs filterEnabled/categoryEnabled
+// from the fresh response -- redundant with what each individual toggle
+// already sets on success, but keeps them from ever silently drifting from
+// the backend's actual state, the same guarantee selectTile relies on.
 async function refreshDetail() {
   const path = filterState.selectedPath;
   const detail = filterState.detail;
   if (!path || !detail) return;
   try {
-    filterState.detail = await invoke<FilterEntryDetail>("select_filter_tile", { path, title: detail.title, service: detail.service });
+    const fresh = await invoke<FilterEntryDetail>("select_filter_tile", { path, title: detail.title, service: detail.service });
+    filterState.detail = fresh;
+    filterState.filterEnabled = fresh.enabled;
+    filterState.categoryEnabled = Object.fromEntries(fresh.categories.map((c) => [c, !fresh.disabled_categories.includes(c)]));
   } catch (e) {
     filterState.detailError = String(e);
   }

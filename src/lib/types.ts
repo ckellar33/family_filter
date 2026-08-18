@@ -7,7 +7,12 @@ export interface Device {
   port: number;
 }
 
-export interface SavedPairingInfo {
+// One saved device, as returned by list_saved_devices -- the Devices
+// screen's startup chooser lists these; `id` is what start_control_session/
+// verify_saved_pairing/rename_saved_device/delete_saved_device key off of.
+export interface SavedDeviceInfo {
+  id: string;
+  name: string;
   host: string;
   port: number;
   has_mrp: boolean;
@@ -16,6 +21,10 @@ export interface SavedPairingInfo {
 
 export interface ControlInfo {
   has_live: boolean;
+  // Which saved device this session connected to -- see control::ControlInfo.
+  id: string;
+  name: string;
+  host: string;
 }
 
 export interface Cue {
@@ -146,7 +155,13 @@ export interface FilterEntryDetail {
   title: string;
   service: string;
   categories: string[];
+  // Which of `categories` are currently off -- the real backend state, not
+  // an assumption; see control::FilterEntryDetail's doc comment.
+  disabled_categories: string[];
   cues: Cue[];
+  // Master auto-filter toggle's actual current state -- mirror this rather
+  // than assuming it just got turned off by opening this detail view.
+  enabled: boolean;
 }
 
 // One service variant of a title, found anywhere in the library -- see

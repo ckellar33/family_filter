@@ -9,7 +9,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { open, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { session } from "$lib/state/session.svelte";
 import { filterState } from "$lib/state/filter.svelte";
-import { parseTime, slugifyTitle } from "$lib/format";
+import { slugifyTitle } from "$lib/format";
 import type { CategoryDef, CategoryKind, CreationCue, CueMarkResult, DraftSummary, FilterSummary } from "$lib/types";
 
 export const DEFAULT_CATEGORIES: CategoryDef[] = [
@@ -202,17 +202,14 @@ export async function cancelSkipMark() {
   }
 }
 
-export async function updateCueTime(cue: CreationCue, field: "start" | "end", text: string) {
-  const seconds = parseTime(text);
-  if (seconds == null) {
-    creationState.error = `"${text}" isn't a valid m:ss time`;
-    return;
-  }
+// Takes both `start` and `end` together (the sheet's full draft) in one
+// call -- see filter.svelte.ts's updateDetailCueTime for why calling this
+// twice, once per changed field, used to silently revert whichever field
+// was set first whenever both changed in the same edit.
+export async function updateCueTime(cue: CreationCue, start: number, end: number) {
   if (!session.playback?.title) return;
   creationState.error = "";
   try {
-    const start = field === "start" ? seconds : cue.start;
-    const end = field === "end" ? seconds : cue.end;
     await invoke("creation_update_cue", { title: session.playback.title, service: currentService(), index: cue.index, start, end });
     await refreshCreationCues();
   } catch (e) {

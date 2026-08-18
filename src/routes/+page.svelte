@@ -27,15 +27,16 @@
   // auto-opens it on mount anymore.
   let devicesOpen = $state(false);
 
-  // Runs Pair-Verify + bootstraps the control session, then (on success)
-  // brings in the other two modules' post-session setup. Passed into
-  // DevicesPage as `onOpenControls` -- called from a manual "Open Controls"
-  // tap, from finishing the pairing wizard, *and* from DevicesPage's own
-  // auto-connect-if-saved check on mount (see that component) -- every
-  // trigger is an explicit "connect now" decision made from within Devices,
-  // never from this root component mounting.
-  async function openControlsFlow() {
-    const ok = await openControls();
+  // Runs Pair-Verify + bootstraps the control session for saved device
+  // `id`, then (on success) brings in the other two modules' post-session
+  // setup. Passed into DevicesPage as `onOpenControls` -- called from a
+  // manual device tap (initial connect *or* switching devices while one is
+  // already active), from finishing the pairing wizard, *and* from
+  // DevicesPage's own auto-connect-to-last-used check on mount (see that
+  // component) -- every trigger is an explicit "connect now" decision made
+  // from within Devices, never from this root component mounting.
+  async function openControlsFlow(id: string) {
+    const ok = await openControls(id);
     if (!ok) return;
     await checkSavedFilter();
     resetCreation();
@@ -119,10 +120,10 @@
     return "Create Filter";
   });
 
-  // The Devices button doubles as the connection indicator -- the host of
+  // The Devices button doubles as the connection indicator -- the name of
   // whatever's connected, or a grey "Not connected" when nothing is.
   let connected = $derived(session.page === "control");
-  let deviceLabel = $derived(connected ? (session.savedPairing?.host ?? "Connected") : "Not connected");
+  let deviceLabel = $derived(connected ? (session.activeDevice?.name ?? "Connected") : "Not connected");
 
   // Whether the sticky nav bar's back button should show for the current
   // screen. There's no real history stack -- each screen has exactly one
@@ -138,7 +139,7 @@
     if (devicesOpen) {
       if (session.page === "wizard") {
         if (session.step === "companion") {
-          if (session.savedPairing) {
+          if (session.savedDevices.length > 0) {
             session.page = "saved";
           } else {
             // Nothing behind this step to go back to -- close the overlay
