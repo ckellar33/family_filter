@@ -155,6 +155,26 @@ export async function doSkip(seconds: number) {
   }
 }
 
+// Absolute jump-to via MRP's SeekToPlaybackPosition (needs the live
+// MRP/AirPlay transport, not just Companion -- see control_seek's doc).
+// Unlike doSkip, this lands exactly at `position` in one dispatch instead
+// of asking Companion to fast-forward/rewind by an amount some apps only
+// honor as a fixed, much-shorter hop -- see CueEditorSheet's "jump to test"
+// button, the one caller that needs to land at a specific time rather than
+// just nudge by a few seconds.
+export async function doSeek(position: number) {
+  session.controlBusy = true;
+  session.controlError = "";
+  try {
+    await invoke("control_seek", { position });
+    await refreshPlayback();
+  } catch (e) {
+    session.controlError = String(e);
+  } finally {
+    session.controlBusy = false;
+  }
+}
+
 // Presses one Siri Remote button (arrows/Select/Menu/Home/Play-Pause) via
 // Companion -- see control::control_button. Refreshes playback afterward,
 // same as doSkip, since Play/Pause (and a Menu/Home that backs out of

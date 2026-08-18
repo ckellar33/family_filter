@@ -12,7 +12,7 @@
   // persisted straight back to its file) -- see filter.svelte.ts's
   // updateDetailCueTime/deleteDetailCue.
   import { fmtTime, parseTime } from "$lib/format";
-  import { session, doSkip } from "$lib/state/session.svelte";
+  import { session, doSeek } from "$lib/state/session.svelte";
   import type { CategoryDef } from "$lib/types";
 
   let {
@@ -70,24 +70,21 @@
   // rewinding so far the test drags on.
   const TEST_LEAD_IN = 10;
 
-  // Needs the live (MRP/AirPlay) transport, not just Companion -- `doSkip`
-  // itself only needs a control session, but landing *at* a specific time
-  // rather than just nudging by a few seconds means knowing where playback
-  // currently is (`session.playback.position`), which only a live session
-  // reports.
-  let canTest = $derived(session.page === "control" && session.hasLive && session.playback?.position != null);
+  // Needs the live (MRP/AirPlay) transport, not just Companion -- `doSeek`
+  // dispatches MRP's absolute SeekToPlaybackPosition, same as a real skip
+  // cue (see `control_seek`'s doc), which only a live session exposes.
+  let canTest = $derived(session.page === "control" && session.hasLive);
 
-  // Relative skip (Companion's fast-forward/rewind, same transport as the
-  // Now Playing screen's ±15s buttons) by however far current position is
-  // from `draftStart - TEST_LEAD_IN` -- there's no absolute-seek command
-  // exposed to the frontend, so this is "jump to" built out of "jump by".
-  // Uses the *draft* value, not the saved cue, so nudging start/end and
-  // testing again reflects whatever's on screen right now.
+  // Absolute jump via MRP's SeekToPlaybackPosition -- *not* Companion's
+  // relative SkipBy (`doSkip`), which some apps (confirmed against
+  // Disney+) only ever honor as a fixed, much-shorter-than-requested hop,
+  // so a large skip landed well short of `draftStart - TEST_LEAD_IN`
+  // instead of at it. Uses the *draft* value, not the saved cue, so
+  // nudging start/end and testing again reflects whatever's on screen
+  // right now.
   async function jumpToTest() {
-    const position = session.playback?.position;
-    if (position == null) return;
     const target = Math.max(0, draftStart - TEST_LEAD_IN);
-    await doSkip(target - position);
+    await doSeek(target);
   }
 </script>
 

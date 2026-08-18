@@ -679,6 +679,24 @@ pub async fn control_unmute(state: State<'_, ControlStateHandle>) -> Result<(), 
     live.unmute().await.map_err(|e| describe(&e))
 }
 
+/// Jump straight to an absolute position via MRP's `SeekToPlaybackPosition`
+/// -- the same transport `apply_filter`'s `FilterCommand::Seek` uses for a
+/// real skip cue, exposed here so the frontend can land a "jump to" at an
+/// exact time (e.g. `CueEditorSheet`'s test button) without going through
+/// Companion's relative SkipBy, which some apps (confirmed against
+/// Disney+) only ever honor as a fixed, much-shorter-than-requested hop --
+/// see `FilterCommand::Seek`'s doc for the full story. Needs the live
+/// (MRP/AirPlay) transport, not Companion, same as mute/unmute above.
+#[tauri::command]
+pub async fn control_seek(state: State<'_, ControlStateHandle>, position: f64) -> Result<(), String> {
+    let mut guard = state.lock().await;
+    let live = guard
+        .live
+        .as_mut()
+        .ok_or_else(|| "No live transport paired (pair MRP or AirPlay to enable seeking)".to_string())?;
+    live.seek(position).await.map_err(|e| describe(&e))
+}
+
 /// Skip forward (`seconds > 0`) or back (`seconds < 0`) via Companion.
 #[tauri::command]
 pub async fn control_skip(state: State<'_, ControlStateHandle>, seconds: f64) -> Result<(), String> {
