@@ -78,10 +78,14 @@
   // still among them, connect to it automatically (VidAngel-style
   // auto-connect) rather than waiting for a manual tap. Every *other* saved
   // device stays one tap away in the list below -- that's this feature's
-  // "switch device" option, not a separate screen. This is now the one
-  // place in the app that decides connection status -- the root page just
-  // lands on Select Filter and leaves connecting up to whoever opens this
-  // view (a NavBar tap, or Open Controls' own "connect a device" prompt).
+  // "switch device" option, not a separate screen. +page.svelte already
+  // makes this same attempt once, quietly, on app launch, so by the time
+  // this component ever mounts (a NavBar tap, or Open Controls' own
+  // "connect a device" prompt) it's usually just re-confirming an existing
+  // session -- the guard right below turns that into a no-op. Where this
+  // copy still earns its keep is as a retry: if the launch attempt failed
+  // (device asleep/off Wi-Fi) or there was nothing to reconnect to yet
+  // (paired later, mid-session), opening Devices tries again.
   //
   // Skipped once already connected (session.page === "control"): this
   // effect re-runs every time Devices is opened (it's mounted fresh each

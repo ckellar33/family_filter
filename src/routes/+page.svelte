@@ -4,13 +4,19 @@
   // screen's own logic lives in src/lib/components + src/lib/state -- this
   // file is just the composition root.
   //
-  // Lands on the Select Filter tab on launch rather than auto-connecting and
-  // jumping into Open Controls -- Devices now owns checking for (and
-  // auto-connecting to) a saved pairing itself, see DevicesPage's own mount
-  // effect. Nothing here forces navigation into Devices or Controls; the
-  // user gets there by tapping the tab bar or the NavBar's Devices button,
-  // same as any other screen.
-  import { session, openControls, refreshPlayback, STEPS } from "$lib/state/session.svelte";
+  // Starts on the Select Filter tab, but the launch-time auto-connect effect
+  // below jumps to Now Playing the moment it actually lands a connection --
+  // so a cold launch with a reachable last-used device goes straight to
+  // Controls, same as tapping a device card in Devices does, while a launch
+  // with nothing to reconnect to (or an unreachable device) just leaves you
+  // on Select Filter with nothing forcing you into Devices either; get
+  // there via the tab bar or the NavBar's Devices button, same as any other
+  // screen. `launching` (below) holds the whole tab area on a splash until
+  // that check resolves either way -- rendering Select Filter immediately
+  // and only *then* swapping to Controls once the connect finishes made the
+  // launch visibly flash Select Filter first every time a reconnect
+  // succeeded.
+  import { session, checkSaved, openControls, refreshPlayback, STEPS } from "$lib/state/session.svelte";
   import { checkSavedFilter, filterState, closeDetail, selectTile, checkAvailableForPlayback } from "$lib/state/filter.svelte";
   import { resetCreation } from "$lib/state/creation.svelte";
   import type { Tab } from "$lib/types";
@@ -26,15 +32,19 @@
   // a device" prompt) -- the *only* thing that shows Devices now; nothing
   // auto-opens it on mount anymore.
   let devicesOpen = $state(false);
+  // True only for the launch-time auto-connect attempt below -- see its
+  // comment for why the tab area stays on a splash instead of Select Filter
+  // while this is true.
+  let launching = $state(true);
 
   // Runs Pair-Verify + bootstraps the control session for saved device
   // `id`, then (on success) brings in the other two modules' post-session
-  // setup. Passed into DevicesPage as `onOpenControls` -- called from a
-  // manual device tap (initial connect *or* switching devices while one is
-  // already active), from finishing the pairing wizard, *and* from
-  // DevicesPage's own auto-connect-to-last-used check on mount (see that
-  // component) -- every trigger is an explicit "connect now" decision made
-  // from within Devices, never from this root component mounting.
+  // setup, and -- unlike the launch-time auto-connect effect below -- jumps
+  // to the Controls tab, since every caller here is an explicit "connect
+  // now" decision made from within Devices: a manual device tap (initial
+  // connect *or* switching devices while one is already active),
+  // DevicesPage's own auto-connect-to-last-used retry on mount, or
+  // finishing the pairing wizard.
   async function openControlsFlow(id: string) {
     const ok = await openControls(id);
     if (!ok) return;
@@ -47,6 +57,34 @@
   function openDevices() {
     devicesOpen = true;
   }
+
+  // Auto-connect to the last-used device on launch, VidAngel-style, then
+  // land on Now Playing the same way a manual device tap would (see
+  // openControlsFlow above) -- never opens Devices itself, though.
+  // DevicesPage still does its own version of this same check when it
+  // mounts (a manual Devices tap), which acts as a retry if this one below
+  // failed (device asleep/off Wi-Fi at launch) or there was nothing to
+  // reconnect to yet. Runs exactly once: this component mounts for the
+  // app's whole lifetime, and nothing read synchronously before the first
+  // `await` is reactive, so there's nothing here for `$effect` to
+  // re-subscribe to and re-fire on.
+  $effect(() => {
+    (async () => {
+      try {
+        await checkSaved();
+        if (session.page === "saved" && session.lastDeviceId && session.savedDevices.some((d) => d.id === session.lastDeviceId)) {
+          const ok = await openControls(session.lastDeviceId);
+          if (ok) {
+            await checkSavedFilter();
+            resetCreation();
+            activeTab = "controls";
+          }
+        }
+      } finally {
+        launching = false;
+      }
+    })();
+  });
 
   // Polls now-playing status once a second while a control session is open
   // and a live (MRP/AirPlay) transport is available -- kept here (rather
@@ -106,6 +144,7 @@
   // Purely cosmetic label for the sticky nav bar -- doesn't drive any
   // behavior, just names whichever screen is currently showing.
   let navTitle = $derived.by(() => {
+    if (launching) return "Family Filter";
     if (devicesOpen) {
       if (session.page === "checking") return "Family Filter";
       if (session.page === "wizard") {
@@ -167,14 +206,18 @@
       title={navTitle}
       {canGoBack}
       onBack={goBack}
-      showDevices={!devicesOpen}
+      showDevices={!devicesOpen && !launching}
       onDevices={openDevices}
       {connected}
       {deviceLabel}
     />
 
-    <div class="content" class:with-tabbar={!devicesOpen}>
-      {#if devicesOpen}
+    <div class="content" class:with-tabbar={!devicesOpen && !launching}>
+      {#if launching}
+        <section class="screen">
+          <p class="hint centered">Checking for a saved device…</p>
+        </section>
+      {:else if devicesOpen}
         <DevicesPage sessionActive={session.page === "control"} onOpenControls={openControlsFlow} onClose={() => { devicesOpen = false; }} />
       {:else if activeTab === "controls"}
         <OpenControlsPage onEnableFilter={enableAvailableFilter} onOpenDevices={openDevices} />
@@ -185,7 +228,7 @@
       {/if}
     </div>
 
-    {#if !devicesOpen}
+    {#if !devicesOpen && !launching}
       <TabBar active={activeTab} onSelect={(tab) => { activeTab = tab; }} />
     {/if}
   </main>
