@@ -11,16 +11,21 @@
     detail = "",
     onPrimary,
     onSecondary,
+    onTertiary,
   }: {
     kind: Kind;
     detail?: string;
     onPrimary?: () => void;
     onSecondary?: () => void;
+    // Only wired up by no-filters right now (add a folder, alongside
+    // add-a-file/record-instead) -- optional so the other three kinds'
+    // two-button layout is unaffected.
+    onTertiary?: () => void;
   } = $props();
 
   const COPY: Record<
     Kind,
-    { icon: string; tone: string; title: string; body: string; detail: string; primary: string; secondary: string }
+    { icon: string; tone: string; title: string; body: string; detail: string; primary: string; secondary: string; tertiary?: string }
   > = {
     "no-device": {
       icon: "📺",
@@ -39,6 +44,7 @@
       detail: "Filter files are plain JSON: a title, an optional service, and a list of cues.",
       primary: "Add a filter file…",
       secondary: "Record one instead",
+      tertiary: "Add a folder instead",
     },
     lost: {
       icon: "⚡",
@@ -79,5 +85,8 @@
   <div class="empty-actions">
     <button type="button" class="btn-primary" onclick={onPrimary}>{copy.primary}</button>
     <button type="button" class="link-btn" onclick={onSecondary}>{copy.secondary}</button>
+    {#if copy.tertiary && onTertiary}
+      <button type="button" class="link-btn" onclick={onTertiary}>{copy.tertiary}</button>
+    {/if}
   </div>
 </section>

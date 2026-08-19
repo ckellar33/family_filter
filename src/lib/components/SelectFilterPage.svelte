@@ -195,7 +195,7 @@
     {#if filterState.tilesLoading && filterState.tiles.length === 0}
       <p class="hint centered">Loading filters…</p>
     {:else if filterState.tiles.length === 0}
-      <EmptyState kind="no-filters" onPrimary={addFilterFiles} onSecondary={onRecordInstead} />
+      <EmptyState kind="no-filters" onPrimary={addFilterFiles} onSecondary={onRecordInstead} onTertiary={addFilterDirectory} />
     {:else}
       <div class="stack">
         <div style="display:flex; gap:9px">
