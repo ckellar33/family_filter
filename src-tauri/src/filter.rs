@@ -43,6 +43,29 @@ const FILTER_ENABLED_STORE: &str = "filter_enabled.store";
 /// no risk of compounding overshoot from retrying.
 const SKIP_RETRY_COOLDOWN: Duration = Duration::from_secs(3);
 
+/// How far ahead of a cue's real `[start, end)` to treat it as active, so
+/// the *actual* audible mute/skip -- which only lands after this app
+/// notices the crossing (next poll tick, see +page.svelte) and the device
+/// round-trips the command -- lands close to the cue's true boundary
+/// instead of visibly after it. Applied by shifting the position `evaluate`
+/// looks cues up against *forward* by this much (equivalent to shifting the
+/// whole cue window earlier), so it pulls in both edges: a mute engages
+/// this much before `start` (compensating for the detection+dispatch delay
+/// eating into the audible mute) *and* releases -- or a skip dispatches --
+/// this much before `end` too, rather than only ever firing early on entry
+/// and staying muted needlessly long past the real exit.
+///
+/// 0.3s comfortably covers the current 250ms poll interval plus a typical
+/// local-network command round trip; tune this alongside that interval if
+/// either changes. Deliberately a fixed margin rather than something
+/// per-cue -- the delay it's compensating for comes from this app's own
+/// polling/transport, not from anything about a specific cue, so one value
+/// covers every cue the same way. Doesn't apply to the raw `start`/`end`
+/// shown to the frontend (`CueStatus`) or to the exact position a skip
+/// seeks to (`cue.end`, unchanged) -- only to *when* evaluate decides a cue
+/// is in effect.
+const PRE_ROLL: f64 = 0.3;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CueAction {
@@ -518,7 +541,12 @@ pub fn evaluate(
         return outcome;
     };
 
-    let found = entry.cue_at(pos, disabled_categories, disabled_cues);
+    // Looked up `PRE_ROLL` seconds ahead of the real position -- see that
+    // constant's doc -- rather than against `pos` itself; everything below
+    // this point (mute/unmute transitions, skip dispatch) reacts to the
+    // shifted lookup, while `pos`/`cue.end` themselves stay real so bookkeeping
+    // (`last_position`) and the seek target are never thrown off by the margin.
+    let found = entry.cue_at(pos + PRE_ROLL, disabled_categories, disabled_cues);
 
     // Paused (or stopped/seeking/unknown) -- don't apply, re-apply, or
     // release any cue action while playback isn't actually advancing. A cue
@@ -829,6 +857,60 @@ mod tests {
         // Leaves the range: unmute.
         let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(25.0), true, now);
         assert_eq!(o.commands, vec![FilterCommand::Unmute]);
+    }
+
+    #[test]
+    fn pre_roll_engages_mute_before_the_cues_real_start() {
+        let list = sample_list(); // mute cue at [10.0, 20.0)
+        let mut runtime = FilterRuntime::default();
+        let now = Instant::now();
+
+        // Just before the pre-roll window opens: still nothing.
+        let just_before = 10.0 - PRE_ROLL - 0.01;
+        let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(just_before), true, now);
+        assert!(o.commands.is_empty());
+
+        // Just inside it: mute engages ahead of the cue's real start --
+        // compensating for detection + dispatch latency so the audible mute
+        // lands close to the true boundary instead of noticeably after it.
+        let just_after = 10.0 - PRE_ROLL + 0.01;
+        let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(just_after), true, now);
+        assert_eq!(o.commands, vec![FilterCommand::Mute]);
+    }
+
+    #[test]
+    fn pre_roll_releases_mute_before_the_cues_real_end() {
+        let list = sample_list(); // mute cue at [10.0, 20.0)
+        let mut runtime = FilterRuntime::default();
+        let now = Instant::now();
+        evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(12.0), true, now);
+        assert!(runtime.is_muted());
+
+        // Just before the pre-roll release point: still muted.
+        let just_before = 20.0 - PRE_ROLL - 0.01;
+        let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(just_before), true, now);
+        assert!(o.commands.is_empty());
+        assert!(runtime.is_muted());
+
+        // Just past it: releases ahead of the cue's real end, same
+        // compensation as the entry side above.
+        let just_after = 20.0 - PRE_ROLL + 0.01;
+        let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(just_after), true, now);
+        assert_eq!(o.commands, vec![FilterCommand::Unmute]);
+    }
+
+    #[test]
+    fn pre_roll_dispatches_a_skip_early_but_still_targets_the_real_end() {
+        let list = sample_list(); // skip cue at [30.0, 40.0)
+        let mut runtime = FilterRuntime::default();
+        let now = Instant::now();
+
+        let just_after = 30.0 - PRE_ROLL + 0.01;
+        let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(just_after), true, now);
+        // Fires ahead of the cue's real start but still seeks to its actual,
+        // unshifted end -- the margin only changes *when* this dispatches,
+        // never *where* it lands.
+        assert_eq!(o.commands, vec![FilterCommand::Seek(40.0)]);
     }
 
     #[test]

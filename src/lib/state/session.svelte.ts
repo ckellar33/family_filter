@@ -77,8 +77,8 @@ export const session = $state({
   playback: null as PlaybackStatus | null,
   // Local monotonic timestamp (performance.now()) at which `playback` was
   // captured -- lets `livePosition()` below interpolate `playback.position`
-  // forward between polls instead of it sitting frozen for up to a full
-  // second (see +page.svelte's 1s poll interval). Reset alongside
+  // forward between polls instead of it sitting frozen for up to 250ms
+  // (see +page.svelte's poll interval). Reset alongside
   // `playback` every time refreshPlayback() gets a fresh snapshot.
   playbackAnchoredAt: null as number | null,
   // Incremented on a fast local interval (see +page.svelte) purely to give
@@ -233,7 +233,7 @@ export async function doSkip(seconds: number) {
   try {
     await invoke("control_skip", { seconds });
     // Backend actively re-fetches on every control_playback_status call
-    // now, but that's on the next 1s poll tick -- fetch immediately too so
+    // now, but that's on the next poll tick -- fetch immediately too so
     // the display catches up to the skip right away.
     await refreshPlayback();
   } catch (e) {

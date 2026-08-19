@@ -900,7 +900,7 @@ pub(crate) fn app_display_name(bundle_id: &str) -> Option<&'static str> {
 }
 
 /// One snapshot of the current now-playing state, for the frontend to poll
-/// on an interval (e.g. every second). Returns `Ok(None)` rather than an
+/// on an interval (currently 250ms, see +page.svelte). Returns `Ok(None)` rather than an
 /// error when there's no live transport -- that's an expected, steady
 /// state (MRP/AirPlay weren't paired), not a failure.
 ///

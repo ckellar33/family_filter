@@ -86,10 +86,14 @@
     })();
   });
 
-  // Polls now-playing status once a second while a control session is open
+  // Polls now-playing status every 250ms while a control session is open
   // and a live (MRP/AirPlay) transport is available -- kept here (rather
   // than per-tab) so title/position keep advancing in the background even
-  // while looking at Select Filter or Create Filter.
+  // while looking at Select Filter or Create Filter. Was 1s; narrowed to
+  // shrink the window between a cue boundary actually passing and this app
+  // noticing it (see filter::PRE_ROLL for the other half of that budget) --
+  // trades some extra Companion/MRP chatter for tighter, lower-variance
+  // trigger timing.
   $effect(() => {
     if (session.page !== "control" || !session.hasLive) return;
     const id = setInterval(async () => {
@@ -98,21 +102,21 @@
       } catch (e) {
         session.controlError = String(e);
       }
-    }, 1000);
+    }, 250);
     return () => clearInterval(id);
   });
 
   // Ticks session.playback's *display* forward smoothly between the polls
   // above -- see livePosition() in session.svelte.ts, the sole consumer.
   // Same gating as the poll effect (no point ticking a position nothing is
-  // showing), and deliberately much faster than the 1s poll interval itself
-  // since this only drives a local interpolation, not a real device
+  // showing), and deliberately much faster than the 250ms poll interval
+  // itself since this only drives a local interpolation, not a real device
   // round trip.
   $effect(() => {
     if (session.page !== "control" || !session.hasLive) return;
     const id = setInterval(() => {
       session.tick++;
-    }, 200);
+    }, 50);
     return () => clearInterval(id);
   });
 
