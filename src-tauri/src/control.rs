@@ -29,7 +29,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tauri::{AppHandle, State};
-use tokio::sync::Mutex;
+use tokio::sync::{oneshot, Mutex};
 
 use appletv::companion::{CompanionSession, HidButton};
 use appletv::{storage, LiveSession};
@@ -68,6 +68,16 @@ pub struct ControlState {
     /// skipping right now). Reset along with everything else whenever
     /// `start_control_session` rebuilds this struct.
     pub(crate) creation: CreationState,
+    /// Stop half of the current session's heartbeat loop (see
+    /// `spawn_heartbeat`) -- `None` until `start_control_session` first
+    /// spawns one. Nothing ever needs to send on this explicitly: dropping
+    /// it is enough to end the loop it belongs to (see `spawn_heartbeat`'s
+    /// doc), which happens for free whenever this whole struct is replaced
+    /// -- e.g. `start_control_session` reassigning `*guard = ControlState {
+    /// .. }` drops the outgoing session's `heartbeat_stop` right along with
+    /// everything else, so the old loop never has to be told to stop by
+    /// name.
+    heartbeat_stop: Option<oneshot::Sender<()>>,
 }
 
 impl ControlState {
@@ -145,6 +155,55 @@ async fn apply_filter(guard: &mut ControlState) -> (Option<String>, Option<Strin
     }
 
     (outcome.filter_match, outcome.filter_action.map(str::to_string), outcome.filter_category)
+}
+
+/// How often the backend's own heartbeat (see `spawn_heartbeat`) re-runs
+/// `apply_filter` against live playback, independent of anything the
+/// frontend does. Matches the frontend's own display-poll interval
+/// (`+page.svelte`) at the time of writing, though nothing requires them to
+/// stay in lockstep now that the frontend's poll is no longer load-bearing
+/// for on-time enforcement -- see `spawn_heartbeat`'s doc.
+const HEARTBEAT_INTERVAL: Duration = Duration::from_millis(250);
+
+/// Spawns the loop that's now the sole thing actually responsible for
+/// firing mute/unmute/skip on time. Before this existed, that only ever
+/// happened as a side effect of the frontend's `setInterval` calling
+/// `control_playback_status`, which made auto-filter accuracy hostage to
+/// the webview's JS event loop -- browsers (and native webviews) routinely
+/// throttle or coalesce `setInterval` once a window loses focus or is
+/// minimized, which is exactly the situation this app exists for (the TV's
+/// playing, nobody's looking at the control app). A `tokio::time::interval`
+/// ticking on the async runtime instead has no dependency on the window
+/// being visible or focused at all.
+///
+/// The frontend's own poll keeps running unchanged for *display* purposes
+/// (title/position/cue schedule) -- calling `apply_filter` redundantly from
+/// there too is harmless, since it's idempotent against `FilterRuntime`'s
+/// tracked state (compares against what's already applied before issuing
+/// anything new), just no longer load-bearing for on-time enforcement.
+///
+/// Returns the stop half of a one-shot channel to stash in the new
+/// `ControlState::heartbeat_stop` -- see that field's doc for why nothing
+/// ever needs to send on it explicitly.
+fn spawn_heartbeat(handle: ControlStateHandle) -> oneshot::Sender<()> {
+    let (stop_tx, mut stop_rx) = oneshot::channel();
+    tauri::async_runtime::spawn(async move {
+        let mut ticker = tokio::time::interval(HEARTBEAT_INTERVAL);
+        loop {
+            tokio::select! {
+                _ = ticker.tick() => {
+                    let mut guard = handle.lock().await;
+                    let _ = apply_filter(&mut guard).await;
+                }
+                // Resolves (Ok from an explicit send, or Err from the
+                // sender simply being dropped -- either way, we don't care
+                // which) the moment this loop's owning ControlState goes
+                // away. Never fires on its own otherwise.
+                _ = &mut stop_rx => break,
+            }
+        }
+    });
+    stop_tx
 }
 
 #[derive(serde::Serialize)]
@@ -692,7 +751,15 @@ pub async fn start_control_session(state: State<'_, ControlStateHandle>, id: Str
     // Resets any previously loaded filter list too (`..Default::default()`)
     // -- the frontend re-checks for a saved one right after this via
     // `check_saved_filter_file`, same as it re-checks pairing on mount.
-    *state.lock().await = ControlState { session: Some(session), live, ..Default::default() };
+    // Also implicitly retires the outgoing session's heartbeat: dropping
+    // the old ControlState (as part of this reassignment) drops its
+    // `heartbeat_stop` sender right along with everything else, which is
+    // all that loop needs to end -- see that field's doc. The freshly built
+    // state then gets its own heartbeat spawned against it below.
+    let mut guard = state.lock().await;
+    *guard = ControlState { session: Some(session), live, ..Default::default() };
+    guard.heartbeat_stop = Some(spawn_heartbeat(state.inner().clone()));
+    drop(guard);
 
     // Best-effort, same tolerance as the port refresh above -- a failure to
     // persist just means the next launch falls back to the device chooser
