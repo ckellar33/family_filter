@@ -31,6 +31,30 @@ export function slugifyTitle(title: string): string {
   return slug || "filter";
 }
 
+// Comic-strip grawlix symbols -- what censorWord below fills a word's
+// hidden letters with, cycled per letter rather than picked with Math.random
+// so the same word always censors to the same string: this gets called
+// straight from a template (see SelectFilterPage.svelte's cue-pill), and a
+// re-render that reached for a fresh random symbol every time would make
+// the pill visibly flicker on every unrelated state change, not just when
+// the word itself changes.
+const GRAWLIX = ["#", "@", "&", "!", "*", "%"];
+
+// VidAngel-style censoring for a language cue's recorded word: first letter
+// kept, every other character replaced with a grawlix symbol -- e.g.
+// "shit" -> "s#@!", "damn" -> "d@&!". Multi-word phrases censor each word
+// separately (and each word's own first letter shows) so the shape still
+// reads as separate words rather than one long run of symbols. The symbol
+// for each hidden position is derived from that letter's own char code, so
+// it's stable across re-renders without needing a random seed stashed
+// anywhere.
+export function censorWord(word: string): string {
+  return word
+    .split(" ")
+    .map((w) => (w.length <= 1 ? w : w[0] + [...w.slice(1)].map((ch) => GRAWLIX[ch.charCodeAt(0) % GRAWLIX.length]).join("")))
+    .join(" ");
+}
+
 // Pairs with fmtTime -- parses what a cue table's inputs display back into
 // seconds, or null for anything unrecognized so the caller can reject the
 // edit without touching the backend. Accepts both the m:ss fmtTime shows

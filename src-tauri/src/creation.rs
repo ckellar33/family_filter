@@ -241,7 +241,7 @@ pub async fn creation_mark_mute(
     let service = service_hint.unwrap_or_default();
 
     let draft = guard.creation.draft.as_mut().ok_or_else(|| "no draft filter file open -- start or open one first".to_string())?;
-    let cue = Cue { start: position, end: position + duration, action: CueAction::Mute, category };
+    let cue = Cue { start: position, end: position + duration, action: CueAction::Mute, category, word: None };
     let index = draft.add_cue(&title, &service, cue.clone()).map_err(|e| describe(&e))?;
     autosave(&guard.creation);
 
@@ -285,7 +285,7 @@ pub async fn creation_end_skip_mark(state: State<'_, ControlStateHandle>) -> Res
     }
 
     let draft = guard.creation.draft.as_mut().ok_or_else(|| "no draft filter file open".to_string())?;
-    let cue = Cue { start: pending.start, end: position, action: CueAction::Skip, category: pending.category.clone() };
+    let cue = Cue { start: pending.start, end: position, action: CueAction::Skip, category: pending.category.clone(), word: None };
     match draft.add_cue(&title, &service, cue.clone()) {
         Ok(index) => {
             autosave(&guard.creation);
@@ -324,7 +324,10 @@ pub async fn creation_update_cue(
 ) -> Result<(), String> {
     let mut guard = state.lock().await;
     let draft = guard.creation.draft.as_mut().ok_or_else(|| "no draft filter file open".to_string())?;
-    draft.update_cue(&title, &service, index, start, end).map_err(|e| describe(&e))?;
+    // Recording has no word field to edit -- see filter::FilterList::
+    // update_cue's doc comment for why `None` here leaves it untouched
+    // rather than clearing it.
+    draft.update_cue(&title, &service, index, start, end, None).map_err(|e| describe(&e))?;
     autosave(&guard.creation);
     Ok(())
 }

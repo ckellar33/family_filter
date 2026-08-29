@@ -87,6 +87,16 @@ pub struct Cue {
     /// code change; the UI just renders one toggle per distinct value it
     /// finds (see `FilterList::categories`).
     pub category: String,
+    /// The actual word/phrase this cue mutes, for a "language" (or
+    /// "language-*") cue -- e.g. `"shit"`. `None` for any cue nothing has
+    /// recorded a word for yet (every cue predating this field, plus any
+    /// non-language cue, which has no use for it). Shown censored (first
+    /// letter, then a grawlix run of symbols for the rest) on the Filters
+    /// tab in place of a generic MUTE pill when present -- see
+    /// `format.ts`'s `censorWord`. `skip_serializing_if` keeps every other
+    /// cue's JSON exactly as compact as before this field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub word: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
@@ -351,9 +361,17 @@ impl FilterList {
     }
 
     /// Changes cue `index`'s start/end in place, then re-sorts/re-validates
-    /// (its position in the list may shift). On failure, the entry's cues
-    /// are restored to their pre-call state, same as `add_cue`.
-    pub fn update_cue(&mut self, title: &str, service: &str, index: usize, start: f64, end: f64) -> Result<()> {
+    /// (its position in the list may shift). `word` also updates the cue's
+    /// recorded word -- bundled in here rather than a separate call, same
+    /// "commit the whole draft at once" reasoning as `control::
+    /// update_filter_cue`'s doc comment gives for start/end -- with
+    /// `Some("")` (an edited-down-to-empty text field) clearing it back to
+    /// `None` rather than storing an empty string. Pass `None` from a caller
+    /// that has no word field to edit in the first place (creation-mode's
+    /// sheet, or a non-language cue) to leave whatever's already there
+    /// untouched. On failure, the entry's cues are restored to their
+    /// pre-call state, same as `add_cue`.
+    pub fn update_cue(&mut self, title: &str, service: &str, index: usize, start: f64, end: f64, word: Option<String>) -> Result<()> {
         let entry = self
             .find_entry_mut(title, service)
             .with_context(|| format!("no entry for {:?} on service {:?}", title, service))?;
@@ -363,6 +381,9 @@ impl FilterList {
         let backup = entry.cues.clone();
         entry.cues[index].start = start;
         entry.cues[index].end = end;
+        if let Some(w) = word {
+            entry.cues[index].word = if w.trim().is_empty() { None } else { Some(w) };
+        }
         if let Err(e) = entry.sort_and_validate() {
             entry.cues = backup;
             return Err(e);
@@ -630,7 +651,7 @@ mod tests {
     use super::*;
 
     fn cue(start: f64, end: f64, action: CueAction, category: &str) -> Cue {
-        Cue { start, end, action, category: category.to_string() }
+        Cue { start, end, action, category: category.to_string(), word: None }
     }
 
     fn entry(title: &str, service: &str, cues: Vec<Cue>) -> MediaEntry {
@@ -1179,7 +1200,7 @@ mod tests {
     #[test]
     fn update_cue_changes_times_and_resorts() {
         let mut list = sample_list(); // [10,20) mute, [30,40) skip
-        list.update_cue("Some Movie", "", 1, 0.0, 5.0).unwrap(); // move the skip cue (index 1) earliest
+        list.update_cue("Some Movie", "", 1, 0.0, 5.0, None).unwrap(); // move the skip cue (index 1) earliest
         let cues = &list.find_entry("Some Movie", "").unwrap().cues;
         assert_eq!(cues[0].start, 0.0);
         assert_eq!(cues[0].action, CueAction::Skip);
@@ -1189,7 +1210,7 @@ mod tests {
     fn update_cue_rejects_new_overlap_and_leaves_original_times_unchanged() {
         let mut list = sample_list();
         let before = list.find_entry("Some Movie", "").unwrap().cues.clone();
-        let err = list.update_cue("Some Movie", "", 1, 15.0, 22.0); // would overlap the mute cue
+        let err = list.update_cue("Some Movie", "", 1, 15.0, 22.0, None); // would overlap the mute cue
         assert!(err.is_err());
         assert_eq!(list.find_entry("Some Movie", "").unwrap().cues, before);
     }
@@ -1197,7 +1218,7 @@ mod tests {
     #[test]
     fn update_cue_rejects_out_of_range_index() {
         let mut list = sample_list();
-        assert!(list.update_cue("Some Movie", "", 5, 0.0, 1.0).is_err());
+        assert!(list.update_cue("Some Movie", "", 5, 0.0, 1.0, None).is_err());
     }
 
     #[test]

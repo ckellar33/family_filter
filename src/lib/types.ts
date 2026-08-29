@@ -39,6 +39,11 @@ export interface Cue {
   // and this specific cue are enabled. False either way looks the same
   // to the frontend, so there's no need to track the two separately here.
   enabled: boolean;
+  // The actual word/phrase this cue mutes, for a "language" (or
+  // "language-*") cue -- e.g. "shit". null for any cue nothing has
+  // recorded a word for yet. Shown censored (see censorWord in format.ts)
+  // on the Filters tab in place of the plain MUTE pill when present.
+  word: string | null;
 }
 
 export interface PlaybackStatus {

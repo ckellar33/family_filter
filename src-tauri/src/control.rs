@@ -434,10 +434,14 @@ pub async fn update_filter_cue(
     index: usize,
     start: f64,
     end: f64,
+    // `None` when the caller has no word field to edit at all (a non-
+    // language cue); `Some("")` clears a previously recorded word -- see
+    // `filter::FilterList::update_cue`'s doc comment.
+    word: Option<String>,
 ) -> Result<(), String> {
     let mut guard = state.lock().await;
     let list = guard.filter_list.as_mut().ok_or_else(|| "no filter list loaded".to_string())?;
-    list.update_cue(&title, &service, index, start, end).map_err(|e| describe(&e))?;
+    list.update_cue(&title, &service, index, start, end, word).map_err(|e| describe(&e))?;
     persist_active_filter_list(&guard);
     clear_disabled_cues_for(&mut guard, &filter::normalize_title(&title), &filter::normalize_service(&service));
     let _ = apply_filter(&mut guard).await;
@@ -641,6 +645,7 @@ pub async fn select_filter_tile(
             category: cue.category.clone(),
             enabled: !guard.disabled_categories.contains(&cue.category)
                 && !guard.disabled_cues.contains(&(title_key.clone(), service_key.clone(), index)),
+            word: cue.word.clone(),
         })
         .collect();
     let resolved_title = entry.title.clone();
@@ -880,6 +885,9 @@ pub struct CueStatus {
     pub action: filter::CueAction,
     pub category: String,
     pub enabled: bool,
+    /// Straight passthrough of `filter::Cue::word` -- see that field's doc
+    /// comment. `None` for a cue nothing has recorded a word for.
+    pub word: Option<String>,
 }
 
 #[derive(serde::Serialize)]
@@ -1024,6 +1032,7 @@ pub async fn control_playback_status(state: State<'_, ControlStateHandle>) -> Re
                     category: cue.category.clone(),
                     enabled: !guard.disabled_categories.contains(&cue.category)
                         && !guard.disabled_cues.contains(&(title_key.clone(), service_key.clone(), index)),
+                    word: cue.word.clone(),
                 })
                 .collect()
         })

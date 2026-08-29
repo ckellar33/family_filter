@@ -10,7 +10,9 @@
   // creation_delete_cue (a recording draft); Select Filter commits through
   // update_filter_cue/delete_filter_cue (the active, already-applied list,
   // persisted straight back to its file) -- see filter.svelte.ts's
-  // updateDetailCueTime/deleteDetailCue.
+  // updateDetailCueTime/deleteDetailCue. A language cue's recorded word is
+  // edited straight on its cue row instead (see SelectFilterPage.svelte),
+  // not here -- this sheet only ever touches timing.
   import { fmtTime, parseTime } from "$lib/format";
   import { session, doSeek } from "$lib/state/session.svelte";
   import type { CategoryDef } from "$lib/types";
