@@ -17,7 +17,6 @@
     toggleDetailCategory,
     toggleDetailCue,
     updateDetailCueTime,
-    updateDetailCueWord,
     deleteDetailCue,
     closeDetail,
   } from "$lib/state/filter.svelte";
@@ -30,21 +29,13 @@
   let { onRecordInstead }: { onRecordInstead: () => void } = $props();
 
   // Which cue the editor sheet is open on, if any -- tapping a cue's time
-  // (rather than its word field or enabled switch) opens this, same trigger
+  // (rather than its enabled switch) opens this, same trigger
   // CreateFilterPage's recorded-cues table uses.
   let editingCue = $state<Cue | null>(null);
 
   async function saveEditedCue(cue: Cue, next: { start: number; end: number }) {
     if (next.start !== cue.start || next.end !== cue.end) await updateDetailCueTime(cue, next.start, next.end);
     editingCue = null;
-  }
-
-  // Commits the inline word input on a language cue's row (see the
-  // cue-row markup below) -- fires on blur/Enter, not per keystroke, so
-  // typing a word doesn't round-trip to the backend on every letter.
-  async function commitWord(cue: Cue, e: Event) {
-    const value = (e.target as HTMLInputElement).value;
-    if (value !== (cue.word ?? "")) await updateDetailCueWord(cue, value);
   }
 
   async function deleteEditedCue(cue: Cue) {
@@ -79,8 +70,8 @@
 
   // Matches "language" and any "language-*" subcategory (e.g.
   // language-profanity) -- these are the only cues with a `word` worth
-  // showing/editing; every other category's pill stays the plain MUTE/SKIP
-  // label CueEditorSheet already shows by default.
+  // showing; every other category's pill stays the plain MUTE/SKIP label
+  // CueEditorSheet already shows by default.
   function isLanguageCue(cue: Cue) {
     return cue.category === "language" || cue.category.startsWith("language-");
   }
@@ -199,15 +190,6 @@
                         <span class="cue-pill" data-action={cue.action}>{cue.action === "mute" ? "MUTE" : "SKIP"}</span>
                       {/if}
                     </button>
-                    {#if isLanguageCue(cue)}
-                      <input
-                        type="text"
-                        class="word-input"
-                        placeholder="word"
-                        value={cue.word ?? ""}
-                        onchange={(e) => commitWord(cue, e)}
-                      />
-                    {/if}
                     <label class="switch switch-sm">
                       <input type="checkbox" checked={cue.enabled} onchange={() => toggleDetailCue(cue)} />
                       <span class="switch-track"><span class="switch-thumb"></span></span>

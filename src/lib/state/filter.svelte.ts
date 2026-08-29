@@ -255,8 +255,10 @@ export async function toggleDetailCue(cue: Cue) {
 // let the second call's "unchanged" field fall back to the *original* cue's
 // value instead of the first call's just-saved one, silently reverting
 // whichever field was set first whenever both changed in the same edit.
-// `word` isn't touched here -- see updateDetailCueWord below, called
-// straight from the cue row rather than through this sheet-driven path.
+// `word` isn't touched here -- it's read-only from the frontend's side
+// (whatever's in the loaded filter file's JSON is what shows, see
+// SelectFilterPage.svelte's cue-pill/censorWord), so this always passes
+// `null` to leave it untouched rather than ever writing one back.
 export async function updateDetailCueTime(cue: Cue, start: number, end: number) {
   if (!filterState.detail) return;
   filterState.detailError = "";
@@ -268,32 +270,6 @@ export async function updateDetailCueTime(cue: Cue, start: number, end: number) 
       start,
       end,
       word: null,
-    });
-    await refreshDetail();
-    await refreshPlayback();
-  } catch (e) {
-    filterState.detailError = String(e);
-  }
-}
-
-// Updates just a language cue's recorded word, from the inline text input
-// on its cue row (see SelectFilterPage.svelte) -- deliberately not part of
-// the CueEditorSheet flow above, since editing the word happens straight on
-// the row next to the enable switch rather than behind a sheet. Reuses
-// update_filter_cue with the cue's own start/end unchanged so only word
-// moves; an empty string clears a previously recorded word rather than
-// storing one (see filter::FilterList::update_cue's doc comment).
-export async function updateDetailCueWord(cue: Cue, word: string) {
-  if (!filterState.detail) return;
-  filterState.detailError = "";
-  try {
-    await invoke("update_filter_cue", {
-      title: filterState.detail.title,
-      service: filterState.detail.service,
-      index: cue.index,
-      start: cue.start,
-      end: cue.end,
-      word,
     });
     await refreshDetail();
     await refreshPlayback();

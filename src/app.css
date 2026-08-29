@@ -476,28 +476,6 @@ button.list-row:active:not(:disabled) {
   background: var(--mute);
 }
 
-/* Inline word entry on a language cue's row, next to its enable switch --
-   see SelectFilterPage.svelte's commitWord. Sized to sit comfortably in a
-   44px cue-row alongside the switch-sm toggle, not the full time-input
-   scale used inside the (taller) cue editor sheet. */
-.word-input {
-  all: unset;
-  box-sizing: border-box;
-  width: 5.5em;
-  min-height: 30px;
-  padding: 0 8px;
-  border-radius: var(--r-sm);
-  background: var(--card-bg);
-  border: 1px solid var(--separator);
-  color: var(--label);
-  font-size: 12.5px;
-  text-align: center;
-}
-
-.word-input:focus {
-  border-color: var(--mute);
-}
-
 .cue-active {
   background: color-mix(in srgb, var(--mute) 18%, var(--grouped-bg));
 }
