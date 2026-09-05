@@ -46,6 +46,19 @@ pub fn import_picked_path(path: &Path) -> Result<PathBuf> {
     let dir = crate::paths::data_dir().join(IMPORTED_FILTERS_DIR);
     fs::create_dir_all(&dir).context("failed to create imported-filters directory")?;
 
+    // Already living in our own imported-filters directory -- e.g.
+    // `select_filter_tile` re-selecting a tile from the library, whose path
+    // (from `filter_library.store`) is already a prior import's destination,
+    // not a fresh picker pick. Nothing to import in that case, and copying a
+    // file onto itself below would be actively destructive: `fs::copy`
+    // creates/truncates the destination for writing *before* it finishes
+    // reading the source, so when both are the same path it zeroes the file
+    // out from under itself, leaving `FilterList::load` a 0-byte file to fail
+    // on next.
+    if path.parent() == Some(dir.as_path()) {
+        return Ok(path.to_path_buf());
+    }
+
     let name = path.file_name().map(PathBuf::from).unwrap_or_else(|| PathBuf::from("filter.json"));
     let mut dest = dir.join(&name);
     // Same source file re-imported (e.g. re-picked after being edited

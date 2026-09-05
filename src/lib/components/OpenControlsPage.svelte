@@ -67,6 +67,12 @@
   // happening to your audio/video this second" signal.
   let firing = $derived(session.playback?.filter_action ?? null);
 
+  // Drives the transport button's glyph -- `is_advancing` rather than a bare
+  // `playback_state === "Playing"` check, same reasoning as livePosition's
+  // use of it: some apps leave playback_state stale on pause. Defaults to
+  // showing the "play" glyph when there's no playback info at all.
+  let isPlaying = $derived(session.playback?.is_advancing ?? false);
+
   // Status chip on the now-playing card: what the filter is doing, in one
   // word, without needing to read the sentence underneath.
   let shieldState = $derived(
@@ -186,8 +192,26 @@
       <button class="icon-btn" onclick={() => doSkip(-15)} disabled={session.controlBusy} aria-label="Back 15 seconds">
         <span>↺</span><span>15s</span>
       </button>
-      <button class="icon-btn icon-btn-lg" onclick={() => doButton("play_pause")} disabled={session.controlBusy} aria-label="Play or pause">
-        <span>⏯</span>
+      <button
+        class="icon-btn icon-btn-lg"
+        onclick={() => doButton("play_pause")}
+        disabled={session.controlBusy}
+        aria-label={isPlaying ? "Pause" : "Play"}
+      >
+        <!-- Drawn to match TabIcon's family (currentColor, same 22px box)
+             rather than borrowed from the emoji set -- a sharp play
+             triangle, or two rounded pause bars once something's actually
+             advancing. Triangle sits right of center: an equilateral
+             triangle's centroid falls left of its bounding box, so a
+             geometrically centered one reads as off-balance. -->
+        <svg class="play-pause-icon" width="22" height="22" viewBox="0 0 22 22" fill="currentColor" aria-hidden="true">
+          {#if isPlaying}
+            <rect x="5" y="4" width="4" height="14" rx="1.5" />
+            <rect x="13" y="4" width="4" height="14" rx="1.5" />
+          {:else}
+            <path d="M6 4.2 17 11 6 17.8Z" />
+          {/if}
+        </svg>
       </button>
       {#if session.hasLive}
         <button class="icon-btn" aria-pressed={muted} onclick={toggleMute} disabled={session.controlBusy} aria-label={muted ? "Unmute" : "Mute"}>
