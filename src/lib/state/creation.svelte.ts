@@ -70,9 +70,17 @@ export async function pickNewDraft() {
     // open on the generic "filter.json" -- still just a suggestion, the
     // dialog lets it be edited/overridden before saving.
     const defaultPath = session.playback?.title ? `${slugifyTitle(session.playback.title)}.json` : "filter.json";
-    const path = await saveDialog({ filters: [{ name: "Filter list", extensions: ["json"] }], defaultPath });
-    if (!path) return; // user cancelled
-    creationState.draft = await invoke<DraftSummary>("creation_new_draft", { path });
+
+    // On iOS there's no dialog to show at all -- see
+    // control::supports_save_location_picker's doc -- creation_new_draft
+    // picks a path under the app's own storage instead when `path` is
+    // omitted, using `defaultPath` as just a suggested filename.
+    let path: string | null = null;
+    if (filterState.saveLocationPickerSupported) {
+      path = await saveDialog({ filters: [{ name: "Filter list", extensions: ["json"] }], defaultPath });
+      if (!path) return; // user cancelled
+    }
+    creationState.draft = await invoke<DraftSummary>("creation_new_draft", { path, suggestedName: defaultPath });
     creationState.stage = "recording";
     creationState.cues = [];
   } catch (e) {

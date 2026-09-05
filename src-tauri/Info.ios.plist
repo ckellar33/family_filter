@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Required for any local-network access on iOS 14+ -- without this,
+       every local request fails at the OS level (including this app's own
+       dev-server proxy fetch, and, more importantly, the real
+       Companion/MRP/AirPlay mDNS discovery in libs/appletv/src/mdns.rs).
+       Tauri merges this file into the generated Info.plist -- see
+       tauri-utils's IosConfig::info_plist doc -- so it survives a
+       `src-tauri/gen` wipe/regenerate, unlike editing the generated
+       Info.plist directly would. -->
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>Family Filter discovers and connects to your Apple TV on the local network to control playback and apply filters.</string>
+
+  <!-- iOS 14+ also requires every Bonjour service type an app browses for
+       to be declared up front -- these three are exactly what mdns.rs's
+       find_companion/find_mrp/find_airplay look for. -->
+  <key>NSBonjourServices</key>
+  <array>
+    <string>_companion-link._tcp</string>
+    <string>_mediaremotetv._tcp</string>
+    <string>_airplay._tcp</string>
+  </array>
+</dict>
+</plist>

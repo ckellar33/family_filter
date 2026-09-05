@@ -36,4 +36,8 @@ tokio = { version = "1.38", features = ["rt-multi-thread", "macros", "net", "io-
 # cross-compilation into the iOS build already underway.
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 base64 = "0.22"
+# Already pulled in transitively (by reqwest); made direct so paths.rs can
+# decode the `file://` URLs @tauri-apps/plugin-dialog's iOS/Android side
+# hands back instead of the plain filesystem paths desktop returns.
+url = "2"
 

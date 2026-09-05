@@ -26,13 +26,18 @@ const TMDB_API_KEY_STORE: &str = "tmdb_api_key.store";
 
 /// Reads the user's own TMDB API key from a sidecar file next to the app's
 /// other `*.store` files -- same "drop a file next to the binary" pattern as
-/// `filter::load_saved_filter_path`, chosen over a UI field since getting a
-/// free TMDB key is a one-time personal setup step, not something meant to
-/// be re-entered per install.
+/// `filter::load_saved_filter_path`, still honored on desktop as a way to
+/// override `FALLBACK_TMDB_API_KEY` with a different personal key without a
+/// rebuild -- and falls back to that constant when the store is absent,
+/// which is the only path mobile builds have.
 fn tmdb_api_key() -> Option<String> {
-    let text = std::fs::read_to_string(TMDB_API_KEY_STORE).ok()?;
-    let trimmed = text.trim();
-    (!trimmed.is_empty()).then(|| trimmed.to_string())
+    if let Ok(text) = std::fs::read_to_string(crate::paths::data_dir().join(TMDB_API_KEY_STORE)) {
+        let trimmed = text.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+    }
+    Some(FALLBACK_TMDB_API_KEY.to_string())
 }
 
 /// The `posters/` directory under the app's OS cache dir, created if

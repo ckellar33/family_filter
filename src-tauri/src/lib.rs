@@ -5,7 +5,10 @@ mod filter;
 mod library;
 mod metadata;
 mod pairing;
+mod paths;
 mod saved;
+
+use tauri::Manager;
 
 use control::ControlStateHandle;
 use pairing::{PairingState, PairingStateHandle};
@@ -27,7 +30,19 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage::<PairingStateHandle>(std::sync::Arc::new(std::sync::Mutex::new(PairingState::default())))
         .manage::<ControlStateHandle>(Default::default())
-        .setup(|_app| {
+        .setup(|app| {
+            // Point every sidecar `*.store` file (pairing/device credentials,
+            // the saved filter path + toggle, the filter library, the TMDB
+            // key) at the OS/platform-appropriate app data directory instead
+            // of leaving them CWD-relative -- see `paths.rs`'s doc for why
+            // that matters on iOS specifically. Must happen before any
+            // command that reads/writes one of those stores runs, so this
+            // is the very first thing `setup` does.
+            let data_dir = app.path().app_data_dir().expect("no app data directory available");
+            std::fs::create_dir_all(&data_dir).expect("failed to create app data directory");
+            paths::set_base_dir(data_dir.clone());
+            appletv::storage::set_base_dir(data_dir);
+
             // Backgrounded, not awaited -- see `clock_sync::sync_clock_offset`'s
             // doc for why app startup shouldn't block on it. Every playback
             // position calculation self-corrects the moment this resolves,
@@ -63,7 +78,9 @@ pub fn run() {
             control::update_filter_cue,
             control::delete_filter_cue,
             control::add_filter_files,
+            control::supports_folder_import,
             control::add_filter_directory,
+            control::supports_save_location_picker,
             control::list_filter_tiles,
             control::list_services_for_title,
             control::select_filter_tile,

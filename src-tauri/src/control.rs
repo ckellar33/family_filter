@@ -224,7 +224,17 @@ pub struct FilterSummary {
 /// itself (rather than a `State` extractor, which only a `#[tauri::command]`
 /// can receive) so either caller can invoke it directly.
 async fn load_filter_file_inner(handle: &ControlStateHandle, path: String) -> Result<FilterSummary, String> {
-    let path_buf = PathBuf::from(&path);
+    // `path` may be a `file://` URL (iOS/Android's dialog picker; see
+    // `paths::from_picker`'s doc) rather than a bare path -- harmless to run
+    // on every other caller too, since a plain path or an already-resolved
+    // internal path (e.g. `select_filter_tile`'s, from the library) just
+    // passes through unchanged.
+    let picked = crate::paths::from_picker(&path);
+    // On iOS, that's still a picker-owned temporary copy that isn't safe to
+    // keep a long-term reference to -- see `library::import_picked_path`'s
+    // doc. A no-op on every other platform.
+    let path_buf = library::import_picked_path(&picked).map_err(|e| describe(&e))?;
+    let path = path_buf.to_string_lossy().into_owned();
     let list = FilterList::load(&path_buf).map_err(|e| describe(&e))?;
     let categories = list.categories();
     let media_count = list.media.len();
@@ -474,12 +484,44 @@ pub async fn delete_filter_cue(state: State<'_, ControlStateHandle>, title: Stri
 pub fn add_filter_files(paths: Vec<String>) -> Result<usize, String> {
     let mut added = 0;
     for path in paths {
-        let path_buf = PathBuf::from(&path);
+        // `path` may be a `file://` URL -- see `paths::from_picker`'s doc.
+        let picked = crate::paths::from_picker(&path);
+        // See `library::import_picked_path`'s doc -- a no-op everywhere but
+        // iOS, where `path` is a picker-owned temporary copy.
+        let path_buf = library::import_picked_path(&picked).map_err(|e| format!("{path}: {}", describe(&e)))?;
         FilterList::load(&path_buf).map_err(|e| format!("{path}: {}", describe(&e)))?;
         library::register_filter_path(&path_buf).map_err(|e| describe(&e))?;
         added += 1;
     }
     Ok(added)
+}
+
+/// Whether `add_filter_directory`'s folder picker is actually usable on this
+/// platform -- `false` on iOS, where `@tauri-apps/plugin-dialog`'s iOS
+/// implementation has no folder-picking mode at all (its `FilePickerOptions`
+/// has no `directory` field; `open({ directory: true })` there just falls
+/// back to a single-*file* picker, and handing that path to
+/// `add_filter_directory`'s `read_dir` would fail). The frontend uses this
+/// to hide "Add a folder instead" on iOS rather than offer a control that's
+/// guaranteed to error.
+#[tauri::command]
+pub fn supports_folder_import() -> bool {
+    !cfg!(target_os = "ios")
+}
+
+/// Whether `@tauri-apps/plugin-dialog`'s `save()` returns a path this app
+/// can actually write further content to afterward -- `false` on iOS. Its
+/// plugin has no real "choose a save path" primitive there: it fakes one by
+/// writing a placeholder into the app's own `Documents/`, then running an
+/// "export to..." flow and handing back wherever the user ultimately
+/// exported *that* to -- which can be outside the app's sandbox entirely
+/// (iCloud Drive, another app's document provider), where a later plain
+/// `std::fs::write` from Rust (no security-scope handling around it) isn't
+/// reliable. `creation::creation_new_draft`'s `path: None` branch is the
+/// fallback the frontend uses instead on iOS.
+#[tauri::command]
+pub fn supports_save_location_picker() -> bool {
+    !cfg!(target_os = "ios")
 }
 
 /// Registers every `.json` file directly inside `path` (chosen via the
@@ -490,7 +532,10 @@ pub fn add_filter_files(paths: Vec<String>) -> Result<usize, String> {
 /// file. Returns how many were actually added.
 #[tauri::command]
 pub fn add_filter_directory(path: String) -> Result<usize, String> {
-    let dir = PathBuf::from(&path);
+    // See `paths::from_picker`'s doc -- a no-op on desktop, the only
+    // platform this command is actually reachable from (see
+    // `supports_folder_import`).
+    let dir = crate::paths::from_picker(&path);
     let entries = std::fs::read_dir(&dir).map_err(|e| format!("failed to read {}: {e}", dir.display()))?;
     let mut added = 0;
     for entry in entries.flatten() {

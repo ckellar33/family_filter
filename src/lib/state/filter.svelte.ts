@@ -45,7 +45,33 @@ export const filterState = $state({
   // set by checkAvailableForPlayback (see +page.svelte's effect that calls
   // it), null whenever nothing needs enabling.
   availableHint: null as (ServiceOption & { title: string }) | null,
+
+  // Whether "Add a folder instead" should even be offered -- false on iOS,
+  // where the OS picker has no folder-picking mode (see
+  // control::supports_folder_import's doc). Starts `true` (desktop's
+  // answer, and the overwhelmingly common dev-loop platform) and corrects
+  // itself moments later on iOS -- the backend call below is a synchronous,
+  // no-I/O `cfg!` check, so in practice this never visibly flashes.
+  folderImportSupported: true,
+
+  // Whether starting a new recording draft should prompt for a save
+  // location -- false on iOS (see control::supports_save_location_picker's
+  // doc and creationState's own use of this in pickNewDraft). Same
+  // starts-true-corrects-itself reasoning as folderImportSupported above.
+  saveLocationPickerSupported: true,
 });
+
+invoke<boolean>("supports_folder_import")
+  .then((supported) => {
+    filterState.folderImportSupported = supported;
+  })
+  .catch(() => {});
+
+invoke<boolean>("supports_save_location_picker")
+  .then((supported) => {
+    filterState.saveLocationPickerSupported = supported;
+  })
+  .catch(() => {});
 
 // Tries to reload whatever filter file was last picked (persisted
 // backend-side). Leaves the mode off either way -- loading a list must

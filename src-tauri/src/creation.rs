@@ -157,17 +157,31 @@ async fn seed_entry_from_live_playback(guard: &mut ControlState, draft: &mut Fil
     }
 }
 
-/// Starts a brand-new, empty draft at `path` (chosen via
-/// `@tauri-apps/plugin-dialog`'s `save()` picker on the frontend) and writes
-/// it immediately so the file exists at the chosen destination right away --
-/// the save dialog only picks a path, it doesn't create anything. If
-/// something's already playing, its title/service are seeded into the file
-/// at this point too (see `seed_entry_from_live_playback`), so starting a
-/// recording session against a movie that's already on screen stores its
-/// title/service right away instead of requiring a first mark first.
+/// Starts a brand-new, empty draft and writes it immediately so the file
+/// exists right away -- if something's already playing, its title/service
+/// are seeded into the file at this point too (see
+/// `seed_entry_from_live_playback`), so starting a recording session against
+/// a movie that's already on screen stores its title/service right away
+/// instead of requiring a first mark first.
+///
+/// `path` is `Some` on every platform with a real save-location picker
+/// (chosen via `@tauri-apps/plugin-dialog`'s `save()` on the frontend) --
+/// `None` on iOS, where that picker's return value isn't reliably writable
+/// from here (see `control::supports_save_location_picker`'s doc); the
+/// frontend skips calling it there and sends `suggested_name` (what it
+/// would have used as the dialog's default filename) instead, and a fresh
+/// path under the app's own storage is picked from that (see
+/// `library::fresh_local_path`).
 #[tauri::command]
-pub async fn creation_new_draft(state: State<'_, ControlStateHandle>, path: String) -> Result<DraftSummary, String> {
-    let path_buf = PathBuf::from(&path);
+pub async fn creation_new_draft(state: State<'_, ControlStateHandle>, path: Option<String>, suggested_name: String) -> Result<DraftSummary, String> {
+    let path_buf = match path {
+        // See `paths::from_picker`'s doc -- a no-op on desktop, the only
+        // platform this branch is actually reachable from (see
+        // `control::supports_save_location_picker`).
+        Some(path) => crate::paths::from_picker(&path),
+        None => library::fresh_local_path(&suggested_name).map_err(|e| describe(&e))?,
+    };
+    let path = path_buf.to_string_lossy().into_owned();
     let mut guard = state.lock().await;
 
     let mut draft = FilterList::default();
@@ -197,7 +211,14 @@ pub async fn creation_new_draft(state: State<'_, ControlStateHandle>, path: Stri
 /// shows up right away rather than only once a mark lands.
 #[tauri::command]
 pub async fn creation_open_draft(state: State<'_, ControlStateHandle>, path: String) -> Result<DraftSummary, String> {
-    let path_buf = PathBuf::from(&path);
+    // `path` may be a `file://` URL -- see `paths::from_picker`'s doc.
+    let picked = crate::paths::from_picker(&path);
+    // See `library::import_picked_path`'s doc -- a no-op everywhere but iOS.
+    // Doing this here (rather than after) matters: every mutation from here
+    // on autosaves to `draft_path`, so it has to be the durable copy from
+    // the start, not the picker's temporary one.
+    let path_buf = library::import_picked_path(&picked).map_err(|e| describe(&e))?;
+    let path = path_buf.to_string_lossy().into_owned();
     let mut draft = FilterList::load(&path_buf).map_err(|e| describe(&e))?;
     if let Err(e) = library::register_filter_path(&path_buf) {
         eprintln!("[library] failed to persist filter_library.store: {e}");

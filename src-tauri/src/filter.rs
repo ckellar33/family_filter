@@ -415,13 +415,15 @@ impl FilterList {
 }
 
 pub fn load_saved_filter_path() -> Option<PathBuf> {
-    let text = fs::read_to_string(FILTER_PATH_STORE).ok()?;
+    let text = fs::read_to_string(crate::paths::data_dir().join(FILTER_PATH_STORE)).ok()?;
     let trimmed = text.trim();
     (!trimmed.is_empty()).then(|| PathBuf::from(trimmed))
 }
 
 pub fn save_filter_path(path: &Path) -> Result<()> {
-    fs::write(FILTER_PATH_STORE, path.to_string_lossy().as_bytes()).context("failed to write filter_path.store")
+    let dir = crate::paths::data_dir();
+    fs::create_dir_all(&dir).context("failed to create app data directory")?;
+    fs::write(dir.join(FILTER_PATH_STORE), path.to_string_lossy().as_bytes()).context("failed to write filter_path.store")
 }
 
 /// `false` (never on by default) if the store is missing or unparseable --
@@ -429,11 +431,13 @@ pub fn save_filter_path(path: &Path) -> Result<()> {
 /// the safer of the two defaults regardless: a corrupt/absent store should
 /// never be the reason auto-filter mode silently turns itself on.
 pub fn load_saved_filter_enabled() -> bool {
-    fs::read_to_string(FILTER_ENABLED_STORE).ok().map(|s| s.trim() == "true").unwrap_or(false)
+    fs::read_to_string(crate::paths::data_dir().join(FILTER_ENABLED_STORE)).ok().map(|s| s.trim() == "true").unwrap_or(false)
 }
 
 pub fn save_filter_enabled(enabled: bool) -> Result<()> {
-    fs::write(FILTER_ENABLED_STORE, if enabled { "true" } else { "false" }).context("failed to write filter_enabled.store")
+    let dir = crate::paths::data_dir();
+    fs::create_dir_all(&dir).context("failed to create app data directory")?;
+    fs::write(dir.join(FILTER_ENABLED_STORE), if enabled { "true" } else { "false" }).context("failed to write filter_enabled.store")
 }
 
 /// Per-session bookkeeping the evaluation engine carries across poll ticks --

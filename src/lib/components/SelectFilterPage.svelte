@@ -210,12 +210,19 @@
     {#if filterState.tilesLoading && filterState.tiles.length === 0}
       <p class="hint centered">Loading filters…</p>
     {:else if filterState.tiles.length === 0}
-      <EmptyState kind="no-filters" onPrimary={addFilterFiles} onSecondary={onRecordInstead} onTertiary={addFilterDirectory} />
+      <EmptyState
+        kind="no-filters"
+        onPrimary={addFilterFiles}
+        onSecondary={onRecordInstead}
+        onTertiary={filterState.folderImportSupported ? addFilterDirectory : undefined}
+      />
     {:else}
       <div class="stack">
         <div style="display:flex; gap:9px">
           <button class="btn-secondary" style="min-height:46px" onclick={addFilterFiles}>Add file…</button>
-          <button class="btn-secondary" style="min-height:46px" onclick={addFilterDirectory}>Add folder…</button>
+          {#if filterState.folderImportSupported}
+            <button class="btn-secondary" style="min-height:46px" onclick={addFilterDirectory}>Add folder…</button>
+          {/if}
         </div>
       </div>
       <p class="footnote">{filterState.tiles.length} {filterState.tiles.length === 1 ? "title" : "titles"}</p>
