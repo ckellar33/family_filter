@@ -67,7 +67,14 @@ body {
 .phone-shell {
   display: flex;
   justify-content: center;
-  min-height: 100vh;
+  /* Plain 100vh, not 100dvh: dvh exists to handle a browser's collapsing/
+     expanding toolbar (Safari's address bar) resizing the visible viewport
+     at runtime -- Tauri's WKWebView has no such chrome at all, so 100vh is
+     already exactly the real render surface here. dvh actually measured
+     *shorter* than the real surface in this WKWebView, leaving a visible
+     gap of the shell's own background below the tab bar. */
+  height: 100vh;
+  overflow: hidden; /* the shell itself never scrolls -- only .content does, so the nav/tab bars stay fixed instead of drifting with whole-page scroll */
   background: var(--shell-bg);
   font-family: var(--ui);
   -webkit-font-smoothing: antialiased;
@@ -76,7 +83,7 @@ body {
 .canvas {
   width: 100%;
   max-width: 430px;
-  min-height: 100vh;
+  height: 100%;
   background: var(--bg);
   color: var(--label);
   display: flex;
@@ -205,6 +212,9 @@ body {
 
 .content {
   flex: 1;
+  min-height: 0; /* without this, a flex child won't shrink below its content's natural height, which would defeat overflow-y below -- it'd just keep growing .canvas/.phone-shell instead of scrolling in place */
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
   padding: 4px 20px calc(env(safe-area-inset-bottom) + 32px);
 }
 
