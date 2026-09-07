@@ -15,6 +15,7 @@
   // not here -- this sheet only ever touches timing.
   import { fmtTime, parseTime } from "$lib/format";
   import { session, doSeek } from "$lib/state/session.svelte";
+  import { portal } from "$lib/actions";
   import type { CategoryDef } from "$lib/types";
 
   let {
@@ -92,6 +93,7 @@
 
 <div
   class="sheet-backdrop"
+  use:portal
   role="button"
   tabindex="-1"
   aria-label="Close cue editor"
