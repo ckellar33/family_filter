@@ -9,6 +9,26 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { ControlInfo, Device, PlaybackStatus, Protocol, RemoteButton, SavedDeviceInfo, Step } from "$lib/types";
 
+// `describe()` (src-tauri/src/control.rs) hands the frontend a plain Rust
+// error chain like "timed out connecting to 192.168.1.42:51230" for a
+// blocked/unreachable TCP connect -- accurate, but it doesn't explain *why*
+// a device that was working before suddenly isn't, and iOS's local-network
+// permission going stale after a reinstall (Settings shows the toggle On,
+// but the OS-level grant isn't actually bound to the new signature) is a
+// common enough cause on real devices that it's worth naming explicitly
+// rather than leaving the user to guess from a bare IP:port. Matched
+// loosely against the handful of connect-failure phrasings that already
+// exist across control.rs/session.rs/pairing.rs (a timeout, a refused
+// connect, or mDNS turning up nothing) rather than a specific error type,
+// since all of them cross the network and can have this same root cause.
+const NETWORK_HINT =
+  " If Local Network access already shows On in Settings for Family Filter, iOS's permission grant can still get stuck after a reinstall -- delete the app, reboot your iPhone, reinstall, and tap Allow when it re-prompts.";
+
+function describeNetworkError(e: unknown): string {
+  const message = String(e);
+  return /connect(ing|ion)? to|devices found on the network/i.test(message) ? message + NETWORK_HINT : message;
+}
+
 // Companion is required (it's what unlocks mute/skip control); MRP and
 // AirPlay are each their own optional pairing ceremony against their own
 // discovered device, needed only for live playback position. Mirrors
@@ -148,7 +168,7 @@ export async function verifySaved(id: string) {
     session.verifyResult = "ok";
   } catch (e) {
     session.verifyResult = "failed";
-    session.verifyError = String(e);
+    session.verifyError = describeNetworkError(e);
   } finally {
     session.verifying = false;
     session.verifyingId = null;
@@ -219,7 +239,7 @@ export async function openControls(id: string): Promise<boolean> {
     session.page = "control";
     return true;
   } catch (e) {
-    session.error = String(e);
+    session.error = describeNetworkError(e);
     return false;
   } finally {
     session.connecting = false;
@@ -338,10 +358,10 @@ export async function scan(protocol: Protocol) {
   try {
     session.devices = await invoke<Device[]>("discover_devices", { protocol });
     if (session.devices.length === 0) {
-      session.error = `No ${PROTOCOL_LABEL[protocol]} devices found on the network.`;
+      session.error = describeNetworkError(`No ${PROTOCOL_LABEL[protocol]} devices found on the network.`);
     }
   } catch (e) {
-    session.error = String(e);
+    session.error = describeNetworkError(e);
   } finally {
     session.scanning = false;
   }
@@ -370,7 +390,7 @@ export async function pair(protocol: Protocol, device: Device) {
     }
     advance();
   } catch (e) {
-    session.error = String(e);
+    session.error = describeNetworkError(e);
   } finally {
     unlisten?.();
     session.awaitingPinFor = null;
