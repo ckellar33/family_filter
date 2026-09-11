@@ -16,6 +16,7 @@
   // and only *then* swapping to Controls once the connect finishes made the
   // launch visibly flash Select Filter first every time a reconnect
   // succeeded.
+  import { listen } from "@tauri-apps/api/event";
   import { session, checkSaved, openControls, refreshPlayback, STEPS } from "$lib/state/session.svelte";
   import { checkSavedFilter, filterState, closeDetail, selectTile, checkAvailableForPlayback } from "$lib/state/filter.svelte";
   import { resetCreation } from "$lib/state/creation.svelte";
@@ -84,6 +85,45 @@
         launching = false;
       }
     })();
+  });
+
+  // Re-establishes the control session after returning from the background.
+  // iOS suspends/reclaims the raw TCP sockets the Companion/MRP session
+  // depends on while backgrounded -- swiping up to the home screen doesn't
+  // kill the process, so this component never remounts and the launch-time
+  // effect above never re-fires, but the sockets it built are dead all the
+  // same. `src-tauri/src/lib.rs`'s `RunEvent::Resumed` handler emits
+  // "app-resumed" for exactly this moment (maps to iOS's
+  // `applicationWillEnterForeground`); this reuses the same reconnect call a
+  // manual device switch makes (openControls) rather than inventing a
+  // second path. Only acts while already on the Controls page -- resuming
+  // mid-wizard or mid-chooser has nothing live to reconnect. On failure,
+  // drops back to "saved" so the Controls tab's EmptyState offers
+  // "Reconnect" (which just opens Devices, whose own mount-time auto-connect
+  // retries this same connect) instead of leaving now-broken controls on
+  // screen with no way out but a manual Devices tap.
+  $effect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    listen("app-resumed", async () => {
+      if (session.page !== "control") return;
+      const id = session.activeDevice?.id ?? session.lastDeviceId;
+      if (!id) return;
+      const ok = await openControls(id);
+      if (ok) {
+        await checkSavedFilter();
+        resetCreation();
+      } else {
+        session.page = "saved";
+      }
+    }).then((fn) => {
+      if (cancelled) fn();
+      else unlisten = fn;
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
   });
 
   // Polls now-playing status every 250ms while a control session is open

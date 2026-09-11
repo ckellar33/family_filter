@@ -8,7 +8,7 @@ mod pairing;
 mod paths;
 mod saved;
 
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 use control::ControlStateHandle;
 use pairing::{PairingState, PairingStateHandle};
@@ -96,6 +96,24 @@ pub fn run() {
             creation::creation_list_cues,
             creation::creation_set_service,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while running tauri application")
+        .run(|app_handle, event| {
+            // iOS suspends/reclaims the raw TCP sockets `control::ControlState`
+            // holds (Companion, and MRP/AirPlay if paired) while the app is
+            // backgrounded -- swiping up to the home screen doesn't kill the
+            // process, but the sockets don't survive it, and nothing else
+            // would ever notice they'd gone dead. `RunEvent::Resumed` maps to
+            // `applicationWillEnterForeground` on iOS (and Android's onResume),
+            // so this is the one reliable moment to tell the frontend to
+            // reconnect -- it already owns that flow (`openControls`, the same
+            // call a manual device switch makes) via the `app-resumed` event.
+            // Gated to mobile: on desktop `Resumed` is an event-loop startup
+            // signal, not a background/foreground transition, and re-running
+            // the reconnect flow on every window focus would be both wrong and
+            // wasteful there.
+            if matches!(event, tauri::RunEvent::Resumed) && cfg!(any(target_os = "ios", target_os = "android")) {
+                let _ = app_handle.emit("app-resumed", ());
+            }
+        });
 }
