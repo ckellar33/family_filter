@@ -5,33 +5,106 @@
 // auto-filter-only concept) -- the draft being authored here is never the
 // list actively muting/skipping mid-movie unless useDraftAsActiveFilter()
 // explicitly arms it.
+//
+// The recording flow is mark-then-label (design 4a): only two actions
+// exist while something is playing -- Skip (press at the start, press again
+// at the end) and Mute (stamps a fixed window at the tap). Both land a cue
+// on disk immediately with a placeholder label, then CueLabelSheet asks
+// what it *was*. That ordering is the whole point: the timestamp is frozen
+// by the tap, so no clock keeps running while the answer is being typed,
+// and a mis-timed mark can't be caused by deliberation.
 import { invoke } from "@tauri-apps/api/core";
 import { open, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { session } from "$lib/state/session.svelte";
 import { filterState } from "$lib/state/filter.svelte";
 import { slugifyTitle } from "$lib/format";
-import type { CategoryDef, CategoryKind, CreationCue, CueMarkResult, DraftSummary, FilterSummary } from "$lib/types";
+import type { CreationCue, CueMarkResult, DraftSummary, FilterSummary, LanguageKindDef } from "$lib/types";
 
-export const DEFAULT_CATEGORIES: CategoryDef[] = [
-  { name: "language", kind: "mute" },
-  { name: "violence", kind: "skip" },
-  { name: "gore", kind: "skip" },
-  { name: "nudity", kind: "skip" },
-  { name: "peril", kind: "skip" },
+// What a skip cue can be *about*. Fixed list rather than the old
+// user-extensible one: the label sheet is a grid of chips, and a category
+// that only exists on one machine can't be shared with the filter file.
+// Stored lowercase, matching the category strings already written by
+// earlier versions and by the sample filter files.
+export const SKIP_CATEGORIES: string[] = [
+  "violence",
+  "gore",
+  "nudity",
+  "intimacy",
+  "drugs & alcohol",
+  "frightening",
+  "crude humor",
+  "peril",
 ];
 
+// Mute *is* language -- the question a mute mark asks is which kind, since
+// each kind carries its own word list and families differ in whether they
+// even want censoring. The `category` strings stay in the "language-*"
+// shape `filter::Cue::word` and `censorWord` already anticipate, so an
+// older file's plain "language" cue keeps working (see languageKindFor,
+// which falls back to profanity for it).
+export const LANGUAGE_KINDS: LanguageKindDef[] = [
+  {
+    category: "language-profanity",
+    label: "Profanity",
+    censor: true,
+    words: ["shit", "fuck", "ass", "bitch", "damn", "bastard", "hell"],
+  },
+  {
+    category: "language-blasphemy",
+    label: "Blasphemy",
+    censor: true,
+    words: ["god", "god damn", "jesus", "jesus christ", "oh my god"],
+  },
+  {
+    // Not censored: the point of flagging "stupid" or "shut up" is that a
+    // parent can read the list and decide, and grawlixing a word that
+    // isn't itself offensive just makes the list unreadable.
+    category: "language-childish",
+    label: "Childish language",
+    censor: false,
+    words: ["stupid", "shut up", "dumb", "idiot", "jerk", "I hate you"],
+  },
+];
+
+// Every category string a mute cue can carry, including the bare
+// "language" written by versions predating the kinds.
+export function isLanguageCategory(category: string): boolean {
+  return category === "language" || category.startsWith("language-");
+}
+
+// Falls back to Profanity for a bare "language" cue (and for an unknown
+// "language-*" value from a hand-edited file) rather than returning null
+// and leaving the sheet with nothing to show.
+export function languageKindFor(category: string): LanguageKindDef {
+  return LANGUAGE_KINDS.find((k) => k.category === category) ?? LANGUAGE_KINDS[0];
+}
+
+// Placeholder a skip mark is recorded under between the two presses --
+// replaced by the real category the moment the sheet is saved. It only
+// ever reaches disk if the app dies between the second press and the save,
+// which is exactly when a visibly-unlabeled cue beats a lost one.
+export const UNLABELED_SKIP = "unlabeled";
+
+// A mute mark's fixed window, in seconds -- mirrors the backend's
+// MUTE_MARK_SECS default so the button can say how long it stamps.
+export const MUTE_MARK_SECS = 8;
+
 export const creationState = $state({
-  // "idle" until a draft is started/opened, then "recording" while category
-  // buttons + the cue table are shown.
+  // "idle" until a draft is started/opened, then "recording" while the two
+  // mark buttons + the recorded list are shown.
   stage: "idle" as "idle" | "recording",
   draft: null as DraftSummary | null,
-  categories: [...DEFAULT_CATEGORIES] as CategoryDef[],
   cues: [] as CreationCue[],
-  pendingSkipCategory: null as string | null,
+
+  // Set between the two presses of Skip. `pendingSkipStart` is the frozen
+  // position of the first press, kept frontend-side purely so the button
+  // can show where the mark began (the authoritative copy lives in the
+  // backend's PendingSkip).
+  skipPending: false,
+  pendingSkipStart: null as number | null,
+
   busy: false,
   error: "",
-  newCategoryName: "",
-  newCategoryKind: "skip" as CategoryKind,
 
   // Text field for correcting a mis-detected service (see renameService) --
   // not the service itself, which is derived live from whatever's playing
@@ -58,7 +131,8 @@ export function resetCreation() {
   creationState.draft = null;
   creationState.cues = [];
   creationState.renameServiceInput = "";
-  creationState.pendingSkipCategory = null;
+  creationState.skipPending = false;
+  creationState.pendingSkipStart = null;
   creationState.error = "";
 }
 
@@ -104,7 +178,7 @@ export async function pickExistingDraft() {
 // Re-fetches the draft's cues for whatever's currently playing (on whatever
 // service it's playing on) -- called after every mutation, and reactively
 // (see CreateFilterPage.svelte) whenever the title or app changes while
-// recording, so the table always reflects what's actually on screen.
+// recording, so the list always reflects what's actually on screen.
 export async function refreshCreationCues() {
   if (!session.playback?.title) {
     creationState.cues = [];
@@ -135,7 +209,7 @@ export async function renameService() {
     await invoke("creation_set_service", { title: session.playback.title, oldService: currentService(), newService });
     creationState.renameServiceInput = "";
     // The entry just moved out from under currentService() -- refresh so
-    // the table honestly reflects that this (still-generic, if the app
+    // the list honestly reflects that this (still-generic, if the app
     // remains unrecognized) service now has no cues of its own.
     await refreshCreationCues();
   } catch (e) {
@@ -159,13 +233,40 @@ function noteNewEntryIfFirstCue(result: CueMarkResult) {
   }
 }
 
-export async function markMute(category: string) {
+// Both mark paths return the cue that just landed, so the caller can open
+// the label sheet on it. `null` means the mark failed (the error is already
+// in creationState.error) and no sheet should open.
+
+// Stamps the fixed mute window at the current position, under the bare
+// "language" category -- the *kind* of language is what the sheet then
+// asks for, and until it's answered the cue is honestly labeled as
+// unspecified language rather than guessed at.
+export async function markMute(): Promise<CueMarkResult | null> {
   creationState.busy = true;
   creationState.error = "";
   try {
-    const result = await invoke<CueMarkResult>("creation_mark_mute", { category });
+    const result = await invoke<CueMarkResult>("creation_mark_mute", { category: "language" });
     noteNewEntryIfFirstCue(result);
     await refreshCreationCues();
+    return result;
+  } catch (e) {
+    creationState.error = String(e);
+    return null;
+  } finally {
+    creationState.busy = false;
+  }
+}
+
+// First press starts the mark, second press ends it and returns the cue --
+// same press-to-start/press-to-end rule as before, just on one button now
+// that the category isn't chosen up front.
+export async function startSkipMark() {
+  creationState.busy = true;
+  creationState.error = "";
+  try {
+    await invoke("creation_start_skip_mark", { category: UNLABELED_SKIP });
+    creationState.skipPending = true;
+    creationState.pendingSkipStart = session.playback?.position ?? null;
   } catch (e) {
     creationState.error = String(e);
   } finally {
@@ -173,25 +274,19 @@ export async function markMute(category: string) {
   }
 }
 
-// First press on a skip-category button starts its mark; the second press
-// on that *same* button ends it. Other skip buttons are disabled in the
-// markup while pendingSkipCategory is set, so the "already recording a
-// different category" branch below is a safety net, not the normal path.
-export async function toggleSkipMark(category: string) {
+export async function endSkipMark(): Promise<CueMarkResult | null> {
   creationState.busy = true;
   creationState.error = "";
   try {
-    if (creationState.pendingSkipCategory === category) {
-      const result = await invoke<CueMarkResult>("creation_end_skip_mark");
-      noteNewEntryIfFirstCue(result);
-      creationState.pendingSkipCategory = null;
-      await refreshCreationCues();
-    } else if (creationState.pendingSkipCategory === null) {
-      await invoke("creation_start_skip_mark", { category });
-      creationState.pendingSkipCategory = category;
-    }
+    const result = await invoke<CueMarkResult>("creation_end_skip_mark");
+    noteNewEntryIfFirstCue(result);
+    creationState.skipPending = false;
+    creationState.pendingSkipStart = null;
+    await refreshCreationCues();
+    return result;
   } catch (e) {
     creationState.error = String(e);
+    return null;
   } finally {
     creationState.busy = false;
   }
@@ -202,7 +297,37 @@ export async function cancelSkipMark() {
   creationState.error = "";
   try {
     await invoke("creation_cancel_skip_mark");
-    creationState.pendingSkipCategory = null;
+    creationState.skipPending = false;
+    creationState.pendingSkipStart = null;
+  } catch (e) {
+    creationState.error = String(e);
+  } finally {
+    creationState.busy = false;
+  }
+}
+
+// What the label sheet commits: the category (a skip category, or a
+// "language-*" kind), the optional note, and -- for a mute cue whose words
+// have been picked -- the words themselves. Every field is optional
+// server-side; omitting one leaves it as it was, so the sheet can save a
+// kind change without touching the words, and vice versa.
+export async function setCueLabel(
+  cue: CreationCue,
+  label: { category?: string; note?: string; word?: string },
+) {
+  if (!session.playback?.title) return;
+  creationState.busy = true;
+  creationState.error = "";
+  try {
+    await invoke("creation_set_cue_label", {
+      title: session.playback.title,
+      service: currentService(),
+      index: cue.index,
+      category: label.category ?? null,
+      note: label.note ?? null,
+      word: label.word ?? null,
+    });
+    await refreshCreationCues();
   } catch (e) {
     creationState.error = String(e);
   } finally {
@@ -234,13 +359,6 @@ export async function deleteCue(cue: CreationCue) {
   } catch (e) {
     creationState.error = String(e);
   }
-}
-
-export function addCustomCategory() {
-  const name = creationState.newCategoryName.trim();
-  if (!name || creationState.categories.some((c) => c.name === name)) return;
-  creationState.categories = [...creationState.categories, { name, kind: creationState.newCategoryKind }];
-  creationState.newCategoryName = "";
 }
 
 // Reloads the draft's own file into the (separate) auto-filter list, so

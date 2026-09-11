@@ -49,10 +49,19 @@ const GRAWLIX = ["#", "@", "&", "!", "*", "%"];
 // it's stable across re-renders without needing a random seed stashed
 // anywhere.
 export function censorWord(word: string): string {
+  // Comma-separated lists (a mute cue's words, see filter::Cue::word)
+  // censor phrase by phrase and keep their commas -- run together, "shit,
+  // damn" reads as one long grawlix rather than two words.
   return word
-    .split(" ")
-    .map((w) => (w.length <= 1 ? w : w[0] + [...w.slice(1)].map((ch) => GRAWLIX[ch.charCodeAt(0) % GRAWLIX.length]).join("")))
-    .join(" ");
+    .split(",")
+    .map((phrase) =>
+      phrase
+        .trim()
+        .split(" ")
+        .map((w) => (w.length <= 1 ? w : w[0] + [...w.slice(1)].map((ch) => GRAWLIX[ch.charCodeAt(0) % GRAWLIX.length]).join("")))
+        .join(" "),
+    )
+    .join(", ");
 }
 
 // Pairs with fmtTime -- parses what a cue table's inputs display back into

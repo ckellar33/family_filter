@@ -44,6 +44,11 @@ export interface Cue {
   // recorded a word for yet. Shown censored (see censorWord in format.ts)
   // on the Filters tab in place of the plain MUTE pill when present.
   word: string | null;
+  // Free-form note on a skip cue -- what the scene actually was ("bar
+  // fight, brief"), for whoever reads the list later. Never shown in place
+  // of the category, always under it. null for a cue with no note, which
+  // is most of them.
+  note: string | null;
 }
 
 export interface PlaybackStatus {
@@ -110,7 +115,16 @@ export interface CreationCue {
   start: number;
   end: number;
   action: "mute" | "skip";
+  // Both are label state CueLabelSheet writes through
+  // creation_set_cue_label: `category` doubles as a mute cue's *kind* of
+  // language ("language-profanity" etc), `word` is the comma-separated
+  // word list on such a cue ("shit, damn" -- one 8s window can genuinely
+  // catch two), and `note` is the free-text note on a skip cue. null until
+  // answered -- a mute cue with no words yet is what makes a Recorded row
+  // read as unfinished.
   category: string;
+  word: string | null;
+  note: string | null;
 }
 
 // Returned by creation_mark_mute/creation_end_skip_mark -- the cue that was
@@ -131,6 +145,16 @@ export type CategoryKind = "mute" | "skip";
 export interface CategoryDef {
   name: string;
   kind: CategoryKind;
+}
+
+// One kind of language a mute cue can be -- see LANGUAGE_KINDS in
+// creation.svelte.ts. `censor` is false for childish language: grawlixing
+// "stupid" makes the list unreadable without protecting anyone.
+export interface LanguageKindDef {
+  category: string;
+  label: string;
+  censor: boolean;
+  words: string[];
 }
 
 // Siri Remote buttons control_button can send -- see control::RemoteButton.

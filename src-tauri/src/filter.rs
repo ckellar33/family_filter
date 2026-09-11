@@ -97,6 +97,12 @@ pub struct Cue {
     /// cue's JSON exactly as compact as before this field existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub word: Option<String>,
+    /// Free-text note on a skip cue -- what the scene was, in the
+    /// recorder's own words ("bar fight, brief"). Purely descriptive: the
+    /// category is what `evaluate` matches on, this is for whoever reads
+    /// the list later. `None` for any cue nobody wrote a note for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
@@ -391,6 +397,46 @@ impl FilterList {
         Ok(())
     }
 
+    /// Rewrites cue `index`'s label -- what it *is*, as opposed to
+    /// `update_cue`'s when-it-happens. Each field is optional and
+    /// independently applied: `None` leaves that field alone (so the sheet
+    /// can change a language kind without touching its words), while
+    /// `Some("")` on `note`/`word` clears it back to `None` rather than
+    /// storing an empty string, matching `update_cue`'s handling of `word`.
+    /// `category` is never cleared -- a cue with no category at all would
+    /// be unfilterable, so an empty string is rejected. No re-sort or
+    /// re-validate: a label can't move a cue, so it can't create an
+    /// overlap either.
+    pub fn set_cue_label(
+        &mut self,
+        title: &str,
+        service: &str,
+        index: usize,
+        category: Option<String>,
+        note: Option<String>,
+        word: Option<String>,
+    ) -> Result<()> {
+        let entry = self
+            .find_entry_mut(title, service)
+            .with_context(|| format!("no entry for {:?} on service {:?}", title, service))?;
+        if index >= entry.cues.len() {
+            bail!("cue index {} out of range for {:?} ({} cues)", index, title, entry.cues.len());
+        }
+        if let Some(c) = category {
+            if c.trim().is_empty() {
+                bail!("a cue's category can't be empty");
+            }
+            entry.cues[index].category = c;
+        }
+        if let Some(n) = note {
+            entry.cues[index].note = if n.trim().is_empty() { None } else { Some(n) };
+        }
+        if let Some(w) = word {
+            entry.cues[index].word = if w.trim().is_empty() { None } else { Some(w) };
+        }
+        Ok(())
+    }
+
     /// Removes cue `index` outright. No re-validation needed -- removing a
     /// cue can't create an overlap or invalid range among what's left.
     pub fn delete_cue(&mut self, title: &str, service: &str, index: usize) -> Result<()> {
@@ -655,7 +701,7 @@ mod tests {
     use super::*;
 
     fn cue(start: f64, end: f64, action: CueAction, category: &str) -> Cue {
-        Cue { start, end, action, category: category.to_string(), word: None }
+        Cue { start, end, action, category: category.to_string(), word: None, note: None }
     }
 
     fn entry(title: &str, service: &str, cues: Vec<Cue>) -> MediaEntry {

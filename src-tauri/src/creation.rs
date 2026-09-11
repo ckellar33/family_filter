@@ -83,6 +83,11 @@ pub struct CreationCue {
     pub end: f64,
     pub action: CueAction,
     pub category: String,
+    /// See `filter::Cue::word` / `::note` -- the label sheet round-trips
+    /// both through `creation_set_cue_label`, and a Recorded row shows a
+    /// mute cue's words without a second call.
+    pub word: Option<String>,
+    pub note: Option<String>,
 }
 
 fn cue_result(entry_title: &str, index: usize, cue: &Cue) -> CueMarkResult {
@@ -262,7 +267,7 @@ pub async fn creation_mark_mute(
     let service = service_hint.unwrap_or_default();
 
     let draft = guard.creation.draft.as_mut().ok_or_else(|| "no draft filter file open -- start or open one first".to_string())?;
-    let cue = Cue { start: position, end: position + duration, action: CueAction::Mute, category, word: None };
+    let cue = Cue { start: position, end: position + duration, action: CueAction::Mute, category, word: None, note: None };
     let index = draft.add_cue(&title, &service, cue.clone()).map_err(|e| describe(&e))?;
     autosave(&guard.creation);
 
@@ -306,7 +311,7 @@ pub async fn creation_end_skip_mark(state: State<'_, ControlStateHandle>) -> Res
     }
 
     let draft = guard.creation.draft.as_mut().ok_or_else(|| "no draft filter file open".to_string())?;
-    let cue = Cue { start: pending.start, end: position, action: CueAction::Skip, category: pending.category.clone(), word: None };
+    let cue = Cue { start: pending.start, end: position, action: CueAction::Skip, category: pending.category.clone(), word: None, note: None };
     match draft.add_cue(&title, &service, cue.clone()) {
         Ok(index) => {
             autosave(&guard.creation);
@@ -353,6 +358,31 @@ pub async fn creation_update_cue(
     Ok(())
 }
 
+/// Answers "what was that?" for an already-recorded cue -- the label
+/// sheet's commit. Split from `creation_update_cue` on purpose: that one
+/// moves a cue in time (and may re-sort it), this one only ever rewrites
+/// what it's about, so the two can't clobber each other when a cue is
+/// retimed and relabeled in the same sitting. `category` also carries a
+/// mute cue's *kind* of language ("language-profanity" etc, see the
+/// frontend's LANGUAGE_KINDS), which is why a label save can change a
+/// cue's category at all.
+#[tauri::command]
+pub async fn creation_set_cue_label(
+    state: State<'_, ControlStateHandle>,
+    title: String,
+    service: String,
+    index: usize,
+    category: Option<String>,
+    note: Option<String>,
+    word: Option<String>,
+) -> Result<(), String> {
+    let mut guard = state.lock().await;
+    let draft = guard.creation.draft.as_mut().ok_or_else(|| "no draft filter file open".to_string())?;
+    draft.set_cue_label(&title, &service, index, category, note, word).map_err(|e| describe(&e))?;
+    autosave(&guard.creation);
+    Ok(())
+}
+
 /// Removes a mis-marked cue outright.
 #[tauri::command]
 pub async fn creation_delete_cue(state: State<'_, ControlStateHandle>, title: String, service: String, index: usize) -> Result<(), String> {
@@ -380,7 +410,15 @@ pub async fn creation_list_cues(state: State<'_, ControlStateHandle>, title: Str
         .cues
         .iter()
         .enumerate()
-        .map(|(index, cue)| CreationCue { index, start: cue.start, end: cue.end, action: cue.action, category: cue.category.clone() })
+        .map(|(index, cue)| CreationCue {
+            index,
+            start: cue.start,
+            end: cue.end,
+            action: cue.action,
+            category: cue.category.clone(),
+            word: cue.word.clone(),
+            note: cue.note.clone(),
+        })
         .collect())
 }
 

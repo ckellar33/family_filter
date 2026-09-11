@@ -24,6 +24,15 @@ use crate::filter;
 
 const TMDB_API_KEY_STORE: &str = "tmdb_api_key.store";
 
+/// Christopher Kellar's own TMDB v3 API key, used whenever `tmdb_api_key.store`
+/// isn't present -- there's no way to "drop a file next to the binary" on
+/// iOS (no Finder access into the app's sandbox), so this is the only key
+/// mobile builds have. TMDB's v3 `api_key` is meant for exactly this kind of
+/// client-side embedding (unlike a bearer/session token, it's not treated as
+/// a secret by TMDB's own docs), so shipping it in source is the intended
+/// use, not a leak -- revocable from the TMDB account if that ever changes.
+const FALLBACK_TMDB_API_KEY: &str = "0483c13dc4bb71888e395266f5993741";
+
 /// Reads the user's own TMDB API key from a sidecar file next to the app's
 /// other `*.store` files -- same "drop a file next to the binary" pattern as
 /// `filter::load_saved_filter_path`, still honored on desktop as a way to

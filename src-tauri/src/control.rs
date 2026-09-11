@@ -1,6 +1,6 @@
 //! Tauri commands for driving a live control session against a saved
 //! pairing -- mute/unmute, skip forward/back, and now-playing title/
-//! position. Mirrors `libs/appletv-cli`'s `control_flow` and
+//! position. Mirrors `libs/appletv-cli`'s `control_/Users/christopherkellar/Documents/Chris/CodeProjects/Rust/family_filter/src-tauri/src/clock_sync.rsflow` and
 //! `show_live_position`, but restructured for request/response commands
 //! plus frontend-side polling instead of one long-lived interactive loop:
 //! the CLI owns its session for the duration of a blocking menu loop,
@@ -691,6 +691,7 @@ pub async fn select_filter_tile(
             enabled: !guard.disabled_categories.contains(&cue.category)
                 && !guard.disabled_cues.contains(&(title_key.clone(), service_key.clone(), index)),
             word: cue.word.clone(),
+            note: cue.note.clone(),
         })
         .collect();
     let resolved_title = entry.title.clone();
@@ -933,6 +934,9 @@ pub struct CueStatus {
     /// Straight passthrough of `filter::Cue::word` -- see that field's doc
     /// comment. `None` for a cue nothing has recorded a word for.
     pub word: Option<String>,
+    /// Straight passthrough of `filter::Cue::note` -- the skip cue's
+    /// free-text description, `None` when nobody wrote one.
+    pub note: Option<String>,
 }
 
 #[derive(serde::Serialize)]
@@ -1078,6 +1082,7 @@ pub async fn control_playback_status(state: State<'_, ControlStateHandle>) -> Re
                     enabled: !guard.disabled_categories.contains(&cue.category)
                         && !guard.disabled_cues.contains(&(title_key.clone(), service_key.clone(), index)),
                     word: cue.word.clone(),
+                    note: cue.note.clone(),
                 })
                 .collect()
         })

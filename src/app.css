@@ -1660,3 +1660,178 @@ code {
   font-weight: 600;
   color: oklch(0.45 0.12 30);
 }
+
+/* ── Appended to src/app.css ──────────────────────────────────────────
+   Only additions -- nothing existing is redefined, so paste this at the
+   end of the file. Covers Create Filter's two mark buttons and the label
+   sheet's chip groups (design 4a).
+   ------------------------------------------------------------------- */
+
+/* ── Mark buttons (Create Filter) ─────────────────────── */
+
+.mark-buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* One row per action, sized so either can be hit without looking away
+   from the screen -- the whole point of only having two. */
+.mark-btn {
+  all: unset;
+  box-sizing: border-box;
+  min-height: 76px;
+  padding: 0 18px;
+  border-radius: var(--r-xl);
+  background: var(--card-bg);
+  border: 1px solid rgba(0, 0, 0, 0.11);
+  color: var(--label);
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  cursor: pointer;
+}
+
+.mark-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.mark-btn:active:not(:disabled) {
+  transform: scale(0.985);
+}
+
+/* Between the two presses of Skip -- clay, matching skip cues. */
+.mark-btn.recording {
+  background: var(--skip);
+  border-color: var(--skip);
+  color: #fff;
+}
+
+.mark-btn-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.mark-btn-name {
+  font-size: 17px;
+  font-weight: 700;
+}
+
+.mark-btn-hint {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--tertiary-label);
+}
+
+.mark-btn.recording .mark-btn-hint {
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.section-head-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+/* ── Recorded row labels ──────────────────────────────── */
+
+.cue-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--tertiary-label);
+}
+
+/* A mute cue with no words picked yet, or a skip cue never labeled --
+   clay, so the row reads as unfinished rather than done. */
+.cue-label.pending {
+  color: var(--skip);
+}
+
+.cue-note {
+  font-size: 12px;
+  font-style: italic;
+  color: var(--secondary-label);
+}
+
+/* ── Label sheet ──────────────────────────────────────── */
+
+.sheet-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.sheet-title {
+  margin: 0;
+  font-family: var(--display);
+  font-size: 25px;
+  font-weight: 400;
+  line-height: 1.1;
+}
+
+.chip-group {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.chip-group-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.chip-group-note {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--tertiary-label);
+  text-align: right;
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.chip {
+  all: unset;
+  box-sizing: border-box;
+  min-height: 44px;
+  padding: 0 15px;
+  border-radius: var(--r-md);
+  background: var(--card-bg);
+  border: 1px solid rgba(0, 0, 0, 0.11);
+  color: var(--label);
+  font-size: 14px;
+  font-weight: 600;
+  text-transform: capitalize;
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+}
+
+.chip.on {
+  background: var(--label);
+  border-color: var(--label);
+  color: var(--bg);
+}
+
+/* Censored words keep their shape better in mono, and aren't
+   capitalized -- they're quoted dialogue, not labels. */
+.chip-mono {
+  font-family: var(--mono);
+  font-size: 13.5px;
+  text-transform: none;
+}
+
+.chip:active {
+  transform: scale(0.97);
+}
