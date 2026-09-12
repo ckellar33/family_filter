@@ -356,7 +356,18 @@ export async function scan(protocol: Protocol) {
   session.error = "";
   session.devices = [];
   try {
-    session.devices = await invoke<Device[]>("discover_devices", { protocol });
+    let devices = await invoke<Device[]>("discover_devices", { protocol });
+    // A first mDNS browse can legitimately come back empty even when a
+    // device is right there -- the OS-level responder (Bonjour/Avahi)
+    // sometimes hasn't finished caching the advertisement yet, especially
+    // for _airplay._tcp. An immediate second browse reliably finds it
+    // because the responder's cache is now warm. Retry once here rather
+    // than surface a false-negative "not found" error the user then has to
+    // clear by hitting Scan again themselves.
+    if (devices.length === 0) {
+      devices = await invoke<Device[]>("discover_devices", { protocol });
+    }
+    session.devices = devices;
     if (session.devices.length === 0) {
       session.error = describeNetworkError(`No ${PROTOCOL_LABEL[protocol]} devices found on the network.`);
     }
