@@ -116,24 +116,15 @@ body {
   gap: 9px;
 }
 
-/* The app mark: a rounded screen shape with a lit pixel in it. */
+/* The app mark: the actual app icon (src-tauri/icons/icon.png, via
+   static/nav-mark.png), scaled down for the nav bar. */
 .nav-mark {
   flex: none;
-  width: 24px;
-  height: 27px;
-  border-radius: 8px 8px 13px 13px;
-  background: var(--accent);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.nav-mark::after {
-  content: "";
-  width: 8px;
-  height: 8px;
-  border-radius: 2px;
-  background: var(--bg);
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  object-fit: cover;
+  display: block;
 }
 
 .navbar h1 {

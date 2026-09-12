@@ -32,7 +32,7 @@
     {#if canGoBack}
       <button type="button" class="nav-back" onclick={onBack}>‹ Back</button>
     {:else}
-      <span class="nav-mark" aria-hidden="true"></span>
+      <img src="/nav-mark.png" alt="" class="nav-mark" />
     {/if}
     <h1>{title}</h1>
   </div>
