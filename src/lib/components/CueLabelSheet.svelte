@@ -17,6 +17,7 @@
   // creation_set_cue_label.
   import { fmtTime, censorWord } from "$lib/format";
   import { SKIP_CATEGORIES, LANGUAGE_KINDS, languageKindFor, MUTE_MARK_SECS } from "$lib/state/creation.svelte";
+  import { portal } from "$lib/actions";
 
   let {
     mode,
@@ -101,6 +102,7 @@
 
 <div
   class="sheet-backdrop"
+  use:portal
   role="button"
   tabindex="-1"
   aria-label="Close label sheet"

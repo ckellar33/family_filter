@@ -27,6 +27,7 @@
   import OpenControlsPage from "$lib/components/OpenControlsPage.svelte";
   import SelectFilterPage from "$lib/components/SelectFilterPage.svelte";
   import CreateFilterPage from "$lib/components/CreateFilterPage.svelte";
+    import LaunchScreen from "$lib/components/LaunchScreen.svelte";
 
   let activeTab = $state<Tab>("select-filter");
   // Manually opened via NavBar's Devices button (or Open Controls' "connect
@@ -37,6 +38,11 @@
   // comment for why the tab area stays on a splash instead of Select Filter
   // while this is true.
   let launching = $state(true);
+  // Set once LaunchScreen's own animation finishes (its minDuration timer) --
+  // kept separate from `launching` so a fast auto-connect check can't cut the
+  // splash animation short; see `showSplash` below.
+  let splashDone = $state(false);
+  const showSplash = $derived(launching || !splashDone);
 
   // Runs Pair-Verify + bootstraps the control session for saved device
   // `id`, then (on success) brings in the other two modules' post-session
@@ -188,7 +194,6 @@
   // Purely cosmetic label for the sticky nav bar -- doesn't drive any
   // behavior, just names whichever screen is currently showing.
   let navTitle = $derived.by(() => {
-    if (launching) return "Family Filter";
     if (devicesOpen) {
       if (session.page === "checking") return "Family Filter";
       if (session.page === "wizard") {
@@ -246,21 +251,21 @@
 
 <div class="phone-shell">
   <main class="canvas">
-    <NavBar
-      title={navTitle}
-      {canGoBack}
-      onBack={goBack}
-      showDevices={!devicesOpen && !launching}
-      onDevices={openDevices}
-      {connected}
-      {deviceLabel}
-    />
+    {#if !showSplash}
+      <NavBar
+        title={navTitle}
+        {canGoBack}
+        onBack={goBack}
+        showDevices={!devicesOpen}
+        onDevices={openDevices}
+        {connected}
+        {deviceLabel}
+      />
+    {/if}
 
-    <div class="content" class:with-tabbar={!devicesOpen && !launching}>
-      {#if launching}
-        <section class="screen">
-          <p class="hint centered">Checking for a saved device…</p>
-        </section>
+    <div class="content" class:with-tabbar={!devicesOpen && !showSplash}>
+      {#if showSplash}
+        <LaunchScreen onDone={() => { splashDone = true; }}></LaunchScreen>
       {:else if devicesOpen}
         <DevicesPage sessionActive={session.page === "control"} onOpenControls={openControlsFlow} onClose={() => { devicesOpen = false; }} />
       {:else if activeTab === "controls"}
@@ -272,7 +277,7 @@
       {/if}
     </div>
 
-    {#if !devicesOpen && !launching}
+    {#if !devicesOpen && !showSplash}
       <TabBar active={activeTab} onSelect={(tab) => { activeTab = tab; }} />
     {/if}
   </main>
