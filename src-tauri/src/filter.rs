@@ -134,6 +134,89 @@ pub struct FilterList {
     pub media: Vec<MediaEntry>,
 }
 
+/// Renders a cue time as zero-padded "HH:MM:SS.ss" for on-disk filter
+/// files -- lines up with a video's own on-screen timestamp, so a cue can be
+/// eyeballed/hand-edited against what's playing instead of a raw second
+/// count. Keeps two-decimal fractional seconds (the precision cues have
+/// always been authored at) rather than dropping them like a video's own
+/// display does: a mute/skip boundary landing even a few hundred ms off is
+/// audible. Only ever used for the file's on-disk text -- `Cue`'s actual
+/// `start`/`end` fields stay plain `f64` seconds, which is what every other
+/// consumer (evaluation, the creation-mode UI, the frontend over Tauri IPC)
+/// still works in; see `convert_seconds_to_hms_strings`/
+/// `convert_hms_strings_to_seconds` for where the two formats meet.
+fn seconds_to_hms(total: f64) -> String {
+    let total = if total.is_finite() { total.max(0.0) } else { 0.0 };
+    // Rounds to whole centiseconds *before* decomposing into h/m/s/cs via
+    // integer division -- doing that arithmetic in f64 risked e.g. 59.999999
+    // seconds (float imprecision) formatting as "60.00" instead of rolling
+    // over into the next minute.
+    let total_centis = (total * 100.0).round() as u64;
+    let centis = total_centis % 100;
+    let total_secs = total_centis / 100;
+    let secs = total_secs % 60;
+    let total_mins = total_secs / 60;
+    let mins = total_mins % 60;
+    let hours = total_mins / 60;
+    format!("{hours:02}:{mins:02}:{secs:02}.{centis:02}")
+}
+
+/// Inverse of `seconds_to_hms`. Also tolerates "MM:SS[.ss]" (no hours) and a
+/// bare number of seconds as a string, so a hand-typed cue doesn't have to
+/// spell out "00:" every time.
+fn hms_to_seconds(s: &str) -> Result<f64> {
+    let parts: Vec<&str> = s.trim().split(':').collect();
+    let parse = |p: &str| p.parse::<f64>().ok();
+    let value = match parts.as_slice() {
+        [h, m, sec] => parse(h).zip(parse(m)).zip(parse(sec)).map(|((h, m), sec)| h * 3600.0 + m * 60.0 + sec),
+        [m, sec] => parse(m).zip(parse(sec)).map(|(m, sec)| m * 60.0 + sec),
+        [sec] => parse(sec),
+        _ => None,
+    };
+    value.with_context(|| format!("invalid cue time {s:?}, expected \"HH:MM:SS\"/\"MM:SS\" or a plain number of seconds"))
+}
+
+/// Rewrites every cue's `start`/`end` in a filter file's parsed `Value` from
+/// an "HH:MM:SS.ss"-style string to the equivalent number of seconds, so
+/// `serde_json::from_value` afterward can land straight into `Cue`'s plain
+/// `f64` fields regardless of which format the file was written in. A
+/// numeric start/end (older files, or a hand-written one like
+/// `test_filter.json`) passes through untouched -- both formats are always
+/// accepted on read; only `FilterList::save` picks one to write back out.
+fn convert_hms_strings_to_seconds(value: &mut serde_json::Value) -> Result<()> {
+    let Some(media) = value.get_mut("media").and_then(|m| m.as_array_mut()) else { return Ok(()) };
+    for entry in media {
+        let Some(cues) = entry.get_mut("cues").and_then(|c| c.as_array_mut()) else { continue };
+        for cue in cues {
+            for field in ["start", "end"] {
+                if let Some(s) = cue.get(field).and_then(|v| v.as_str()) {
+                    let secs = hms_to_seconds(s)?;
+                    cue[field] = serde_json::json!(secs);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Inverse of `convert_hms_strings_to_seconds` -- rewrites every cue's
+/// numeric `start`/`end` in a serialized filter-file `Value` to
+/// "HH:MM:SS.ss" strings before it's written to disk, so a saved file reads
+/// like a video's own timestamp rather than a raw second count.
+fn convert_seconds_to_hms_strings(value: &mut serde_json::Value) {
+    let Some(media) = value.get_mut("media").and_then(|m| m.as_array_mut()) else { return };
+    for entry in media {
+        let Some(cues) = entry.get_mut("cues").and_then(|c| c.as_array_mut()) else { continue };
+        for cue in cues {
+            for field in ["start", "end"] {
+                if let Some(n) = cue.get(field).and_then(|v| v.as_f64()) {
+                    cue[field] = serde_json::json!(seconds_to_hms(n));
+                }
+            }
+        }
+    }
+}
+
 /// Identifies one cue for the individual-cue on/off toggle: the entry's
 /// normalized title and service, plus its index within that entry's
 /// (sorted-by-start) `cues` -- stable for as long as one `FilterList` stays
@@ -219,7 +302,9 @@ impl FilterList {
     }
 
     fn parse_and_validate(json: &str) -> Result<Self> {
-        let mut list: FilterList = serde_json::from_str(json).context("invalid filter file JSON")?;
+        let mut value: serde_json::Value = serde_json::from_str(json).context("invalid filter file JSON")?;
+        convert_hms_strings_to_seconds(&mut value)?;
+        let mut list: FilterList = serde_json::from_value(value).context("invalid filter file JSON")?;
 
         let mut seen = HashSet::new();
         for entry in &mut list.media {
@@ -451,11 +536,16 @@ impl FilterList {
     }
 
     /// Serializes and writes this list to `path`, pretty-printed for a
-    /// human-readable filter file (matches the hand-authored style of
-    /// `test_filter.json`) -- used to autosave a creation-mode draft after
-    /// every mutation.
+    /// human-readable filter file -- used to autosave a creation-mode draft
+    /// after every mutation. Cue `start`/`end` are written as "HH:MM:SS.ss"
+    /// strings (see `convert_seconds_to_hms_strings`) rather than raw
+    /// seconds, so a saved file reads like a video's own timestamp; `load`
+    /// accepts that format or plain numbers (like `test_filter.json`'s)
+    /// equally, so this never breaks a file written before this existed.
     pub fn save(&self, path: &Path) -> Result<()> {
-        let json = serde_json::to_string_pretty(self).context("failed to serialize filter list")?;
+        let mut value = serde_json::to_value(self).context("failed to serialize filter list")?;
+        convert_seconds_to_hms_strings(&mut value);
+        let json = serde_json::to_string_pretty(&value).context("failed to serialize filter list")?;
         fs::write(path, json).with_context(|| format!("failed to write {}", path.display()))
     }
 }
@@ -1321,5 +1411,68 @@ mod tests {
         let reloaded = FilterList::parse_and_validate(&json).unwrap();
         assert_eq!(reloaded.media.len(), list.media.len());
         assert_eq!(reloaded.find_entry("Some Movie", "").unwrap().cues.len(), 2);
+    }
+
+    #[test]
+    fn seconds_to_hms_formats_hh_mm_ss_hundredths() {
+        assert_eq!(seconds_to_hms(0.0), "00:00:00.00");
+        assert_eq!(seconds_to_hms(1071.02), "00:17:51.02");
+        assert_eq!(seconds_to_hms(3765.78), "01:02:45.78");
+        // Float imprecision near a whole-second boundary must still round
+        // over into the next second/minute rather than printing "60.00".
+        assert_eq!(seconds_to_hms(59.999_999), "00:01:00.00");
+    }
+
+    #[test]
+    fn hms_to_seconds_parses_hh_mm_ss_mm_ss_and_bare_seconds() {
+        assert_eq!(hms_to_seconds("00:17:51.02").unwrap(), 1071.02);
+        assert_eq!(hms_to_seconds("17:51.02").unwrap(), 1071.02);
+        assert_eq!(hms_to_seconds("51.02").unwrap(), 51.02);
+        assert!(hms_to_seconds("not a time").is_err());
+    }
+
+    #[test]
+    fn parse_and_validate_accepts_hms_strings_for_start_and_end() {
+        let json = r#"{
+            "media": [
+                { "title": "Some Movie", "cues": [
+                    { "start": "00:00:10.00", "end": "00:00:20.00", "action": "mute", "category": "language" }
+                ] }
+            ]
+        }"#;
+        let list = FilterList::parse_and_validate(json).unwrap();
+        assert_eq!(list.media[0].cues[0].start, 10.0);
+        assert_eq!(list.media[0].cues[0].end, 20.0);
+    }
+
+    #[test]
+    fn parse_and_validate_still_accepts_plain_numbers() {
+        // test_filter.json and every pre-existing filter file use bare
+        // seconds -- these must keep loading unchanged.
+        let json = r#"{
+            "media": [
+                { "title": "Some Movie", "cues": [
+                    { "start": 10.0, "end": 20.0, "action": "mute", "category": "language" }
+                ] }
+            ]
+        }"#;
+        let list = FilterList::parse_and_validate(json).unwrap();
+        assert_eq!(list.media[0].cues[0].start, 10.0);
+    }
+
+    #[test]
+    fn save_writes_hms_strings_to_disk() {
+        let dir = std::env::temp_dir().join(format!("family_filter_test_{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("out.json");
+        let list = sample_list(); // mute cue at [10.0, 20.0)
+        list.save(&path).unwrap();
+        let written = fs::read_to_string(&path).unwrap();
+        assert!(written.contains("\"00:00:10.00\""));
+        assert!(written.contains("\"00:00:20.00\""));
+        // And it must load back to the exact same seconds.
+        let reloaded = FilterList::load(&path).unwrap();
+        assert_eq!(reloaded.find_entry("Some Movie", "").unwrap().cues[0].start, 10.0);
+        fs::remove_dir_all(&dir).ok();
     }
 }
