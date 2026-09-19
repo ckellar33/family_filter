@@ -199,3 +199,18 @@ export interface ServiceOption {
   service: string;
   path: string;
 }
+
+// One tile in the Select Filter screen's "Online" grid -- see
+// online::list_online_filters. Deduped by title exactly like FilterTile (a
+// title recorded on more than one service gets one poster, not one per
+// service) -- `media` carries every service variant's raw MediaEntry JSON
+// for this title, opaque here, round-tripped straight back to
+// downloadOnlineFilter so the backend doesn't need a second network round
+// trip to fetch what it already just sent down. Unlike FilterTile there's
+// no `path` -- nothing on disk yet for an entry nobody's downloaded.
+export interface OnlineFilterTile {
+  title: string;
+  poster: string | null;
+  cue_count: number;
+  media: unknown[];
+}

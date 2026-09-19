@@ -19,6 +19,7 @@ filter_path.store
 filter_library.store
 filter_enabled.store
 tmdb_api_key.store
+neon_reader_url.store
 last_device.store
 pairings/
 

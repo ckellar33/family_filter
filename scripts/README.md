@@ -1,5 +1,54 @@
 # scripts/
 
+## publish_filter.py
+
+Publishes a local filter file's entries (e.g. anything in `sample-filters/`)
+to the online filter library the app's Select Filter → Online tab browses --
+see `db/schema.sql` for the table this writes to and
+`src-tauri/src/online.rs` for how the app reads it back.
+
+### One-time Neon setup
+
+1. Create a project at [neon.tech](https://neon.tech) (the free tier is
+   plenty for this).
+2. Run `db/schema.sql` against it -- easiest from the Neon console's SQL
+   editor, or `psql "$NEON_DATABASE_URL" -f db/schema.sql`. Give
+   `filter_reader` a real generated password in place of the placeholder
+   before running it (e.g. `python3 -c "import secrets; print(secrets.token_urlsafe(24))"`).
+3. Build `filter_reader`'s connection string (same host as your owner
+   connection string, different user/password -- see below) and paste it
+   into `src-tauri/src/online.rs`'s `READER_CONNECTION_STRING`. That one
+   *is* meant to be committed and shipped in every build, the same way
+   `metadata.rs`'s TMDB key is -- `filter_reader` can't do anything beyond
+   what `db/schema.sql`'s RLS policy already allows (SELECT, `approved`
+   rows only), so there's nothing meaningful for it to leak.
+4. Grab the **owner** connection string too (Neon console → Connect) -- that
+   one's only ever for this script, never the app itself. Don't commit it.
+   (An earlier attempt at an HTTP-only read path via Neon's Data API is why
+   you may also see an `anonymous` Postgres role in the console -- abandoned
+   once every Data API request turned out to need a signed JWT even for
+   that role; harmless to ignore.)
+
+### Setup
+
+```bash
+pip install psycopg2-binary
+export NEON_DATABASE_URL=postgres://<owner>:<password>@<host>/<db>?sslmode=require
+```
+
+### Usage
+
+```bash
+python3 scripts/publish_filter.py sample-filters/the-princess-bride.json
+python3 scripts/publish_filter.py sample-filters/*.json
+```
+
+Every entry publishes as `approved` immediately -- this script is the only
+writer today (see its doc comment for why: it connects with the database
+owner's credentials, which bypass the Row Level Security policy the app
+itself is limited to). Re-running for a title+service already published
+overwrites its cues rather than duplicating.
+
 ## build_language_filter.py
 
 Downloads a movie's captions from [SubDL](https://subdl.com/),

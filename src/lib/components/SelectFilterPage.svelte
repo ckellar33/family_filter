@@ -9,6 +9,8 @@
   import {
     filterState,
     loadTiles,
+    loadOnlineTiles,
+    downloadOnlineFilter,
     openTitle,
     selectTile,
     addFilterFiles,
@@ -45,6 +47,19 @@
 
   $effect(() => {
     loadTiles();
+  });
+
+  // Which grid is showing when nothing's open in detail: the local library
+  // (default) or the shared online one. Only ever fetched once each is
+  // first switched to -- switching back to a grid already loaded just shows
+  // what's already there rather than re-fetching (matches how `tiles`
+  // itself isn't re-loaded on every visit either).
+  let gridSource = $state<"local" | "online">("local");
+
+  $effect(() => {
+    if (gridSource === "online" && filterState.onlineTiles.length === 0 && !filterState.onlineTilesLoading) {
+      loadOnlineTiles();
+    }
   });
 
   // The open detail's cues, grouped by category, for the categories-as-a-
@@ -203,34 +218,77 @@
       </ul>
     {/if}
   {:else}
-    {#if filterState.tilesError}
-      <p class="banner error">{filterState.tilesError}</p>
-    {/if}
+    <!-- My Filters (this device's local library) vs Online (the shared
+         Neon-backed library, see online.rs) -- same tab bar shape as the
+         service switcher above, not a NavBar-level thing, since it only
+         ever matters within this one screen. -->
+    <div class="category-buttons">
+      <button type="button" class="category-btn" class:selected={gridSource === "local"} onclick={() => (gridSource = "local")}>
+        My Filters
+      </button>
+      <button type="button" class="category-btn" class:selected={gridSource === "online"} onclick={() => (gridSource = "online")}>
+        Online
+      </button>
+    </div>
 
-    {#if filterState.tilesLoading && filterState.tiles.length === 0}
-      <p class="hint centered">Loading filters…</p>
-    {:else if filterState.tiles.length === 0}
-      <EmptyState
-        kind="no-filters"
-        onPrimary={addFilterFiles}
-        onSecondary={onRecordInstead}
-        onTertiary={filterState.folderImportSupported ? addFilterDirectory : undefined}
-      />
-    {:else}
-      <div class="stack">
-        <div style="display:flex; gap:9px">
-          <button class="btn-secondary" style="min-height:46px" onclick={addFilterFiles}>Add file…</button>
-          {#if filterState.folderImportSupported}
-            <button class="btn-secondary" style="min-height:46px" onclick={addFilterDirectory}>Add folder…</button>
-          {/if}
+    {#if gridSource === "local"}
+      {#if filterState.tilesError}
+        <p class="banner error">{filterState.tilesError}</p>
+      {/if}
+
+      {#if filterState.tilesLoading && filterState.tiles.length === 0}
+        <p class="hint centered">Loading filters…</p>
+      {:else if filterState.tiles.length === 0}
+        <EmptyState
+          kind="no-filters"
+          onPrimary={addFilterFiles}
+          onSecondary={onRecordInstead}
+          onTertiary={filterState.folderImportSupported ? addFilterDirectory : undefined}
+        />
+      {:else}
+        <div class="stack">
+          <div style="display:flex; gap:9px">
+            <button class="btn-secondary" style="min-height:46px" onclick={addFilterFiles}>Add file…</button>
+            {#if filterState.folderImportSupported}
+              <button class="btn-secondary" style="min-height:46px" onclick={addFilterDirectory}>Add folder…</button>
+            {/if}
+          </div>
         </div>
-      </div>
-      <p class="footnote">{filterState.tiles.length} {filterState.tiles.length === 1 ? "title" : "titles"}</p>
-      <div class="poster-grid">
-        {#each filterState.tiles as tile (tile.title)}
-          <PosterTile title={tile.title} poster={tile.poster} cueCount={tile.cue_count} onclick={() => openTitle(tile.title)} />
-        {/each}
-      </div>
+        <p class="footnote">{filterState.tiles.length} {filterState.tiles.length === 1 ? "title" : "titles"}</p>
+        <div class="poster-grid">
+          {#each filterState.tiles as tile (tile.title)}
+            <PosterTile title={tile.title} poster={tile.poster} cueCount={tile.cue_count} onclick={() => openTitle(tile.title)} />
+          {/each}
+        </div>
+      {/if}
+    {:else}
+      {#if filterState.onlineTilesError}
+        <p class="banner error">{filterState.onlineTilesError}</p>
+      {/if}
+
+      {#if filterState.downloadingTitle}
+        <p class="hint centered">Downloading “{filterState.downloadingTitle}”…</p>
+      {/if}
+
+      {#if filterState.onlineTilesLoading && filterState.onlineTiles.length === 0}
+        <p class="hint centered">Loading online filters…</p>
+      {:else if filterState.onlineTiles.length === 0 && !filterState.onlineTilesError}
+        <p class="hint centered">Nothing in the online library yet.</p>
+      {:else}
+        <p class="footnote">
+          {filterState.onlineTiles.length} {filterState.onlineTiles.length === 1 ? "title" : "titles"} — tap one to add it to My Filters
+        </p>
+        <div class="poster-grid">
+          {#each filterState.onlineTiles as tile (tile.title)}
+            <PosterTile
+              title={tile.title}
+              poster={tile.poster}
+              cueCount={tile.cue_count}
+              onclick={() => downloadOnlineFilter(tile)}
+            />
+          {/each}
+        </div>
+      {/if}
     {/if}
   {/if}
 </section>

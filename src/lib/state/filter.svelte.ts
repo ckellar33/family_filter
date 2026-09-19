@@ -8,7 +8,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { session, refreshPlayback } from "$lib/state/session.svelte";
-import type { Cue, FilterEntryDetail, FilterSummary, FilterTile, ServiceOption } from "$lib/types";
+import type { Cue, FilterEntryDetail, FilterSummary, FilterTile, OnlineFilterTile, ServiceOption } from "$lib/types";
 
 export const filterState = $state({
   // Auto-filter mode: a loaded cue file (filterSummary), the master on/off
@@ -59,6 +59,17 @@ export const filterState = $state({
   // doc and creationState's own use of this in pickNewDraft). Same
   // starts-true-corrects-itself reasoning as folderImportSupported above.
   saveLocationPickerSupported: true,
+
+  // Select Filter screen's "Online" grid -- browsing the shared Neon-backed
+  // library (see online::list_online_filters), separate from `tiles` above
+  // (the local library) since they're two different backends with two
+  // different empty/error states. `downloadingTitle` names whichever tile
+  // is mid-download, so its tile can show a busy state without a second
+  // boolean per tile.
+  onlineTiles: [] as OnlineFilterTile[],
+  onlineTilesLoading: false,
+  onlineTilesError: "",
+  downloadingTitle: null as string | null,
 });
 
 invoke<boolean>("supports_folder_import")
@@ -153,6 +164,39 @@ export async function loadTiles() {
     filterState.tilesError = String(e);
   } finally {
     filterState.tilesLoading = false;
+  }
+}
+
+// Every approved entry in the shared online library, for the Select Filter
+// screen's "Online" grid -- backed by online::list_online_filters, which
+// resolves posters the same cached-TMDB way list_filter_tiles does for
+// local tiles (the database itself never stores cover art).
+export async function loadOnlineTiles() {
+  filterState.onlineTilesLoading = true;
+  filterState.onlineTilesError = "";
+  try {
+    filterState.onlineTiles = await invoke<OnlineFilterTile[]>("list_online_filters");
+  } catch (e) {
+    filterState.onlineTilesError = String(e);
+  } finally {
+    filterState.onlineTilesLoading = false;
+  }
+}
+
+// What tapping an online tile does: downloads it into the local library
+// (see online::download_online_filter) and opens straight into it, exactly
+// like tapping a local tile would -- there's no separate "add" step, since
+// there's nothing useful to do with an online entry other than add it.
+export async function downloadOnlineFilter(tile: OnlineFilterTile) {
+  filterState.onlineTilesError = "";
+  filterState.downloadingTitle = tile.title;
+  try {
+    await invoke("download_online_filter", { title: tile.title, media: tile.media });
+    await openTitle(tile.title);
+  } catch (e) {
+    filterState.onlineTilesError = String(e);
+  } finally {
+    filterState.downloadingTitle = null;
   }
 }
 

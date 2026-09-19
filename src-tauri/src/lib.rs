@@ -4,6 +4,7 @@ mod creation;
 mod filter;
 mod library;
 mod metadata;
+mod online;
 mod pairing;
 mod paths;
 mod saved;
@@ -25,6 +26,16 @@ fn greet(name: &str) -> String {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Installs `ring` as the process-wide default rustls crypto provider --
+    // needed before `online.rs`'s direct Postgres connection can build a
+    // `rustls::ClientConfig` (its `builder()` panics without one already
+    // installed). Best-effort: if reqwest's own rustls-tls setup already
+    // installed a (possibly different) default first, this just fails
+    // harmlessly and that one is used instead -- either backend is fine for
+    // a plain TLS connection to Neon, so there's nothing to actually handle
+    // in the `Err` case.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
@@ -84,6 +95,8 @@ pub fn run() {
             control::list_filter_tiles,
             control::list_services_for_title,
             control::select_filter_tile,
+            online::list_online_filters,
+            online::download_online_filter,
             creation::creation_new_draft,
             creation::creation_open_draft,
             creation::creation_close_draft,
