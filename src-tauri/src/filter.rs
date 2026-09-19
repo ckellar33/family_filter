@@ -199,6 +199,32 @@ fn convert_hms_strings_to_seconds(value: &mut serde_json::Value) -> Result<()> {
     Ok(())
 }
 
+/// Parses a lone `MediaEntry` JSON value -- the shape `online.rs` gets back
+/// per row from the `online_filters` table's `media` column, as opposed to
+/// a whole `{"media": [...]}` filter file -- tolerating the same "HH:MM:
+/// SS.ss"-or-plain-seconds ambiguity `convert_hms_strings_to_seconds`
+/// handles for a full file. Without this, a row published from a file
+/// already in the human-readable format (anything published after the
+/// convert-to-HH:MM:SS change) would fail to deserialize here -- `Cue::
+/// start`/`end` are plain `f64`, which serde_json refuses to pull out of a
+/// JSON string -- and silently vanish from the Online grid, while an
+/// older, still-numeric row kept showing. Used by both `list_online_
+/// filters`'s per-row validity check and its cue-count badge lookup, so
+/// the two can never disagree about which rows are parseable.
+pub fn media_entry_from_value(mut value: serde_json::Value) -> Result<MediaEntry> {
+    if let Some(cues) = value.get_mut("cues").and_then(|c| c.as_array_mut()) {
+        for cue in cues {
+            for field in ["start", "end"] {
+                if let Some(s) = cue.get(field).and_then(|v| v.as_str()) {
+                    let secs = hms_to_seconds(s)?;
+                    cue[field] = serde_json::json!(secs);
+                }
+            }
+        }
+    }
+    serde_json::from_value(value).context("invalid media entry JSON")
+}
+
 /// Inverse of `convert_hms_strings_to_seconds` -- rewrites every cue's
 /// numeric `start`/`end` in a serialized filter-file `Value` to
 /// "HH:MM:SS.ss" strings before it's written to disk, so a saved file reads

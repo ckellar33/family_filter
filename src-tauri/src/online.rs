@@ -37,7 +37,7 @@ use tokio_postgres::Client;
 use tokio_postgres_rustls::MakeRustlsConnect;
 
 use crate::control::describe;
-use crate::filter::{self, FilterList, MediaEntry};
+use crate::filter::{self, FilterList};
 use crate::{library, metadata};
 
 /// `filter_reader`'s connection string -- see this module's doc comment for
@@ -138,8 +138,12 @@ pub async fn list_online_filters(app: AppHandle) -> Result<Vec<OnlineFilterTile>
         // know) just drops that one service variant -- same "skip, don't
         // fail the whole load" tolerance list_filter_tiles gives an
         // unloadable local file -- rather than losing every other variant
-        // of the same title along with it.
-        if serde_json::from_value::<MediaEntry>(media.clone()).is_err() {
+        // of the same title along with it. Goes through `media_entry_from_
+        // value` (not a bare `serde_json::from_value::<MediaEntry>`) so a
+        // row published in the newer "HH:MM:SS.ss" cue-time format doesn't
+        // get mistaken for one of these and dropped -- see that function's
+        // doc comment.
+        if filter::media_entry_from_value(media.clone()).is_err() {
             continue;
         }
 
@@ -155,7 +159,7 @@ pub async fn list_online_filters(app: AppHandle) -> Result<Vec<OnlineFilterTile>
         let (title, media) = groups.remove(&key).expect("just inserted");
         let cue_count = media
             .first()
-            .and_then(|m| serde_json::from_value::<MediaEntry>(m.clone()).ok())
+            .and_then(|m| filter::media_entry_from_value(m.clone()).ok())
             .map(|e| e.cues.len())
             .unwrap_or(0);
         let poster = metadata::poster_data_uri(&app, &title).await;
@@ -183,9 +187,24 @@ pub fn download_online_filter(title: String, media: Vec<serde_json::Value>) -> R
     let json = serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?;
     std::fs::write(&path, json).map_err(|e| format!("failed to save {}: {e}", path.display()))?;
 
-    if let Err(e) = FilterList::load(&path) {
-        let _ = std::fs::remove_file(&path);
-        return Err(format!("{title} isn't a valid filter entry: {}", describe(&e)));
+    let list = match FilterList::load(&path) {
+        Ok(list) => list,
+        Err(e) => {
+            let _ = std::fs::remove_file(&path);
+            return Err(format!("{title} isn't a valid filter entry: {}", describe(&e)));
+        }
+    };
+    // Re-save through `FilterList::save` rather than trusting the row's
+    // `media` JSON verbatim -- a row published before cue times switched to
+    // "HH:MM:SS.ss" (see filter.rs's `seconds_to_hms`) still holds raw
+    // seconds, and `load` above tolerates either format on read but doesn't
+    // rewrite anything. Without this, a downloaded file could silently land
+    // on disk in the old format while every locally-authored one is in the
+    // new one. Best-effort: a failure here just leaves the file in whatever
+    // format the row had, same as before this existed -- not worth failing
+    // the whole download over.
+    if let Err(e) = list.save(&path) {
+        eprintln!("[online] failed to normalize downloaded filter {}: {e}", path.display());
     }
 
     library::register_filter_path(&path).map_err(|e| describe(&e))

@@ -1826,3 +1826,132 @@ code {
 .chip:active {
   transform: scale(0.97);
 }
+
+/* ── Search field ────────────────────────────────────── */
+
+.search-field {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 46px;
+  padding: 0 14px;
+  border-radius: var(--r-md);
+  background: var(--card-bg);
+  border: 1px solid rgba(0, 0, 0, 0.09);
+}
+
+.search-field:focus-within {
+  border-color: var(--accent-line);
+}
+
+.search-icon {
+  flex: none;
+  font-size: 14px;
+  color: var(--tertiary-label);
+}
+
+/* Reset the platform search input hard: Safari/WKWebView give type=search
+   its own inset shadow, rounded box and a clear button we replace below. */
+.search-field input {
+  all: unset;
+  box-sizing: border-box;
+  flex: 1;
+  min-width: 0;
+  min-height: 44px;
+  font-family: var(--ui);
+  font-size: 14.5px;
+  color: var(--label);
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.search-field input::placeholder {
+  color: var(--tertiary-label);
+}
+
+.search-field input::-webkit-search-cancel-button,
+.search-field input::-webkit-search-decoration {
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.search-clear {
+  all: unset;
+  box-sizing: border-box;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--grouped-bg);
+  color: var(--secondary-label);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.search-clear:active {
+  opacity: 0.6;
+}
+
+/* ── Scope tabs (this device / online) ───────────────── */
+
+/* Underline tabs, not buttons: they scope the search above rather than
+   navigate, so they should read as quieter than it. The shared bottom
+   hairline is on the row; each tab paints its own rule over it. */
+.scope-tabs {
+  display: flex;
+  gap: 22px;
+  border-bottom: 1px solid var(--separator);
+}
+
+.scope-tab {
+  all: unset;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  min-height: 44px;
+  justify-content: center;
+  cursor: pointer;
+  color: var(--secondary-label);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.scope-tab.selected {
+  color: var(--label);
+  font-weight: 700;
+}
+
+.scope-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.scope-count {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--tertiary-label);
+}
+
+.scope-tab.selected .scope-count {
+  color: var(--secondary-label);
+}
+
+/* Sits on top of .scope-tabs' hairline, hence the -1px pull. */
+.scope-rule {
+  height: 2px;
+  margin-bottom: -1px;
+  border-radius: 2px;
+  background: transparent;
+}
+
+.scope-tab.selected .scope-rule {
+  background: var(--accent);
+}

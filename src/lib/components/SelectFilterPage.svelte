@@ -56,6 +56,21 @@
   // itself isn't re-loaded on every visit either).
   let gridSource = $state<"local" | "online">("local");
 
+  // Search is the primary control on this screen: it filters whichever
+  // library is in scope, client-side over the tiles already loaded (both
+  // lists are whole-library fetches, so there's nothing to round-trip
+  // for). The query deliberately survives a scope switch -- "not in mine,
+  // is it online?" is the common move.
+  let query = $state("");
+
+  function matches(title: string) {
+    const q = query.trim().toLowerCase();
+    return q === "" || title.toLowerCase().includes(q);
+  }
+
+  let shownTiles = $derived(filterState.tiles.filter((t) => matches(t.title)));
+  let shownOnlineTiles = $derived(filterState.onlineTiles.filter((t) => matches(t.title)));
+
   $effect(() => {
     if (gridSource === "online" && filterState.onlineTiles.length === 0 && !filterState.onlineTilesLoading) {
       loadOnlineTiles();
@@ -222,12 +237,26 @@
          Neon-backed library, see online.rs) -- same tab bar shape as the
          service switcher above, not a NavBar-level thing, since it only
          ever matters within this one screen. -->
-    <div class="category-buttons">
-      <button type="button" class="category-btn" class:selected={gridSource === "local"} onclick={() => (gridSource = "local")}>
-        My Filters
+    <!-- Search leads; the two libraries are scope tabs under it rather than
+         a pair of buttons, since the online library outgrows browsing. -->
+    <div class="search-field">
+      <span class="search-icon" aria-hidden="true">⌕</span>
+      <input type="search" placeholder="Search titles" bind:value={query} autocapitalize="none" autocorrect="off" spellcheck="false" />
+      {#if query !== ""}
+        <button type="button" class="search-clear" onclick={() => (query = "")} aria-label="Clear search">×</button>
+      {/if}
+    </div>
+
+    <div class="scope-tabs">
+      <button type="button" class="scope-tab" class:selected={gridSource === "local"} onclick={() => (gridSource = "local")}>
+        <span class="scope-label">On this device <span class="scope-count">{filterState.tiles.length}</span></span>
+        <span class="scope-rule"></span>
       </button>
-      <button type="button" class="category-btn" class:selected={gridSource === "online"} onclick={() => (gridSource = "online")}>
-        Online
+      <button type="button" class="scope-tab" class:selected={gridSource === "online"} onclick={() => (gridSource = "online")}>
+        <span class="scope-label"
+          >Online{#if filterState.onlineTiles.length > 0}<span class="scope-count">{filterState.onlineTiles.length}</span>{/if}</span
+        >
+        <span class="scope-rule"></span>
       </button>
     </div>
 
@@ -254,9 +283,18 @@
             {/if}
           </div>
         </div>
-        <p class="footnote">{filterState.tiles.length} {filterState.tiles.length === 1 ? "title" : "titles"}</p>
+        <p class="footnote">
+          {#if query.trim() !== ""}
+            {shownTiles.length} of {filterState.tiles.length} {filterState.tiles.length === 1 ? "title" : "titles"}
+          {:else}
+            {filterState.tiles.length} {filterState.tiles.length === 1 ? "title" : "titles"}
+          {/if}
+        </p>
+        {#if shownTiles.length === 0}
+          <p class="hint centered">No titles on this device match “{query.trim()}” — try Online.</p>
+        {/if}
         <div class="poster-grid">
-          {#each filterState.tiles as tile (tile.title)}
+          {#each shownTiles as tile (tile.title)}
             <PosterTile title={tile.title} poster={tile.poster} cueCount={tile.cue_count} onclick={() => openTitle(tile.title)} />
           {/each}
         </div>
@@ -276,10 +314,18 @@
         <p class="hint centered">Nothing in the online library yet.</p>
       {:else}
         <p class="footnote">
-          {filterState.onlineTiles.length} {filterState.onlineTiles.length === 1 ? "title" : "titles"} — tap one to add it to My Filters
+          {#if query.trim() !== ""}
+            {shownOnlineTiles.length} of {filterState.onlineTiles.length} match — tap one to add it to this device
+          {:else}
+            {filterState.onlineTiles.length}
+            {filterState.onlineTiles.length === 1 ? "title" : "titles"} — tap one to add it to this device
+          {/if}
         </p>
+        {#if shownOnlineTiles.length === 0}
+          <p class="hint centered">Nothing in the online library matches “{query.trim()}”.</p>
+        {/if}
         <div class="poster-grid">
-          {#each filterState.onlineTiles as tile (tile.title)}
+          {#each shownOnlineTiles as tile (tile.title)}
             <PosterTile
               title={tile.title}
               poster={tile.poster}
