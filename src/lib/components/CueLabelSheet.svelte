@@ -17,7 +17,7 @@
   // creation_set_cue_label.
   import { fmtTime, censorWord } from "$lib/format";
   import { SKIP_CATEGORIES, LANGUAGE_KINDS, languageKindFor, MUTE_MARK_SECS } from "$lib/state/creation.svelte";
-  import { portal } from "$lib/actions";
+  import { portal, swipeDownToClose } from "$lib/actions";
 
   let {
     mode,
@@ -110,7 +110,7 @@
   onkeydown={(e) => e.key === "Escape" && onClose()}
 >
   <div class="sheet" role="dialog" aria-label="Label cue" onclick={(e) => e.stopPropagation()} onkeydown={() => {}} tabindex="-1">
-    <div class="sheet-grabber"></div>
+    <div class="sheet-grabber" use:swipeDownToClose={onClose}></div>
 
     <div class="sheet-head">
       <h2 class="sheet-title">{title}</h2>

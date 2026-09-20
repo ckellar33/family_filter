@@ -15,7 +15,7 @@
   // not here -- this sheet only ever touches timing.
   import { fmtTime, parseTime } from "$lib/format";
   import { session, doSeek } from "$lib/state/session.svelte";
-  import { portal } from "$lib/actions";
+  import { portal, swipeDownToClose } from "$lib/actions";
   import type { CategoryDef } from "$lib/types";
 
   let {
@@ -101,7 +101,7 @@
   onkeydown={(e) => e.key === "Escape" && onClose()}
 >
   <div class="sheet" role="dialog" aria-label="Edit cue" onclick={(e) => e.stopPropagation()} onkeydown={() => {}} tabindex="-1">
-    <div class="sheet-grabber"></div>
+    <div class="sheet-grabber" use:swipeDownToClose={onClose}></div>
 
     <div class="list-row static" style="padding:0; min-height:auto">
       <span class="cue-pill" data-action={action}>{action === "mute" ? "MUTE" : "SKIP"}</span>

@@ -1282,11 +1282,28 @@ code {
 }
 
 .sheet-grabber {
+  position: relative;
   width: 44px;
   height: 5px;
   border-radius: 3px;
   background: rgba(0, 0, 0, 0.16);
   align-self: center;
+  cursor: grab;
+  /* Without this, the browser's own default touch handling (treating a
+     vertical drag as a page pan/scroll) competes with swipeDownToClose's
+     pointer listeners for the same gesture, making drags register as
+     erratic/partial instead of a clean, continuous pointer track. */
+  touch-action: none;
+}
+
+/* The visible 44x5px pill is too small a target to reliably grab -- this
+   extends the actual hit area well past it (invisibly) without changing
+   how big it looks, same "small visual, bigger invisible tap target"
+   pattern a real iOS grabber handle uses. */
+.sheet-grabber::after {
+  content: "";
+  position: absolute;
+  inset: -16px -24px;
 }
 
 .cue-window {
