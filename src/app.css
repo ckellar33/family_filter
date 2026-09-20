@@ -1057,6 +1057,18 @@ code {
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
+  /* Explicit, rather than relying on a flex/block box's usual "fill the
+     containing block" default -- a <button>'s width, even after `all:
+     unset` resets `display` away from the UA stylesheet's `inline-block`,
+     still isn't reliably filling `.poster-tile-wrap`'s full grid-column
+     width for every tile: a short one-word title (e.g. "Hook", "Star Wars")
+     rendered its whole tile -- poster art included, since that's `width:
+     100%` of *this* box -- collapsed down to roughly the title text's own
+     width, while a longer title that wraps to two lines happened to still
+     read as full width. See the "cover art gets smaller" conversation for
+     the screenshots this was diagnosed from -- forcing it here removes the
+     dependency on whatever auto-sizing quirk was behind that correlation. */
+  width: 100%;
   gap: 8px;
   cursor: pointer;
   text-align: left;
@@ -1069,6 +1081,18 @@ code {
 .poster-art {
   position: relative;
   width: 100%;
+  /* `aspect-ratio` -- NOT the percentage-padding trick tried here earlier
+     (see git blame/conversation history if curious): that trick computes
+     `padding-top`'s percentage against the *containing block's* width, not
+     this element's own resolved width, which broke `.detail-header .poster-
+     art` below the moment it overrides `width` to something narrower than
+     its flex-row parent (e.g. 92px in a full-width row) -- produced a
+     massively-too-tall box there. `aspect-ratio` doesn't have that
+     dependency (it's always based on the element's own box), so it's both
+     the simpler and the actually-correct property for a box whose width can
+     be overridden per context the way this one is. The still-unexplained
+     "some tiles' cover art is tiny in the grid" bug is being chased
+     separately, and turned out unrelated to this property either way. */
   aspect-ratio: 2 / 3;
   border-radius: 16px;
   border: 1px solid rgba(0, 0, 0, 0.08);
@@ -1087,6 +1111,9 @@ code {
 }
 
 .poster-placeholder {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: #8b857c;
   font-family: var(--mono);
   font-size: 10.5px;
   color: #8b857c;
@@ -1115,6 +1142,37 @@ code {
   font-size: 9.5px;
   font-weight: 700;
   letter-spacing: 0.06em;
+}
+
+/* "On this device" grid's delete action -- a sibling positioned over the
+   PosterTile's corner (opposite the cue-count badge) rather than built into
+   the tile itself, since PosterTile's whole surface is already one <button>
+   and a nested interactive element isn't valid there. */
+.poster-tile-wrap {
+  position: relative;
+  width: 100%;
+}
+
+.poster-delete {
+  all: unset;
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.poster-delete:active {
+  background: var(--destructive);
 }
 
 .detail-header {

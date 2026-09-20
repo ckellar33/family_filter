@@ -602,6 +602,22 @@ pub fn save_filter_path(path: &Path) -> Result<()> {
     fs::write(dir.join(FILTER_PATH_STORE), path.to_string_lossy().as_bytes()).context("failed to write filter_path.store")
 }
 
+/// Clears `filter_path.store` -- the counterpart to `save_filter_path`, for
+/// `control::delete_filter_file` removing whatever file that store was
+/// pointing at. A no-op (not an error) if the store doesn't exist to begin
+/// with. Best-effort by the same convention every other write here follows
+/// at its call site: a failure just means next launch still tries (and,
+/// tolerantly, fails) to reload a file that's already gone -- see
+/// `check_saved_filter_file`'s own "returns None if the saved path no
+/// longer parses" handling.
+pub fn clear_saved_filter_path() -> Result<()> {
+    let path = crate::paths::data_dir().join(FILTER_PATH_STORE);
+    if path.exists() {
+        fs::remove_file(&path).context("failed to clear filter_path.store")?;
+    }
+    Ok(())
+}
+
 /// `false` (never on by default) if the store is missing or unparseable --
 /// same "nothing to offer yet" tolerance `load_saved_filter_path` has, and
 /// the safer of the two defaults regardless: a corrupt/absent store should

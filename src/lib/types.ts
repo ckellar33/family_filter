@@ -212,5 +212,21 @@ export interface OnlineFilterTile {
   title: string;
   poster: string | null;
   cue_count: number;
-  media: unknown[];
+  // Each element is one service variant's raw MediaEntry JSON -- opaque
+  // (round-tripped straight back to downloadOnlineFilter/
+  // preview_online_entry, not otherwise parsed here) except `service`,
+  // which the in-preview service switcher (see openOnlinePreview) reads
+  // client-side to list the available variants without a network round trip.
+  media: { service?: string }[];
+}
+
+// A read-only look at one OnlineFilterTile.media element -- see
+// online::preview_online_entry. No `disabled_categories`/`enabled` the way
+// FilterEntryDetail has: neither applies to something that isn't loaded as
+// the active filter list.
+export interface OnlinePreviewDetail {
+  title: string;
+  service: string;
+  categories: string[];
+  cues: Cue[];
 }

@@ -725,6 +725,49 @@ pub async fn select_filter_tile(
     Ok(FilterEntryDetail { title: resolved_title, service: resolved_service, categories, disabled_categories, cues, enabled })
 }
 
+/// Removes `path` from the local library outright: deletes the file from
+/// disk and drops it from `filter_library.store` -- the "On this device"
+/// grid's own delete action, a whole title/file at a time, as opposed to
+/// `delete_filter_cue` (one cue within the *active* list). If `path` is
+/// the currently active list, disarms and fully unloads it first -- same
+/// "never leave the family stuck with muted audio" reasoning `set_filter_
+/// enabled(false)` already gives turning the master switch off -- and
+/// clears `filter_path.store` too, so nothing tries to reload a file
+/// that's about to stop existing on next launch.
+#[tauri::command]
+pub async fn delete_filter_file(state: State<'_, ControlStateHandle>, path: String) -> Result<(), String> {
+    let path_buf = PathBuf::from(&path);
+    {
+        let mut guard = state.lock().await;
+        if guard.filter_list_path.as_deref() == Some(path_buf.as_path()) {
+            if guard.filter_runtime.is_muted() {
+                if let Some(live) = guard.live.as_mut() {
+                    let _ = live.unmute().await;
+                }
+            }
+            guard.filter_runtime.reset();
+            guard.disabled_categories.clear();
+            guard.disabled_cues.clear();
+            guard.filter_list = None;
+            guard.filter_list_path = None;
+            guard.filter_enabled = false;
+            if let Err(e) = filter::save_filter_enabled(false) {
+                eprintln!("[filter] failed to persist filter_enabled.store: {e}");
+            }
+            if let Err(e) = filter::clear_saved_filter_path() {
+                eprintln!("[filter] failed to clear filter_path.store: {e}");
+            }
+        }
+    }
+
+    library::unregister_filter_path(&path_buf).map_err(|e| describe(&e))?;
+    // Best-effort: the file being already gone (deleted out from under the
+    // app some other way) is still the outcome this call wants, not a
+    // reason to fail it.
+    let _ = std::fs::remove_file(&path_buf);
+    Ok(())
+}
+
 /// One service variant of a title, as known anywhere in the library (not
 /// just the currently active file) -- `path` is which file it lives in, for
 /// handing straight to `select_filter_tile`.

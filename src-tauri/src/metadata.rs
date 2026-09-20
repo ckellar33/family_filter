@@ -13,7 +13,7 @@
 //! the file's own record of where it was actually watched is more reliable
 //! than a live catalog lookup guessing at it.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
@@ -101,15 +101,52 @@ pub async fn poster_data_uri(app: &AppHandle, title: &str) -> Option<String> {
     let dir = cache_dir(app)?;
     let path = dir.join(format!("{}.jpg", cache_key(title)));
     if let Ok(bytes) = std::fs::read(&path) {
-        return Some(to_data_uri(&bytes));
+        if is_probably_valid_jpeg(&bytes) {
+            return Some(to_data_uri(&bytes));
+        }
+        // A truncated/corrupted cache entry -- e.g. left over from a write
+        // that got interrupted by the app backgrounding or being killed
+        // mid-download, back before write_cache_atomically existed to
+        // prevent that -- would otherwise render as a small broken/partial
+        // image forever, since a cache hit never re-fetches. Drop it and
+        // fall through to a fresh fetch instead, so this self-heals rather
+        // than needing a manual cache clear.
+        let _ = std::fs::remove_file(&path);
     }
 
     let api_key = tmdb_api_key()?;
     let matched = search(title, &api_key).await?;
     let poster_path = matched.poster_path?;
     let bytes = reqwest::get(format!("https://image.tmdb.org/t/p/w342{poster_path}")).await.ok()?.bytes().await.ok()?;
-    let _ = std::fs::write(&path, &bytes);
+    write_cache_atomically(&path, &bytes);
     Some(to_data_uri(&bytes))
+}
+
+/// Whether `bytes` looks like a complete JPEG -- checks the standard SOI/EOI
+/// magic markers (0xFFD8 start, 0xFFD9 end) plus a sane minimum size, so an
+/// empty or half-written cache file is recognized as corrupt rather than
+/// handed to the frontend as if it were real poster art. Not a full JPEG
+/// validator -- just enough to catch "this file got cut off partway
+/// through being written", the only failure mode this cache is actually
+/// exposed to (TMDB itself is trusted to return valid JPEGs).
+fn is_probably_valid_jpeg(bytes: &[u8]) -> bool {
+    bytes.len() > 512 && bytes.starts_with(&[0xFF, 0xD8]) && bytes.ends_with(&[0xFF, 0xD9])
+}
+
+/// Writes `bytes` to `path` via a temp file + rename rather than a plain
+/// `fs::write`, so a write interrupted partway (app backgrounded or killed
+/// mid-download) never leaves a truncated file sitting at `path` for a
+/// later cache read to pick up -- `fs::rename` within the same directory is
+/// atomic, so `path` only ever either doesn't exist yet or holds the
+/// complete file, never a partial one. Best-effort, same tolerance the
+/// plain `fs::write` this replaced already had: a failure just means this
+/// title re-fetches from TMDB next time instead of hitting the cache, not
+/// something worth surfacing.
+fn write_cache_atomically(path: &Path, bytes: &[u8]) {
+    let tmp = path.with_extension("jpg.tmp");
+    if std::fs::write(&tmp, bytes).is_ok() {
+        let _ = std::fs::rename(&tmp, path);
+    }
 }
 
 #[cfg(test)]
@@ -124,5 +161,27 @@ mod tests {
     #[test]
     fn cache_key_is_stable_across_case_and_whitespace() {
         assert_eq!(cache_key("  Star Wars "), cache_key("STAR WARS"));
+    }
+
+    #[test]
+    fn valid_jpeg_bytes_pass() {
+        let mut bytes = vec![0xFF, 0xD8];
+        bytes.extend(std::iter::repeat(0u8).take(600));
+        bytes.extend([0xFF, 0xD9]);
+        assert!(is_probably_valid_jpeg(&bytes));
+    }
+
+    #[test]
+    fn truncated_jpeg_bytes_are_rejected() {
+        // Has the right start marker but got cut off before the end one --
+        // exactly what a write interrupted mid-download leaves behind.
+        let mut bytes = vec![0xFF, 0xD8];
+        bytes.extend(std::iter::repeat(0u8).take(600));
+        assert!(!is_probably_valid_jpeg(&bytes));
+    }
+
+    #[test]
+    fn empty_bytes_are_rejected() {
+        assert!(!is_probably_valid_jpeg(&[]));
     }
 }

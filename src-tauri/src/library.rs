@@ -122,6 +122,22 @@ pub fn register_filter_path(path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Removes `path` from the library if present, then rewrites the store --
+/// the counterpart to `register_filter_path`, for the Filters tab's "On
+/// this device" grid's own delete action (`control::delete_filter_file`).
+/// A no-op (not an error) if `path` was never registered, so it's safe to
+/// call even if the library and the file it's meant to guard have somehow
+/// already drifted apart.
+pub fn unregister_filter_path(path: &Path) -> Result<()> {
+    let mut paths = list_library_paths();
+    let before = paths.len();
+    paths.retain(|p| p != path);
+    if paths.len() != before {
+        save(&paths)?;
+    }
+    Ok(())
+}
+
 /// Every path the library currently knows about, in the order they were
 /// first registered. Returns an empty list rather than an error when the
 /// store is missing or unparseable -- same "nothing to offer yet" tolerance
@@ -187,5 +203,26 @@ mod tests {
         let _guard = TEST_LOCK.lock().unwrap();
         reset();
         assert!(list_library_paths().is_empty());
+    }
+
+    #[test]
+    fn unregister_removes_just_the_one_path() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        reset();
+        register_filter_path(Path::new("a.json")).unwrap();
+        register_filter_path(Path::new("b.json")).unwrap();
+        unregister_filter_path(Path::new("a.json")).unwrap();
+        assert_eq!(list_library_paths(), vec![PathBuf::from("b.json")]);
+        reset();
+    }
+
+    #[test]
+    fn unregister_is_a_no_op_for_an_unknown_path() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        reset();
+        register_filter_path(Path::new("a.json")).unwrap();
+        unregister_filter_path(Path::new("never-registered.json")).unwrap();
+        assert_eq!(list_library_paths(), vec![PathBuf::from("a.json")]);
+        reset();
     }
 }

@@ -8,7 +8,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { session, refreshPlayback } from "$lib/state/session.svelte";
-import type { Cue, FilterEntryDetail, FilterSummary, FilterTile, OnlineFilterTile, ServiceOption } from "$lib/types";
+import type { Cue, FilterEntryDetail, FilterSummary, FilterTile, OnlineFilterTile, OnlinePreviewDetail, ServiceOption } from "$lib/types";
 
 export const filterState = $state({
   // Auto-filter mode: a loaded cue file (filterSummary), the master on/off
@@ -70,6 +70,19 @@ export const filterState = $state({
   onlineTilesLoading: false,
   onlineTilesError: "",
   downloadingTitle: null as string | null,
+
+  // Online grid's tap target: a read-only look at one tile's entry (see
+  // openOnlinePreview), *not* the same as `detail` above -- opening one
+  // doesn't write anything to disk or add it to My Filters, only
+  // downloadOnlineFilter (the preview's own "Add to My Filters" button)
+  // does that. `previewTile` is kept alongside `preview` so the in-preview
+  // service switcher and the eventual download both have the full tile
+  // (every service's raw media, plus poster) without a second network
+  // round trip.
+  onlinePreview: null as OnlinePreviewDetail | null,
+  previewTile: null as OnlineFilterTile | null,
+  onlinePreviewLoading: false,
+  onlinePreviewError: "",
 
   // The open detail's "Publish to Online" button (see publishDetailOnline)
   // -- pushes whatever's currently open back to the shared library, live
@@ -197,20 +210,95 @@ export async function loadOnlineTiles() {
   }
 }
 
-// What tapping an online tile does: downloads it into the local library
-// (see online::download_online_filter) and opens straight into it, exactly
-// like tapping a local tile would -- there's no separate "add" step, since
-// there's nothing useful to do with an online entry other than add it.
+// What tapping an online tile does: opens a read-only preview (see
+// preview_online_entry) rather than downloading anything -- browsing the
+// shared library shouldn't, by itself, write to disk or add a tile to My
+// Filters. Same best-guess-then-switcher pattern openTitle uses for a local
+// title: auto-picks whichever variant matches what's actually playing right
+// now, else just the tile's first, and previewTile carries every variant so
+// switchOnlinePreviewService below never needs a second round trip.
+export async function openOnlinePreview(tile: OnlineFilterTile) {
+  filterState.onlinePreviewError = "";
+  filterState.previewTile = tile;
+  const nowPlayingService = currentlyPlayingService(tile.title);
+  const autoMatch = nowPlayingService ? tile.media.find((m) => (m.service ?? "").toLowerCase() === nowPlayingService.toLowerCase()) : undefined;
+  await loadOnlinePreview(autoMatch ?? tile.media[0]);
+}
+
+// Re-previews a sibling service variant of whichever tile's already open --
+// the preview's own in-detail "switch service" control, mirroring
+// selectTile's local counterpart.
+export async function switchOnlinePreviewService(service: string) {
+  const media = filterState.previewTile?.media.find((m) => (m.service ?? "").toLowerCase() === service.toLowerCase());
+  if (media) await loadOnlinePreview(media);
+}
+
+async function loadOnlinePreview(media: unknown) {
+  filterState.onlinePreviewLoading = true;
+  filterState.onlinePreviewError = "";
+  try {
+    filterState.onlinePreview = await invoke<OnlinePreviewDetail>("preview_online_entry", { media });
+  } catch (e) {
+    filterState.onlinePreviewError = String(e);
+  } finally {
+    filterState.onlinePreviewLoading = false;
+  }
+}
+
+export function closeOnlinePreview() {
+  filterState.onlinePreview = null;
+  filterState.previewTile = null;
+  filterState.onlinePreviewError = "";
+}
+
+// The preview's own "Add to My Filters" button: downloads the *whole tile*
+// (every service variant, not just whichever one's currently previewed --
+// same all-services-together shape download_online_filter has always taken,
+// so a multi-service title still lands as one file with its switcher intact)
+// into the local library (see online::download_online_filter), then closes
+// the preview and refreshes `tiles` so it shows up on "On this device"
+// right away. Deliberately doesn't open straight into the new copy's detail
+// view -- landing back on the grid (see SelectFilterPage.svelte's onclick,
+// which switches the scope tab to "local" right after this resolves) is
+// the actual confirmation that it was added, without forcing an edit
+// session on something you may have only wanted to look at once.
 export async function downloadOnlineFilter(tile: OnlineFilterTile) {
-  filterState.onlineTilesError = "";
+  filterState.onlinePreviewError = "";
   filterState.downloadingTitle = tile.title;
   try {
     await invoke("download_online_filter", { title: tile.title, media: tile.media });
-    await openTitle(tile.title);
+    await loadTiles();
+    closeOnlinePreview();
   } catch (e) {
-    filterState.onlineTilesError = String(e);
+    filterState.onlinePreviewError = String(e);
   } finally {
     filterState.downloadingTitle = null;
+  }
+}
+
+// Removes a title from "My Filters" outright -- the "On this device" grid's
+// own delete action (see control::delete_filter_file), a whole file at a
+// time, as opposed to deleteDetailCue (one cue within whatever's currently
+// open). If the file being removed was the active filter, the backend has
+// already disarmed and unloaded it by the time this returns -- mirror that
+// here so the rest of the app (Open Controls' "no filter loaded" state,
+// etc.) doesn't keep pointing at something that no longer exists.
+export async function deleteFilterFile(path: string) {
+  filterState.tilesError = "";
+  try {
+    await invoke("delete_filter_file", { path });
+    if (filterState.filterSummary?.path === path) {
+      filterState.filterSummary = null;
+      filterState.filterEnabled = false;
+      filterState.categoryEnabled = {};
+    }
+    if (filterState.selectedPath === path) {
+      closeDetail();
+    }
+    await loadTiles();
+    await refreshPlayback();
+  } catch (e) {
+    filterState.tilesError = String(e);
   }
 }
 

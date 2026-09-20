@@ -10,7 +10,11 @@
     filterState,
     loadTiles,
     loadOnlineTiles,
+    openOnlinePreview,
+    switchOnlinePreviewService,
+    closeOnlinePreview,
     downloadOnlineFilter,
+    deleteFilterFile,
     openTitle,
     selectTile,
     addFilterFiles,
@@ -23,7 +27,7 @@
     closeDetail,
     publishDetailOnline,
   } from "$lib/state/filter.svelte";
-  import type { Cue } from "$lib/types";
+  import type { Cue, FilterTile } from "$lib/types";
   import { fmtTime, censorWord } from "$lib/format";
   import PosterTile from "$lib/components/PosterTile.svelte";
   import EmptyState from "$lib/components/EmptyState.svelte";
@@ -57,6 +61,29 @@
   // itself isn't re-loaded on every visit either).
   let gridSource = $state<"local" | "online">("local");
 
+  // The online preview's own "Add to My Filters" button: downloads (see
+  // downloadOnlineFilter's doc comment for why that alone doesn't open
+  // anything), then switches to "On this device" so the new tile is right
+  // there waiting -- the actual confirmation that it landed.
+  async function addPreviewToMyFilters() {
+    const tile = filterState.previewTile;
+    if (!tile) return;
+    await downloadOnlineFilter(tile);
+    gridSource = "local";
+  }
+
+  // "On this device"'s own delete action -- a native confirm rather than a
+  // custom sheet, since this is the first "delete a whole thing" (as
+  // opposed to one cue) action in the app and doesn't need more ceremony
+  // than that. Removing a currently-open title closes its detail view too
+  // (handled inside deleteFilterFile), so there's nothing left pointing at
+  // a file that no longer exists.
+  function confirmDeleteTile(tile: FilterTile) {
+    if (confirm(`Remove "${tile.title}" from My Filters? This deletes it from this device.`)) {
+      deleteFilterFile(tile.path);
+    }
+  }
+
   // Search is the primary control on this screen: it filters whichever
   // library is in scope, client-side over the tiles already loaded (both
   // lists are whole-library fetches, so there's nothing to round-trip
@@ -89,6 +116,18 @@
     return grouped;
   });
 
+  // Same grouping, for the read-only online preview -- kept separate from
+  // cuesByCategory (rather than made to source from either) since detail and
+  // onlinePreview are never open at once and the two views intentionally
+  // diverge (no per-cue/category toggles here, nothing to persist).
+  let previewCuesByCategory = $derived.by(() => {
+    const grouped: Record<string, Cue[]> = {};
+    for (const cue of filterState.onlinePreview?.cues ?? []) {
+      (grouped[cue.category] ??= []).push(cue);
+    }
+    return grouped;
+  });
+
   // Which categories are expanded in the tree. Absent means "default" --
   // expanded whenever there's something to show, so the tree opens up
   // ready-to-read rather than making you click through every category
@@ -98,6 +137,11 @@
   function toggleExpanded(category: string) {
     expandedCategories = { ...expandedCategories, [category]: !(expandedCategories[category] ?? true) };
   }
+
+  // Every service variant of whichever tile's open in the online preview --
+  // the preview's own "switch service" control, read straight off the
+  // already-fetched tile rather than a round trip (see openOnlinePreview).
+  let previewServices = $derived((filterState.previewTile?.media ?? []).map((m) => m.service ?? ""));
 
   // Matches "language" and any "language-*" subcategory (e.g.
   // language-profanity) -- these are the only cues with a `word` worth
@@ -253,6 +297,116 @@
         {/each}
       </ul>
     {/if}
+  {:else if filterState.onlinePreview}
+    {@const preview = filterState.onlinePreview}
+    <!-- Read-only look at an Online tile -- no Enabled switch, no per-
+         category/cue toggles (neither concept applies to something that
+         isn't loaded as the active filter list), just what's in it and a
+         button to actually add it. See openOnlinePreview's doc comment for
+         why tapping a tile lands here instead of downloading straight
+         away. -->
+    {#if filterState.onlinePreviewError}
+      <p class="banner error">{filterState.onlinePreviewError}</p>
+    {/if}
+
+    <button type="button" class="back-link" onclick={closeOnlinePreview}>‹ Online</button>
+
+    <div class="detail-header">
+      <span class="poster-art">
+        {#if filterState.previewTile?.poster}
+          <img src={filterState.previewTile.poster} alt="" />
+        {:else}
+          <span class="poster-placeholder">poster art</span>
+        {/if}
+      </span>
+      <div class="detail-header-info">
+        <p class="title">{preview.title}</p>
+        <p class="hint">{preview.service ? `On ${preview.service}` : "Generic timing (no service specified)"}</p>
+      </div>
+    </div>
+
+    {#if previewServices.length > 1}
+      <p class="section-header">Service — platforms cut this title differently</p>
+      <div class="category-buttons">
+        {#each previewServices as service (service)}
+          <button
+            type="button"
+            class="category-btn"
+            class:selected={service.toLowerCase() === preview.service.toLowerCase()}
+            style="min-height:46px"
+            onclick={() => switchOnlinePreviewService(service)}
+          >
+            {service || "Generic"}
+          </button>
+        {/each}
+      </div>
+    {/if}
+
+    {#if filterState.previewTile}
+      <div class="stack">
+        <button
+          type="button"
+          class="btn-secondary"
+          style="min-height:46px"
+          onclick={addPreviewToMyFilters}
+          disabled={filterState.downloadingTitle !== null}
+        >
+          {filterState.downloadingTitle ? "Adding…" : "Add to My Filters"}
+        </button>
+      </div>
+    {/if}
+
+    {#if preview.categories.length > 0}
+      <p class="section-header">Categories</p>
+      <ul class="list">
+        {#each preview.categories as category (category)}
+          {@const cues = previewCuesByCategory[category] ?? []}
+          {@const isExpanded = expandedCategories[category] ?? true}
+          <li>
+            <div class="list-row category-row">
+              <button
+                type="button"
+                class="category-label"
+                onclick={() => toggleExpanded(category)}
+                disabled={cues.length === 0}
+                aria-expanded={isExpanded}
+              >
+                <span class="cat-dot" data-cat={category}></span>
+                {category}
+                {#if cues.length > 0}<span class="hint">{cues.length} {cues.length === 1 ? "cue" : "cues"}</span>{/if}
+              </button>
+              <button
+                type="button"
+                class="disclosure"
+                class:expanded={isExpanded && cues.length > 0}
+                onclick={() => toggleExpanded(category)}
+                disabled={cues.length === 0}
+                aria-label={`${isExpanded ? "Collapse" : "Expand"} ${category}`}
+              >
+                {cues.length > 0 ? "›" : "·"}
+              </button>
+            </div>
+
+            {#if isExpanded && cues.length > 0}
+              <ul class="list nested-list">
+                {#each cues as cue (cue.index)}
+                  <li class="list-row cue-row static">
+                    <span class="cue-time">{fmtTime(cue.start)}–{fmtTime(cue.end)}</span>
+                    {#if isLanguageCue(cue) && cue.word}
+                      <span class="cue-pill" data-action={cue.action} aria-label={`${cue.action === "mute" ? "MUTE" : "SKIP"}: ${cue.word}`}
+                        >{censorWord(cue.word)}</span
+                      >
+                    {:else}
+                      <span class="cue-pill" data-action={cue.action}>{cue.action === "mute" ? "MUTE" : "SKIP"}</span>
+                    {/if}
+                  </li>
+                {/each}
+              </ul>
+            {/if}
+          </li>
+        {/each}
+      </ul>
+    {/if}
   {:else}
     <!-- My Filters (this device's local library) vs Online (the shared
          Neon-backed library, see online.rs) -- same tab bar shape as the
@@ -316,7 +470,22 @@
         {/if}
         <div class="poster-grid">
           {#each shownTiles as tile (tile.title)}
-            <PosterTile title={tile.title} poster={tile.poster} cueCount={tile.cue_count} onclick={() => openTitle(tile.title)} />
+            <!-- Wrapped rather than built into PosterTile itself: the tile
+                 stays one big tap target (a <button>), and the delete
+                 affordance is a sibling positioned over its corner --
+                 nesting a second interactive element inside that button
+                 wouldn't be valid HTML. -->
+            <div class="poster-tile-wrap">
+              <PosterTile title={tile.title} poster={tile.poster} cueCount={tile.cue_count} onclick={() => openTitle(tile.title)} />
+              <button
+                type="button"
+                class="poster-delete"
+                onclick={() => confirmDeleteTile(tile)}
+                aria-label={`Remove ${tile.title} from My Filters`}
+              >
+                ✕
+              </button>
+            </div>
           {/each}
         </div>
       {/if}
@@ -336,10 +505,10 @@
       {:else}
         <p class="footnote">
           {#if query.trim() !== ""}
-            {shownOnlineTiles.length} of {filterState.onlineTiles.length} match — tap one to add it to this device
+            {shownOnlineTiles.length} of {filterState.onlineTiles.length} match — tap one to preview it
           {:else}
             {filterState.onlineTiles.length}
-            {filterState.onlineTiles.length === 1 ? "title" : "titles"} — tap one to add it to this device
+            {filterState.onlineTiles.length === 1 ? "title" : "titles"} — tap one to preview it
           {/if}
         </p>
         {#if shownOnlineTiles.length === 0}
@@ -351,7 +520,7 @@
               title={tile.title}
               poster={tile.poster}
               cueCount={tile.cue_count}
-              onclick={() => downloadOnlineFilter(tile)}
+              onclick={() => openOnlinePreview(tile)}
             />
           {/each}
         </div>

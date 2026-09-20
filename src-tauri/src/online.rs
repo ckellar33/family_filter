@@ -153,6 +153,58 @@ pub struct OnlineFilterTile {
     pub media: Vec<serde_json::Value>,
 }
 
+/// A read-only look at one online-library entry -- what tapping a tile in
+/// the Online grid opens into, as opposed to `download_online_filter`
+/// actually adding it to My Filters. No `enabled`/`disabled_categories`
+/// fields the way `control::FilterEntryDetail` has: neither concept applies
+/// to something that isn't loaded as the active filter list, so there's
+/// nothing for them to report.
+#[derive(serde::Serialize)]
+pub struct OnlinePreviewDetail {
+    pub title: String,
+    pub service: String,
+    pub categories: Vec<String>,
+    pub cues: Vec<crate::control::CueStatus>,
+}
+
+/// Builds `OnlinePreviewDetail` straight from one `OnlineFilterTile.media`
+/// element -- no database round trip and no disk write, since the frontend
+/// already has every service variant's raw JSON from `list_online_filters`.
+/// Lets someone look at a title's categories/cues before deciding whether
+/// it's worth downloading. Goes through `filter::media_entry_from_value`
+/// (not a bare `serde_json::from_value::<MediaEntry>`), same tolerant
+/// cue-time parsing every other consumer of a raw online-library row gets.
+#[tauri::command]
+pub fn preview_online_entry(media: serde_json::Value) -> Result<OnlinePreviewDetail, String> {
+    let entry = filter::media_entry_from_value(media).map_err(|e| describe(&e))?;
+
+    let mut categories = Vec::new();
+    let mut seen = HashSet::new();
+    for cue in &entry.cues {
+        if seen.insert(cue.category.clone()) {
+            categories.push(cue.category.clone());
+        }
+    }
+
+    let cues = entry
+        .cues
+        .iter()
+        .enumerate()
+        .map(|(index, cue)| crate::control::CueStatus {
+            index,
+            start: cue.start,
+            end: cue.end,
+            action: cue.action,
+            category: cue.category.clone(),
+            enabled: true, // nothing to disable in a preview -- see the struct's doc comment
+            word: cue.word.clone(),
+            note: cue.note.clone(),
+        })
+        .collect();
+
+    Ok(OnlinePreviewDetail { title: entry.title, service: entry.service, categories, cues })
+}
+
 /// Every approved entry in the online library, grouped into one tile per
 /// title, for the Select Filter screen's "Online" grid -- same poster-
 /// lookup treatment `control::list_filter_tiles` gives local tiles (cached
