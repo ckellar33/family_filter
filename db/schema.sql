@@ -1,19 +1,25 @@
 -- Schema for the online filter library (Neon Postgres).
 --
 -- Run this once against a fresh Neon database, in the Neon console's SQL
--- editor (or `psql "$NEON_DATABASE_URL" -f db/schema.sql`). It creates one
--- table, one row per (title, service) filter entry -- the same unit
--- `control::FilterTile`/`MediaEntry` already thinks in on the app side, so
--- downloading a row is just wrapping it back into a one-entry filter file
--- (see src-tauri/src/online.rs).
+-- editor (or `psql "$NEON_DATABASE_URL" -f db/schema.sql`). Safe to re-run
+-- against an existing database too (every statement is `if not exists`/
+-- `create or replace`-shaped) -- that's how the `filter_editor` role below
+-- gets added to a database that only ever had `filter_reader` before. It
+-- creates one table, one row per (title, service) filter entry -- the same
+-- unit `control::FilterTile`/`MediaEntry` already thinks in on the app
+-- side, so downloading a row is just wrapping it back into a one-entry
+-- filter file (see src-tauri/src/online.rs).
 --
--- `status` exists from day one even though only Christopher Kellar can write
--- right now (see publish_filter.py) -- the plan is to eventually let anyone
--- submit a filter through the app itself, landing as 'pending' until
--- reviewed. Nothing about the app's *read* path needs to change when that
--- happens: `filter_reader`'s Row Level Security policy below already only
--- ever exposes 'approved' rows, so review just means flipping a row's
--- status.
+-- `status` exists from day one even though publishing a *new* title is
+-- still owner-only (see publish_filter.py) -- editing an *existing* entry,
+-- on the other hand, can now be pushed straight from the app itself via the
+-- `filter_editor` role below, and always lands as 'approved' (no review
+-- queue yet -- see online.rs's doc comment for the plan to eventually gate
+-- that behind 'pending', the same status this column already anticipated
+-- for a future "let anyone submit a whole new filter" flow). Nothing about
+-- the app's *read* path needs to change when that happens: `filter_reader`'s
+-- Row Level Security policy below already only ever exposes 'approved'
+-- rows, so review just means flipping a row's status.
 --
 -- After this: create a `filter_reader` role for the app itself to connect
 -- as (see the bottom of this file) and give its connection string to
@@ -88,3 +94,51 @@ create policy filter_reader_select_approved on public.online_filters
     for select
     to filter_reader
     using (status = 'approved');
+
+-- The write-capable counterpart to `filter_reader` -- see online.rs's
+-- EDITOR_CONNECTION_STRING doc comment for the tradeoff this represents
+-- (it ships in every build, so it is not "harmless to leak" the way the
+-- reader role's connection string is) and why its grants below are kept as
+-- narrow as the in-app "publish an edit" feature allows: INSERT and UPDATE
+-- only, nothing else -- no DELETE (an edit can only ever add/overwrite a
+-- row, never remove one from the app), no ownership, no DDL. Password here
+-- must match EDITOR_CONNECTION_STRING's -- unlike filter_reader's
+-- 'change-me' placeholder above, there's no confidentiality reason to keep
+-- this one out of the repo (it's shipped in the binary either way), so
+-- it's the real value on purpose.
+do $$
+begin
+    if not exists (select from pg_roles where rolname = 'filter_editor') then
+        create role filter_editor with login password 'qpQECm0ZInwFNSfhvSBLaMBs6fFYZfcb';
+    end if;
+end
+$$;
+
+grant connect on database neondb to filter_editor;
+grant usage on schema public to filter_editor;
+grant select, insert, update on public.online_filters to filter_editor;
+
+-- Read access matches filter_reader's -- an upsert needs to see the row
+-- it's about to conflict with -- but insert/update are unrestricted by row
+-- (`using (true)`/`with check (true)`): there's no per-user identity in
+-- this app to scope "which rows can this install touch" any tighter than
+-- "any of them", so the Postgres grant above (INSERT/UPDATE, no DELETE) is
+-- the actual boundary, not this policy.
+drop policy if exists filter_editor_select on public.online_filters;
+create policy filter_editor_select on public.online_filters
+    for select
+    to filter_editor
+    using (true);
+
+drop policy if exists filter_editor_insert on public.online_filters;
+create policy filter_editor_insert on public.online_filters
+    for insert
+    to filter_editor
+    with check (true);
+
+drop policy if exists filter_editor_update on public.online_filters;
+create policy filter_editor_update on public.online_filters
+    for update
+    to filter_editor
+    using (true)
+    with check (true);

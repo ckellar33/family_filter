@@ -243,6 +243,20 @@ fn convert_seconds_to_hms_strings(value: &mut serde_json::Value) {
     }
 }
 
+/// Serializes one `MediaEntry` to the canonical on-disk JSON shape -- cue
+/// `start`/`end` as "HH:MM:SS.ss" strings, same as what `FilterList::save`
+/// writes for a whole file -- for a caller (`online::publish_media_entry`)
+/// publishing a single entry rather than a whole file. Routes through
+/// `convert_seconds_to_hms_strings` (which expects a whole `{"media":
+/// [...]}` document) via a one-element wrapper, rather than duplicating its
+/// cue-walking logic here -- so this and `FilterList::save` can never drift
+/// on what "canonical" means.
+pub fn media_entry_to_hms_value(entry: &MediaEntry) -> Result<serde_json::Value> {
+    let mut wrapper = serde_json::json!({ "media": [serde_json::to_value(entry).context("failed to serialize media entry")?] });
+    convert_seconds_to_hms_strings(&mut wrapper);
+    Ok(wrapper["media"][0].take())
+}
+
 /// Identifies one cue for the individual-cue on/off toggle: the entry's
 /// normalized title and service, plus its index within that entry's
 /// (sorted-by-start) `cues` -- stable for as long as one `FilterList` stays

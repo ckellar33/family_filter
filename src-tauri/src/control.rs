@@ -472,6 +472,29 @@ pub async fn delete_filter_cue(state: State<'_, ControlStateHandle>, title: Stri
     Ok(())
 }
 
+/// Publishes the active filter list's `(title, service)` entry to the
+/// shared online library -- the Filters tab's own "Publish to Online"
+/// button, letting an edit made there (`update_filter_cue`/`delete_filter_
+/// cue`/etc.) reach every other install without leaving the app, instead of
+/// only ever via `scripts/publish_filter.py` run by hand. Looks the entry
+/// up fresh from `guard.filter_list` rather than trusting whatever the
+/// frontend last saw, same "state is the source of truth" reasoning
+/// `select_filter_tile` already follows -- the actual Postgres write (and
+/// what "goes live immediately, no review queue" means) lives in
+/// `online::publish_media_entry`, next to the rest of this app's Neon
+/// connection logic.
+#[tauri::command]
+pub async fn publish_filter_entry_online(state: State<'_, ControlStateHandle>, title: String, service: String) -> Result<(), String> {
+    let entry = {
+        let guard = state.lock().await;
+        let list = guard.filter_list.as_ref().ok_or_else(|| "no filter list loaded".to_string())?;
+        list.find_entry(&title, &service)
+            .cloned()
+            .ok_or_else(|| format!("{title:?} on {service:?} not found in the active filter file"))?
+    };
+    crate::online::publish_media_entry(&entry).await
+}
+
 /// Registers one or more filter files (chosen via
 /// `@tauri-apps/plugin-dialog`'s native multi-file picker) into the library,
 /// for the Select Filter grid to pick up -- unlike `load_filter_file`, this

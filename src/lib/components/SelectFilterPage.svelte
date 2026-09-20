@@ -21,6 +21,7 @@
     updateDetailCueTime,
     deleteDetailCue,
     closeDetail,
+    publishDetailOnline,
   } from "$lib/state/filter.svelte";
   import type { Cue } from "$lib/types";
   import { fmtTime, censorWord } from "$lib/format";
@@ -165,6 +166,26 @@
         <span class="switch-track"><span class="switch-thumb"></span></span>
       </label>
     </div>
+
+    <!-- Save-button-shaped: only shows up once a cue's actually been
+         retimed/deleted since the last publish (or stays up through a
+         failed attempt, for retrying) -- separate from the master Enabled
+         switch above (that only ever affects this device), since this
+         pushes the edit to every other install, live immediately. -->
+    {#if filterState.hasUnpublishedEdits || filterState.publishBusy || filterState.publishError || filterState.publishedJustNow}
+      <div class="stack">
+        {#if filterState.hasUnpublishedEdits || filterState.publishBusy || filterState.publishError}
+          <button type="button" class="btn-secondary" style="min-height:46px" onclick={publishDetailOnline} disabled={filterState.publishBusy}>
+            {filterState.publishBusy ? "Publishing…" : "Publish edits to Online Library"}
+          </button>
+        {/if}
+        {#if filterState.publishError}
+          <p class="banner error">{filterState.publishError}</p>
+        {:else if filterState.publishedJustNow}
+          <p class="hint">Published — everyone's Online tab will see this update.</p>
+        {/if}
+      </div>
+    {/if}
 
     {#if detail.categories.length > 0}
       <p class="section-header">Categories — tap one to see (and individually toggle) its cues</p>

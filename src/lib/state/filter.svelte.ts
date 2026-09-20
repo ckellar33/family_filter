@@ -70,6 +70,20 @@ export const filterState = $state({
   onlineTilesLoading: false,
   onlineTilesError: "",
   downloadingTitle: null as string | null,
+
+  // The open detail's "Publish to Online" button (see publishDetailOnline)
+  // -- pushes whatever's currently open back to the shared library, live
+  // immediately. Save-button-shaped: `hasUnpublishedEdits` is what actually
+  // gates the button showing at all (set by updateDetailCueTime/
+  // deleteDetailCue, cleared by a successful publish or by opening/
+  // switching entries in selectTile), so it isn't just sitting there
+  // permanently. `publishedJustNow` is a separate one-shot confirmation
+  // flag -- closeDetail/selectTile/any further edit all clear it, so it
+  // only ever shows right after a publish that hasn't been superseded yet.
+  publishBusy: false,
+  publishError: "",
+  publishedJustNow: false,
+  hasUnpublishedEdits: false,
 });
 
 invoke<boolean>("supports_folder_import")
@@ -251,6 +265,9 @@ function currentlyPlayingService(title: string): string | null {
 export async function selectTile(path: string, title: string, service: string) {
   filterState.detailLoading = true;
   filterState.detailError = "";
+  filterState.publishError = "";
+  filterState.publishedJustNow = false;
+  filterState.hasUnpublishedEdits = false;
   try {
     const detail = await invoke<FilterEntryDetail>("select_filter_tile", { path, title, service });
     filterState.detail = detail;
@@ -276,6 +293,35 @@ export function closeDetail() {
   filterState.selectedPath = null;
   filterState.detailError = "";
   filterState.serviceOptions = [];
+  filterState.publishError = "";
+  filterState.publishedJustNow = false;
+  filterState.hasUnpublishedEdits = false;
+}
+
+// Pushes the open detail's (title, service) entry -- cues, categories,
+// words, whatever's been edited in this session -- to the shared online
+// library (see control::publish_filter_entry_online). Goes live for every
+// other install immediately; there's no separate "are you sure" step
+// beyond the button itself only showing up once there's something unsaved
+// to push (see SelectFilterPage.svelte's use of hasUnpublishedEdits),
+// matching how this app already treats deleting a cue.
+export async function publishDetailOnline() {
+  if (!filterState.detail) return;
+  filterState.publishBusy = true;
+  filterState.publishError = "";
+  filterState.publishedJustNow = false;
+  try {
+    await invoke("publish_filter_entry_online", { title: filterState.detail.title, service: filterState.detail.service });
+    filterState.hasUnpublishedEdits = false;
+    filterState.publishedJustNow = true;
+  } catch (e) {
+    // Deliberately leaves hasUnpublishedEdits alone on failure -- the edit
+    // is still unpublished, so the button (and whatever it's gating) must
+    // stay up for a retry.
+    filterState.publishError = String(e);
+  } finally {
+    filterState.publishBusy = false;
+  }
 }
 
 export async function toggleDetailCategory(category: string) {
@@ -341,6 +387,8 @@ export async function updateDetailCueTime(cue: Cue, start: number, end: number) 
       end,
       word: null,
     });
+    filterState.publishedJustNow = false; // the online copy no longer matches what's on screen
+    filterState.hasUnpublishedEdits = true; // ...and now there's something worth showing the Publish button for
     await refreshDetail();
     await refreshPlayback();
   } catch (e) {
@@ -356,6 +404,8 @@ export async function deleteDetailCue(cue: Cue) {
   filterState.detailError = "";
   try {
     await invoke("delete_filter_cue", { title: filterState.detail.title, service: filterState.detail.service, index: cue.index });
+    filterState.publishedJustNow = false; // the online copy no longer matches what's on screen
+    filterState.hasUnpublishedEdits = true; // ...and now there's something worth showing the Publish button for
     await refreshDetail();
     await refreshPlayback();
   } catch (e) {

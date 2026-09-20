@@ -88,6 +88,7 @@ pub fn run() {
             control::set_filter_cue_enabled,
             control::update_filter_cue,
             control::delete_filter_cue,
+            control::publish_filter_entry_online,
             control::add_filter_files,
             control::supports_folder_import,
             control::add_filter_directory,
