@@ -101,12 +101,14 @@
   onkeydown={(e) => e.key === "Escape" && onClose()}
 >
   <div class="sheet" role="dialog" aria-label="Edit cue" onclick={(e) => e.stopPropagation()} onkeydown={() => {}} tabindex="-1">
-    <div class="sheet-grabber" use:swipeDownToClose={onClose}></div>
+    <div class="sheet-drag-region" use:swipeDownToClose={onClose}>
+      <div class="sheet-grabber"></div>
 
-    <div class="list-row static" style="padding:0; min-height:auto">
-      <span class="cue-pill" data-action={action}>{action === "mute" ? "MUTE" : "SKIP"}</span>
-      <span style="flex:1; padding-left:11px; font-size:19px; font-weight:700; text-transform:capitalize">{category}</span>
-      <span class="cue-time">{fmtTime(draftEnd - draftStart)} long</span>
+      <div class="list-row static" style="padding:0; min-height:auto">
+        <span class="cue-pill" data-action={action}>{action === "mute" ? "MUTE" : "SKIP"}</span>
+        <span style="flex:1; padding-left:11px; font-size:19px; font-weight:700; text-transform:capitalize">{category}</span>
+        <span class="cue-time">{fmtTime(draftEnd - draftStart)} long</span>
+      </div>
     </div>
 
     <div class="cue-window">

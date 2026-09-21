@@ -1279,6 +1279,43 @@ code {
   gap: 18px;
   max-height: 88vh;
   overflow: auto;
+  /* Drives both halves of the grabber gesture (see swipeDownToClose in
+     actions.ts): a released-early drag springs back to translateY(0) along
+     this curve, and a committed drag keeps sliding down it to
+     DISMISS_TRAVEL before the sheet actually unmounts. Apple's own
+     sheet-present/dismiss easing, so it reads as the same physics as a
+     native bottom sheet rather than a linear/ease-out web animation. */
+  transition: transform 0.28s cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+/* While a finger/pointer is actually down on the grabber, the sheet must
+   track it 1:1 with zero lag -- the eased .sheet transition above is only
+   for the two moments *after* release (spring back, or finish the
+   dismiss), so it's suspended for the duration of the drag itself. */
+.sheet.dragging {
+  transition: none;
+}
+
+/* Everything draggable at the top of a sheet -- the grabber pill plus
+   whatever inert header row follows it (a title, a category/time summary
+   -- never a button or input, see each sheet's markup) -- wrapped as one
+   region so `swipeDownToClose` (actions.ts) can go on the wrapper instead
+   of just the 44x5px pill. Matches how a native iOS sheet lets you grab
+   anywhere across its top chrome, not only its handle. */
+.sheet-drag-region {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  cursor: grab;
+  /* Without this, the browser's own default touch handling (treating a
+     vertical drag as a page pan/scroll) competes with swipeDownToClose's
+     pointer listeners for the same gesture, making drags register as
+     erratic/partial instead of a clean, continuous pointer track. */
+  touch-action: none;
+}
+
+.sheet-drag-region:active {
+  cursor: grabbing;
 }
 
 .sheet-grabber {
@@ -1288,18 +1325,14 @@ code {
   border-radius: 3px;
   background: rgba(0, 0, 0, 0.16);
   align-self: center;
-  cursor: grab;
-  /* Without this, the browser's own default touch handling (treating a
-     vertical drag as a page pan/scroll) competes with swipeDownToClose's
-     pointer listeners for the same gesture, making drags register as
-     erratic/partial instead of a clean, continuous pointer track. */
-  touch-action: none;
 }
 
 /* The visible 44x5px pill is too small a target to reliably grab -- this
    extends the actual hit area well past it (invisibly) without changing
    how big it looks, same "small visual, bigger invisible tap target"
-   pattern a real iOS grabber handle uses. */
+   pattern a real iOS grabber handle uses. Redundant now that the whole
+   header row next to it is draggable too, but harmless, and keeps the
+   pill itself grabbable even on a sheet with no header row. */
 .sheet-grabber::after {
   content: "";
   position: absolute;

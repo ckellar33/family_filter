@@ -110,11 +110,13 @@
   onkeydown={(e) => e.key === "Escape" && onClose()}
 >
   <div class="sheet" role="dialog" aria-label="Label cue" onclick={(e) => e.stopPropagation()} onkeydown={() => {}} tabindex="-1">
-    <div class="sheet-grabber" use:swipeDownToClose={onClose}></div>
+    <div class="sheet-drag-region" use:swipeDownToClose={onClose}>
+      <div class="sheet-grabber"></div>
 
-    <div class="sheet-head">
-      <h2 class="sheet-title">{title}</h2>
-      <span class="cue-time">{fmtTime(start)} – {fmtTime(end)}</span>
+      <div class="sheet-head">
+        <h2 class="sheet-title">{title}</h2>
+        <span class="cue-time">{fmtTime(start)} – {fmtTime(end)}</span>
+      </div>
     </div>
 
     {#if isMute}

@@ -67,9 +67,11 @@
   onkeydown={(e) => e.key === "Escape" && onClose()}
 >
   <div class="sheet" role="dialog" aria-label="Add cue" onclick={(e) => e.stopPropagation()} onkeydown={() => {}} tabindex="-1">
-    <div class="sheet-grabber" use:swipeDownToClose={onClose}></div>
+    <div class="sheet-drag-region" use:swipeDownToClose={onClose}>
+      <div class="sheet-grabber"></div>
 
-    <p class="section-header" style="margin:0">Add a cue</p>
+      <p class="section-header" style="margin:0">Add a cue</p>
+    </div>
 
     {#if error}
       <p class="banner error">{error}</p>

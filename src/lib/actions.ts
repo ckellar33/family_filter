@@ -23,51 +23,111 @@ export function portal(node: HTMLElement) {
   };
 }
 
-// Lets a sheet's grabber handle (the small pill at its top -- CueEditorSheet
-// and CueLabelSheet both have one) be swiped down to dismiss it, the "drag
-// the visible handle to close" gesture a native bottom sheet gives you. The
-// grabber was purely decorative until this existed -- tapping the backdrop
-// was the only way to close either sheet.
+// Lets a sheet's top drag region -- the grabber pill plus whatever inert
+// header row sits right under it (see each sheet's `.sheet-drag-region`
+// wrapper in its markup) -- be swiped down to dismiss it, the "drag
+// anywhere across the top chrome to close" gesture a native iOS sheet
+// gives you (not just its handle). That region was purely decorative
+// until this existed -- tapping the backdrop was the only way to close
+// any of these sheets.
 //
-// Deliberately scoped to the grabber itself rather than the whole sheet
+// Deliberately scoped to that top region rather than the whole sheet
 // body: `.sheet` can scroll internally (its own `overflow:auto`, for a
 // sheet taller than 88vh) and is full of buttons/inputs, so a whole-body
 // swipe-to-dismiss would have to carefully tell "scrolling content" and
-// "tapping a button" apart from "dragging to close". A dedicated handle
-// sidesteps all of that -- there's nothing else on it to conflict with.
+// "tapping a button" apart from "dragging to close". The drag region is
+// deliberately kept to inert content (a title, a summary row -- never a
+// button or input) so it sidesteps all of that -- there's nothing on it
+// to conflict with.
 //
-// No live drag-follows-your-finger animation, matching how these sheets
-// already just appear/disappear instantly on open/close (tapping the
-// backdrop has never animated either) -- this only detects the gesture and
-// calls `onDismiss` once it crosses the threshold, the same instant close
-// every other dismissal path already gives.
+// Tracks the drag live, iOS-style: the sheet (found via this node's
+// closest `.sheet` ancestor -- see app.css) translates 1:1 with the
+// pointer while it's down, with `.sheet`'s own CSS transition suspended
+// (the `.dragging` class) so there's no lag chasing your finger. On
+// release it goes one of two ways, both handled by that same CSS
+// transition kicking back in: short of THRESHOLD springs back up to
+// translateY(0); past it, the sheet keeps sliding down (to well past any
+// sheet's height) and `onDismiss` only fires once that slide's
+// `transitionend` lands, so the sheet is actually offscreen before the
+// caller unmounts it rather than just vanishing mid-slide.
+//
+// Whether a release dismisses isn't just "did total travel clear
+// THRESHOLD" -- it's judged against the deepest point the drag reached
+// (`maxDelta`). Dragging past THRESHOLD and letting go while still headed
+// down commits to closing; dragging back up first -- changing your mind
+// mid-gesture, the way a native sheet lets you -- cancels it and springs
+// back open even though you did, at some point, clear the threshold.
 export function swipeDownToClose(node: HTMLElement, onDismiss: () => void) {
   const THRESHOLD = 24; // px of downward travel before it counts as a swipe, not just an imprecise tap
+  const DISMISS_TRAVEL = 600; // px to slide down on a committed dismiss -- more than any sheet is tall
+  const RETRACT_TOLERANCE = 8; // px of pull-back from the deepest point that still counts as "still headed down", not a change of mind
+
+  const sheet = node.closest<HTMLElement>(".sheet");
 
   let startY: number | null = null;
+  let maxDelta = 0;
+
+  function setTransform(y: number) {
+    if (sheet) sheet.style.transform = y > 0 ? `translateY(${y}px)` : "";
+  }
 
   function onPointerDown(e: PointerEvent) {
     startY = e.clientY;
+    maxDelta = 0;
+    sheet?.classList.add("dragging");
+    node.setPointerCapture(e.pointerId);
+  }
+
+  function onPointerMove(e: PointerEvent) {
+    if (startY == null) return;
+    // Only downward travel moves it -- dragging up meets the same
+    // resistance a resting bottom sheet gives you (none; it just doesn't
+    // budge) instead of floating the handle above its home position.
+    const delta = Math.max(0, e.clientY - startY);
+    maxDelta = Math.max(maxDelta, delta);
+    setTransform(delta);
+  }
+
+  function finishDrag(delta: number) {
+    sheet?.classList.remove("dragging");
+    const retracting = maxDelta - delta > RETRACT_TOLERANCE;
+    if (delta > THRESHOLD && !retracting && sheet) {
+      const onTransitionEnd = (e: TransitionEvent) => {
+        if (e.propertyName !== "transform") return;
+        sheet.removeEventListener("transitionend", onTransitionEnd);
+        onDismiss();
+      };
+      sheet.addEventListener("transitionend", onTransitionEnd);
+      setTransform(DISMISS_TRAVEL);
+    } else if (delta > THRESHOLD && !retracting) {
+      onDismiss(); // no `.sheet` ancestor found -- fall back to the old instant close
+    } else {
+      setTransform(0); // short of the threshold, or pulled back up: spring back home
+    }
   }
 
   function onPointerUp(e: PointerEvent) {
     if (startY == null) return;
     const delta = e.clientY - startY;
     startY = null;
-    if (delta > THRESHOLD) onDismiss();
+    finishDrag(delta);
   }
 
   function onPointerCancel() {
+    if (startY == null) return;
     startY = null;
+    finishDrag(0);
   }
 
   node.addEventListener("pointerdown", onPointerDown);
+  node.addEventListener("pointermove", onPointerMove);
   node.addEventListener("pointerup", onPointerUp);
   node.addEventListener("pointercancel", onPointerCancel);
 
   return {
     destroy() {
       node.removeEventListener("pointerdown", onPointerDown);
+      node.removeEventListener("pointermove", onPointerMove);
       node.removeEventListener("pointerup", onPointerUp);
       node.removeEventListener("pointercancel", onPointerCancel);
     },
