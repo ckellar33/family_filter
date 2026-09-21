@@ -458,6 +458,34 @@ pub async fn update_filter_cue(
     Ok(())
 }
 
+/// Adds a brand-new cue to the *active* auto-filter list's currently open
+/// (title, service) entry -- the Filters tab's own "+ Add cue" button, for
+/// typing a cue in by hand rather than only ever getting one from Create
+/// Filter's live-recording flow. Goes through `FilterList::add_cue`, so the
+/// same invariants (non-overlapping, start < end, non-empty category) every
+/// other entry point into a filter file enforces apply here too -- a cue
+/// that fails one is rejected outright, nothing partial is saved.
+#[tauri::command]
+pub async fn add_filter_cue(
+    state: State<'_, ControlStateHandle>,
+    title: String,
+    service: String,
+    start: f64,
+    end: f64,
+    action: filter::CueAction,
+    category: String,
+    word: Option<String>,
+    note: Option<String>,
+) -> Result<usize, String> {
+    let mut guard = state.lock().await;
+    let list = guard.filter_list.as_mut().ok_or_else(|| "no filter list loaded".to_string())?;
+    let cue = filter::Cue { start, end, action, category, word, note };
+    let index = list.add_cue(&title, &service, cue).map_err(|e| describe(&e))?;
+    persist_active_filter_list(&guard);
+    let _ = apply_filter(&mut guard).await;
+    Ok(index)
+}
+
 /// Removes a cue outright from the *active* auto-filter list -- the
 /// Filters-tab counterpart to `creation::creation_delete_cue`, same
 /// distinction as `update_filter_cue` above.

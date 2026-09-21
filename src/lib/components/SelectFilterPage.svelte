@@ -24,6 +24,7 @@
     toggleDetailCue,
     updateDetailCueTime,
     deleteDetailCue,
+    addDetailCue,
     closeDetail,
     publishDetailOnline,
   } from "$lib/state/filter.svelte";
@@ -32,6 +33,7 @@
   import PosterTile from "$lib/components/PosterTile.svelte";
   import EmptyState from "$lib/components/EmptyState.svelte";
   import CueEditorSheet from "$lib/components/CueEditorSheet.svelte";
+  import AddCueSheet from "$lib/components/AddCueSheet.svelte";
 
   let { onRecordInstead }: { onRecordInstead: () => void } = $props();
 
@@ -48,6 +50,17 @@
   async function deleteEditedCue(cue: Cue) {
     await deleteDetailCue(cue);
     editingCue = null;
+  }
+
+  // "+ Add cue" sheet, shared by the local detail view and (via
+  // addCueFromPreview below) the online preview -- always operates on
+  // whatever's open in filterState.detail, since AddCueSheet itself has no
+  // notion of which entry it's for.
+  let showAddCue = $state(false);
+
+  async function saveNewCue(cue: { start: number; end: number; action: "mute" | "skip"; category: string; word: string | null; note: string | null }) {
+    await addDetailCue(cue);
+    if (!filterState.detailError) showAddCue = false;
   }
 
   $effect(() => {
@@ -70,6 +83,19 @@
     if (!tile) return;
     await downloadOnlineFilter(tile);
     gridSource = "local";
+  }
+
+  // The online preview's own "+ Add cue" button: unlike addPreviewToMyFilters
+  // (which deliberately lands on the grid, not detail -- see that function's
+  // doc comment), this needs the newly-downloaded entry's *detail* view open
+  // so AddCueSheet has somewhere (filterState.detail) to actually save
+  // against, so it opens straight into it instead.
+  async function addCueFromPreview() {
+    const tile = filterState.previewTile;
+    if (!tile) return;
+    await downloadOnlineFilter(tile);
+    await openTitle(tile.title);
+    showAddCue = true;
   }
 
   // "On this device"'s own delete action -- a native confirm rather than a
@@ -297,6 +323,8 @@
         {/each}
       </ul>
     {/if}
+
+    <button type="button" class="btn-secondary" style="min-height:46px" onclick={() => (showAddCue = true)}>+ Add cue</button>
   {:else if filterState.onlinePreview}
     {@const preview = filterState.onlinePreview}
     <!-- Read-only look at an Online tile -- no Enabled switch, no per-
@@ -407,6 +435,8 @@
         {/each}
       </ul>
     {/if}
+
+    <button type="button" class="btn-secondary" style="min-height:46px" onclick={addCueFromPreview}>+ Add cue</button>
   {:else}
     <!-- My Filters (this device's local library) vs Online (the shared
          Neon-backed library, see online.rs) -- same tab bar shape as the
@@ -540,4 +570,8 @@
     onDelete={() => deleteEditedCue(cue)}
     onClose={() => (editingCue = null)}
   />
+{/if}
+
+{#if showAddCue}
+  <AddCueSheet busy={filterState.addCueBusy} onSave={saveNewCue} onClose={() => (showAddCue = false)} />
 {/if}

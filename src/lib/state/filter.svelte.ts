@@ -97,6 +97,13 @@ export const filterState = $state({
   publishError: "",
   publishedJustNow: false,
   hasUnpublishedEdits: false,
+
+  // The "+ Add cue" sheet's busy state (see addDetailCue) -- separate from
+  // publishBusy/detailLoading since adding a cue can be mid-flight at the
+  // same time refreshDetail/refreshPlayback are (it awaits both before the
+  // temporary auto-publish step), and the sheet needs its own "Adding…"
+  // state independent of those.
+  addCueBusy: false,
 });
 
 invoke<boolean>("supports_folder_import")
@@ -463,6 +470,46 @@ export async function toggleDetailCue(cue: Cue) {
 // (whatever's in the loaded filter file's JSON is what shows, see
 // SelectFilterPage.svelte's cue-pill/censorWord), so this always passes
 // `null` to leave it untouched rather than ever writing one back.
+// Adds a brand-new cue to the open detail's entry, typed in by hand rather
+// than recorded live -- the Filters tab's own "+ Add cue" button (see
+// control::add_filter_cue). Auto-publishes straight after saving locally --
+// TEMPORARY, per an explicit ask to skip the separate Publish tap while
+// bulk-adding cues by hand; meant to come back out once that's done (delete
+// the `publishDetailOnline()` call below to return to "stays local until
+// Publish is tapped by hand", the same as every other edit path already
+// works).
+export async function addDetailCue(input: {
+  start: number;
+  end: number;
+  action: "mute" | "skip";
+  category: string;
+  word: string | null;
+  note: string | null;
+}) {
+  if (!filterState.detail) return;
+  filterState.detailError = "";
+  filterState.addCueBusy = true;
+  try {
+    await invoke("add_filter_cue", {
+      title: filterState.detail.title,
+      service: filterState.detail.service,
+      start: input.start,
+      end: input.end,
+      action: input.action,
+      category: input.category,
+      word: input.word,
+      note: input.note,
+    });
+    await refreshDetail();
+    await refreshPlayback();
+    await publishDetailOnline(); // TEMPORARY -- see this function's doc comment
+  } catch (e) {
+    filterState.detailError = String(e);
+  } finally {
+    filterState.addCueBusy = false;
+  }
+}
+
 export async function updateDetailCueTime(cue: Cue, start: number, end: number) {
   if (!filterState.detail) return;
   filterState.detailError = "";
