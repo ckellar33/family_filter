@@ -133,3 +133,131 @@ export function swipeDownToClose(node: HTMLElement, onDismiss: () => void) {
     },
   };
 }
+
+// The iOS "drag in from the left edge to go back" gesture -- a second way
+// to trigger whatever `onBack` already does (+page.svelte's `goBack`,
+// wired to both the NavBar's `‹ Back` button and, via its own
+// closeDetail() branch, SelectFilterPage's `‹ All titles` link), not a
+// replacement for either -- both stay exactly as they were.
+//
+// `node` is +page.svelte's `.edge-swipe-zone`: a thin invisible strip
+// nested inside `.canvas` (see app.css) and only ever rendered while
+// there's actually somewhere to go back to, so it never exists to eat a
+// touch on a screen with nothing behind it. It's deliberately confined to
+// `.content`'s own height rather than the navbar/tabbar's -- see the
+// z-index comment on `.edge-swipe-zone` -- so it can't shadow the back
+// button, the app mark, or a tab.
+//
+// Same live-follow/retract-aware physics as swipeDownToClose above,
+// turned sideways: `.content` -- deliberately not `.canvas`, so the
+// sticky navbar and tab bar stay put and only the content between them
+// moves -- translates 1:1 with the pointer while it's down, judged
+// against the deepest point the drag reached rather than raw total
+// travel (so dragging past COMMIT_FRACTION and then pulling back toward
+// the edge -- changing your mind mid-gesture -- cancels the back
+// navigation instead of committing to it). Past the threshold, `.content`
+// keeps sliding until it's fully offscreen and `onBack` only fires once
+// that slide's `transitionend` lands; short of it, `.content` springs
+// back to translateX(0). Either way the transform is reset the instant
+// the settle finishes -- committed, `.content` is offscreen and invisible
+// when `onBack` swaps in whatever screen it's going back to, so the reset
+// itself is imperceptible; cancelled, there's nothing left to reset.
+export function edgeSwipeBack(node: HTMLElement, onBack: () => void) {
+  const EDGE_WIDTH = 20; // px from the true left edge a drag has to start within to count
+  const COMMIT_FRACTION = 0.3; // fraction of the screen's width to drag before it commits to going back
+  const RETRACT_TOLERANCE = 16; // px of pull-back from the deepest point that still counts as "still committing", not a change of mind
+
+  const canvas = node.closest<HTMLElement>(".canvas");
+  const content = canvas?.querySelector<HTMLElement>(":scope > .content") ?? null;
+
+  let startX: number | null = null;
+  let maxDelta = 0;
+  let width = 0;
+
+  function setTransform(x: number) {
+    if (content) content.style.transform = x > 0 ? `translateX(${x}px)` : "";
+  }
+
+  function onPointerDown(e: PointerEvent) {
+    if (!content) return;
+    const rect = node.getBoundingClientRect();
+    if (e.clientX - rect.left > EDGE_WIDTH) return; // only a drag starting at the true edge counts
+    startX = e.clientX;
+    maxDelta = 0;
+    width = content.clientWidth;
+    content.classList.add("edge-dragging");
+    node.setPointerCapture(e.pointerId);
+  }
+
+  function onPointerMove(e: PointerEvent) {
+    if (startX == null || !content) return;
+    // Only rightward travel moves it -- dragging back toward the edge
+    // meets the same resistance a resting screen gives you (none; it
+    // just doesn't budge past home) instead of tucking it under the edge.
+    const delta = Math.max(0, e.clientX - startX);
+    if (delta > 0 && maxDelta === 0) content.classList.add("edge-active"); // first real movement -- now it's a drag, not a stray tap
+    maxDelta = Math.max(maxDelta, delta);
+    setTransform(delta);
+  }
+
+  function settle(committing: boolean) {
+    if (!content) return;
+    content.classList.remove("edge-dragging"); // let .content's own transition take over for the settle
+    const onTransitionEnd = (e: TransitionEvent) => {
+      if (e.propertyName !== "transform") return;
+      content.removeEventListener("transitionend", onTransitionEnd);
+      content.classList.remove("edge-active");
+      if (committing) {
+        onBack();
+        content.classList.add("edge-dragging"); // reset instantly, no transition -- see comment above
+        setTransform(0);
+        requestAnimationFrame(() => content.classList.remove("edge-dragging"));
+      }
+    };
+    content.addEventListener("transitionend", onTransitionEnd);
+    setTransform(committing ? width + 60 : 0);
+  }
+
+  function finishDrag(delta: number) {
+    if (maxDelta === 0) {
+      // No real movement -- a stray tap at the edge, not a drag. Nothing
+      // was ever displaced, so there's nothing to animate back from.
+      content?.classList.remove("edge-dragging");
+      return;
+    }
+    const retracting = maxDelta - delta > RETRACT_TOLERANCE;
+    settle(delta > width * COMMIT_FRACTION && !retracting);
+  }
+
+  function onPointerUp(e: PointerEvent) {
+    if (startX == null) return;
+    const delta = e.clientX - startX;
+    startX = null;
+    finishDrag(delta);
+  }
+
+  function onPointerCancel() {
+    if (startX == null) return;
+    startX = null;
+    finishDrag(0);
+  }
+
+  node.addEventListener("pointerdown", onPointerDown);
+  node.addEventListener("pointermove", onPointerMove);
+  node.addEventListener("pointerup", onPointerUp);
+  node.addEventListener("pointercancel", onPointerCancel);
+
+  return {
+    destroy() {
+      node.removeEventListener("pointerdown", onPointerDown);
+      node.removeEventListener("pointermove", onPointerMove);
+      node.removeEventListener("pointerup", onPointerUp);
+      node.removeEventListener("pointercancel", onPointerCancel);
+      // In case this unmounts mid-drag (the screen it'd go back from
+      // disappearing out from under it) -- don't leave `.content` stuck
+      // half-displaced with no listener left to settle it.
+      content?.classList.remove("edge-dragging", "edge-active");
+      if (content) content.style.transform = "";
+    },
+  };
+}

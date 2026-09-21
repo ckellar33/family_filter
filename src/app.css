@@ -88,6 +88,30 @@ body {
   color: var(--label);
   display: flex;
   flex-direction: column;
+  /* Containing block for .edge-swipe-zone below, so its inset/left are
+     relative to the screen's own box instead of some further ancestor. */
+  position: relative;
+}
+
+/* The invisible strip that starts the edge-swipe-back gesture
+   (edgeSwipeBack, actions.ts) -- +page.svelte renders it only while
+   there's actually somewhere to go back to, so it never exists to eat a
+   touch on a screen with nothing behind it.
+
+   Deliberately spans `.content`'s height, not the full screen: it's
+   z-indexed below the sticky .navbar/.tabbar (both 10) and above
+   `.content` (auto), so wherever the nav or tab bar actually paints, that
+   bar wins hit-testing and the zone beneath it is unreachable -- the app
+   mark, the back button, and every tab stay tappable right at the edge.
+   `touch-action: none` reserves this one 20px-wide column from native
+   scrolling, the same trade-off a real iOS edge-swipe zone makes: a
+   vertical scroll just has to start a hair to the right of it. */
+.edge-swipe-zone {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 20px;
+  z-index: 5;
+  touch-action: none;
 }
 
 /* ── Nav ─────────────────────────────────────────────── */
@@ -207,10 +231,35 @@ body {
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
   padding: 4px 20px calc(env(safe-area-inset-bottom) + 32px);
+  /* Drives edgeSwipeBack's (actions.ts) settle: a released-early edge
+     drag springs back to translateX(0) along this curve, and a committed
+     one keeps sliding to fully offscreen before the screen behind it
+     shows. Deliberately scoped to `.content` alone, not `.canvas` -- the
+     navbar and tab bar stay put while only the content between them
+     slides, rather than the whole screen (nav bar included) moving.
+     Same curve `.sheet`'s own transform transition uses, so a sheet
+     dismiss and a back-swipe read as the same physics. */
+  transition: transform 0.28s cubic-bezier(0.32, 0.72, 0, 1);
 }
 
 .content.with-tabbar {
   padding-bottom: calc(env(safe-area-inset-bottom) + 104px);
+}
+
+/* While a finger/pointer is down dragging from the edge, `.content` must
+   track it 1:1 with zero lag -- the eased transition above is only for
+   the two moments *after* release, so it's suspended for the drag itself
+   (and again, momentarily, when edgeSwipeBack resets the transform after
+   a committed back-swipe finishes -- see its comment). */
+.content.edge-dragging {
+  transition: none;
+}
+
+/* Only added once an edge drag has actually moved (not on a stray tap at
+   the edge) -- sells the content "lifting" off the stack, the same way a
+   real iOS back-swipe shadows the leading edge of the screen sliding out. */
+.content.edge-active {
+  box-shadow: -12px 0 32px rgba(0, 0, 0, 0.22);
 }
 
 .screen {

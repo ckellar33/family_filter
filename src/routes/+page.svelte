@@ -20,6 +20,7 @@
   import { session, checkSaved, openControls, refreshPlayback, STEPS } from "$lib/state/session.svelte";
   import { checkSavedFilter, filterState, closeDetail, selectTile, checkAvailableForPlayback } from "$lib/state/filter.svelte";
   import { resetCreation } from "$lib/state/creation.svelte";
+  import { edgeSwipeBack } from "$lib/actions";
   import type { Tab } from "$lib/types";
   import NavBar from "$lib/components/NavBar.svelte";
   import TabBar from "$lib/components/TabBar.svelte";
@@ -222,6 +223,12 @@
   // so the nav bar keeps the app mark instead of a back button.
   let canGoBack = $derived(devicesOpen);
 
+  // Broader than `canGoBack` above -- this also covers the title detail
+  // case, whose back lives in the page ("‹ All titles") rather than the
+  // nav bar. Both are just alternate triggers for the same `goBack()`,
+  // which already has a branch for each; this doesn't add a new one.
+  let edgeBackAvailable = $derived(devicesOpen || (activeTab === "select-filter" && !!filterState.detail));
+
   function goBack() {
     session.error = "";
     if (devicesOpen) {
@@ -251,6 +258,10 @@
 
 <div class="phone-shell">
   <main class="canvas">
+    {#if edgeBackAvailable}
+      <div class="edge-swipe-zone" use:edgeSwipeBack={goBack}></div>
+    {/if}
+
     {#if !showSplash}
       <NavBar
         title={navTitle}
