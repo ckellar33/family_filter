@@ -3,8 +3,8 @@
 // applying an already-authored file. Deliberately separate even though the
 // shapes overlap, since a draft cue has no `enabled` (that's an
 // auto-filter-only concept) -- the draft being authored here is never the
-// list actively muting/skipping mid-movie unless useDraftAsActiveFilter()
-// explicitly arms it.
+// list actively muting/skipping mid-movie unless it's separately loaded as
+// the active filter from the Select Filter tab.
 //
 // The recording flow is mark-then-label (design 4a): only two actions
 // exist while something is playing -- Skip (press at the start, press again
@@ -16,9 +16,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { session } from "$lib/state/session.svelte";
-import { filterState } from "$lib/state/filter.svelte";
+import { filterState, deleteFilterFile } from "$lib/state/filter.svelte";
 import { slugifyTitle } from "$lib/format";
-import type { CreationCue, CueMarkResult, DraftSummary, FilterSummary, LanguageKindDef } from "$lib/types";
+import type { CreationCue, CueMarkResult, DraftSummary, LanguageKindDef } from "$lib/types";
 
 // What a skip cue can be *about*. Fixed list rather than the old
 // user-extensible one: the label sheet is a grid of chips, and a category
@@ -361,21 +361,26 @@ export async function deleteCue(cue: CreationCue) {
   }
 }
 
-// Reloads the draft's own file into the (separate) auto-filter list, so
-// cues just recorded can be tried out live without going through the
-// Select Filter grid.
-export async function useDraftAsActiveFilter() {
+// The "Delete" button's action: permanently removes the draft's own file
+// from disk (same delete_filter_file command SelectFilterPage's "On this
+// device" delete uses), as opposed to Save/resetCreation, which just ends
+// the recording session and leaves the file -- and everything already
+// written to it -- in place. Leaves the session open on failure (deleteFilterFile
+// never throws; it reports into filterState.tilesError instead) so the error
+// banner has something to point at and the draft isn't silently abandoned.
+export async function deleteDraft() {
   if (!creationState.draft) return;
-  filterState.filterBusy = true;
-  filterState.filterError = "";
+  creationState.busy = true;
+  creationState.error = "";
+  filterState.tilesError = "";
   try {
-    const summary = await invoke<FilterSummary>("load_filter_file", { path: creationState.draft.path });
-    filterState.filterSummary = summary;
-    filterState.filterEnabled = false;
-    filterState.categoryEnabled = Object.fromEntries(summary.categories.map((c) => [c, true]));
-  } catch (e) {
-    filterState.filterError = String(e);
+    await deleteFilterFile(creationState.draft.path);
+    if (filterState.tilesError) {
+      creationState.error = filterState.tilesError;
+      return;
+    }
+    resetCreation();
   } finally {
-    filterState.filterBusy = false;
+    creationState.busy = false;
   }
 }

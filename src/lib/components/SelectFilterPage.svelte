@@ -131,6 +131,35 @@
     }
   });
 
+  // Fetched eagerly (not just on switching to the Online tab) so
+  // detailNeedsPublish below has an answer the first time a local title's
+  // detail is opened, rather than only once the user happens to have
+  // browsed Online first.
+  $effect(() => {
+    if (filterState.detail && !filterState.onlineTilesEverLoaded && !filterState.onlineTilesLoading) {
+      loadOnlineTiles();
+    }
+  });
+
+  // Whether the open detail's (title, service) entry needs a push to the
+  // shared library: either it's been edited this session (hasUnpublishedEdits,
+  // set by updateDetailCueTime/deleteDetailCue), or it simply isn't there yet
+  // at all -- a title recorded locally (via Create Filter) or added from a
+  // file never goes online on its own, so without this a brand-new entry's
+  // Publish button would only ever appear after an incidental edit. Reads
+  // `false` (rather than "needs publish") until onlineTilesEverLoaded, so it
+  // doesn't flash true for an already-published title while the check is
+  // still in flight.
+  let detailNeedsPublish = $derived.by(() => {
+    const detail = filterState.detail;
+    if (!detail) return false;
+    if (filterState.hasUnpublishedEdits) return true;
+    if (!filterState.onlineTilesEverLoaded) return false;
+    const tile = filterState.onlineTiles.find((t) => t.title.toLowerCase() === detail.title.toLowerCase());
+    const isOnline = tile?.media.some((m) => (m.service ?? "").toLowerCase() === detail.service.toLowerCase()) ?? false;
+    return !isOnline;
+  });
+
   // The open detail's cues, grouped by category, for the categories-as-a-
   // tree view -- each category is expandable to show (and individually
   // toggle) just its own cues.
@@ -242,11 +271,11 @@
          failed attempt, for retrying) -- separate from the master Enabled
          switch above (that only ever affects this device), since this
          pushes the edit to every other install, live immediately. -->
-    {#if filterState.hasUnpublishedEdits || filterState.publishBusy || filterState.publishError || filterState.publishedJustNow}
+    {#if detailNeedsPublish || filterState.publishBusy || filterState.publishError || filterState.publishedJustNow}
       <div class="stack">
-        {#if filterState.hasUnpublishedEdits || filterState.publishBusy || filterState.publishError}
+        {#if detailNeedsPublish || filterState.publishBusy || filterState.publishError}
           <button type="button" class="btn-secondary" style="min-height:46px" onclick={publishDetailOnline} disabled={filterState.publishBusy}>
-            {filterState.publishBusy ? "Publishing…" : "Publish edits to Online Library"}
+            {filterState.publishBusy ? "Publishing…" : filterState.hasUnpublishedEdits ? "Publish edits to Online Library" : "Publish to Online Library"}
           </button>
         {/if}
         {#if filterState.publishError}

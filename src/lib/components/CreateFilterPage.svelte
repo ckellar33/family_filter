@@ -11,16 +11,15 @@
   // kind of language -- the one part of labeling deliberately deferred past
   // record time. Timing still lives in CueEditorSheet, reachable from the
   // label sheet's footer.
-  import { session } from "$lib/state/session.svelte";
+  import { session, livePosition } from "$lib/state/session.svelte";
   import {
     creationState,
     currentService,
     pickNewDraft,
-    pickExistingDraft,
     refreshCreationCues,
     renameService,
     resetCreation,
-    useDraftAsActiveFilter,
+    deleteDraft,
     markMute,
     startSkipMark,
     endSkipMark,
@@ -122,6 +121,67 @@
 
   let armed = $derived(creationState.draft != null && filterState.filterSummary?.path === creationState.draft.path);
   let canMark = $derived(!!session.playback?.title && !creationState.busy);
+
+  // Split into two rails, VidAngel-style: an unlabeled mark is "waiting to
+  // be tagged" no matter its action, and once labeled it moves into the
+  // category tree below (mirrors SelectFilterPage's grouped list) --
+  // grouped by the cue's own `category` string, so each language kind
+  // (Profanity, Blasphemy, …) gets its own group rather than one big
+  // "language" bucket.
+  let pendingCues = $derived(creationState.cues.filter((c) => cueLabel(c).pending));
+  let taggedCues = $derived(creationState.cues.filter((c) => !cueLabel(c).pending));
+
+  let taggedGroups = $derived.by(() => {
+    const order: string[] = [];
+    const byCategory: Record<string, CreationCue[]> = {};
+    for (const cue of taggedCues) {
+      if (!byCategory[cue.category]) {
+        byCategory[cue.category] = [];
+        order.push(cue.category);
+      }
+      byCategory[cue.category].push(cue);
+    }
+    return order.map((category) => ({
+      category,
+      label: isLanguageCategory(category) ? languageKindFor(category).label : category,
+      cues: byCategory[category],
+    }));
+  });
+
+  // One line under a tagged cue's time range for the detail that isn't
+  // already said by its group heading -- the specific word(s) for a
+  // language cue, or a note left on a skip cue. Omitted entirely when
+  // there's nothing more to say (a plain skip cue in Gore/Peril/etc.).
+  function cueDetailText(cue: CreationCue): string | null {
+    if (isLanguageCategory(cue.category)) {
+      const kind = languageKindFor(cue.category);
+      const words = (cue.word ?? "")
+        .split(",")
+        .map((w) => w.trim())
+        .filter(Boolean);
+      if (words.length) return words.map((w) => (kind.censor ? censorWord(w) : w)).join(" · ");
+    }
+    return cue.note ? `“${cue.note}”` : null;
+  }
+
+  // Which tagged category groups are expanded -- same "absent means
+  // expanded" default as SelectFilterPage's own tree, so it opens up
+  // ready-to-read.
+  let expandedTagged = $state<Record<string, boolean>>({});
+  function toggleTaggedExpanded(category: string) {
+    expandedTagged = { ...expandedTagged, [category]: !(expandedTagged[category] ?? true) };
+  }
+
+  // Delete's own native confirm, same no-custom-sheet reasoning
+  // SelectFilterPage's "On this device" delete already uses for its first
+  // whole-file destructive action -- this permanently removes the file, not
+  // just the on-screen session (see deleteDraft).
+  function confirmDeleteDraft() {
+    if (!creationState.draft) return;
+    if (confirm(`Delete "${creationState.draft.path}"? This permanently removes the file and every cue recorded in it.`)) {
+      deleteDraft();
+    }
+  }
 </script>
 
 <section class="screen">
@@ -133,17 +193,19 @@
     <p class="hint">Record cue timestamps live from what's currently playing. Nothing is armed until you say so.</p>
     <div class="stack">
       <button class="btn-primary" onclick={pickNewDraft}>Record a new filter file…</button>
-      <button class="btn-secondary" onclick={pickExistingDraft}>Continue an existing one…</button>
     </div>
   {:else if creationState.draft}
     {@const draft = creationState.draft}
     <div class="draft-card">
       <div style="flex:1; min-width:0">
-        <p class="path truncate">{draft.path}</p>
-        <p class="title">{session.playback?.title ?? "Nothing playing"}</p>
+        <p class="caption">Recording into a new filter</p>
+        <p class="title truncate">{session.playback?.title ?? draft.path}</p>
         <p class="path">
-          {draft.media_count} title{draft.media_count === 1 ? "" : "s"}
-          {#if session.playback?.title}· marks land under {currentService() || "Generic"}{/if}
+          {#if session.playback?.title}
+            {currentService() || "Generic"} · {fmtTime(livePosition() ?? 0)}
+          {:else}
+            {draft.media_count} title{draft.media_count === 1 ? "" : "s"} · nothing playing
+          {/if}
         </p>
       </div>
       <span class="shield" data-state={armed ? "on" : "off"}>{armed ? "ARMED" : "DRAFT"}</span>
@@ -162,29 +224,19 @@
     {/if}
 
     <div class="mark-buttons">
-      <button type="button" class="mark-btn" class:recording={creationState.skipPending} onclick={onSkip} disabled={!canMark}>
-        <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M5 6.5 13 12l-8 5.5V6.5Z" />
-          <path d="M17.5 6v12" />
-        </svg>
+      <button type="button" class="mark-btn mark-btn-skip" class:recording={creationState.skipPending} onclick={onSkip} disabled={!canMark}>
         <span class="mark-btn-text">
           <span class="mark-btn-name">{creationState.skipPending ? "End skip" : "Start skip"}</span>
           <span class="mark-btn-hint">
-            {creationState.skipPending
-              ? `started at ${fmtTime(creationState.pendingSkipStart)}`
-              : "press at the start, again at the end"}
+            {creationState.skipPending ? `started at ${fmtTime(creationState.pendingSkipStart)}` : "tag it later"}
           </span>
         </span>
       </button>
 
       <button type="button" class="mark-btn" onclick={onMute} disabled={!canMark || creationState.skipPending}>
-        <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M11 5 6.5 9H3.5v6h3L11 19V5Z" />
-          <path d="m15.5 9.5 5 5M20.5 9.5l-5 5" />
-        </svg>
         <span class="mark-btn-text">
           <span class="mark-btn-name">Mute</span>
-          <span class="mark-btn-hint">always language · stamps {MUTE_MARK_SECS}s</span>
+          <span class="mark-btn-hint">{MUTE_MARK_SECS}s stamp</span>
         </span>
       </button>
     </div>
@@ -198,23 +250,20 @@
     {/if}
 
     <div class="section-head-row">
-      <span class="section-header" style="margin:0">Recorded</span>
-      <span class="path">{creationState.cues.length} cue{creationState.cues.length === 1 ? "" : "s"}</span>
+      <span class="section-header attn" style="margin:0">Waiting to be tagged</span>
+      <span class="path">{pendingCues.length}</span>
     </div>
 
-    {#if creationState.cues.length > 0}
+    {#if pendingCues.length > 0}
       <ul class="list">
-        {#each creationState.cues as cue (cue.index)}
+        {#each pendingCues as cue (cue.index)}
           {@const label = cueLabel(cue)}
           <li>
             <button type="button" class="list-row cue-table-row" onclick={() => (labeling = { cue, mode: "edit" })}>
               <span class="cue-pill" data-action={cue.action}>{cue.action === "mute" ? "MUTE" : "SKIP"}</span>
               <span class="device-row-text">
                 <span class="cue-time">{fmtTime(cue.start)} – {fmtTime(cue.end)}</span>
-                <span class="cue-label" class:pending={label.pending}>{label.text}</span>
-                {#if cue.note}
-                  <span class="cue-note">“{cue.note}”</span>
-                {/if}
+                <span class="cue-label pending">{label.text}</span>
               </span>
               <span class="chevron">›</span>
             </button>
@@ -222,27 +271,77 @@
         {/each}
       </ul>
     {:else}
+      <div class="waiting-box">
+        <p class="hint centered" style="margin:0">
+          {session.playback?.title
+            ? "Nothing waiting. Marks land here the moment you press a button."
+            : "Nothing playing — start something on the Apple TV to record against it."}
+        </p>
+      </div>
+    {/if}
+
+    <div class="section-head-row">
+      <span class="section-header" style="margin:0">Tagged — by category</span>
+      <span class="path">{taggedCues.length} cue{taggedCues.length === 1 ? "" : "s"}</span>
+    </div>
+
+    {#if taggedGroups.length > 0}
       <ul class="list">
-        <li class="list-row static" style="justify-content:center; padding:24px 16px">
-          <span class="hint centered" style="margin:0">
-            {session.playback?.title
-              ? "Nothing recorded yet. Start a skip, or mute a line."
-              : "Nothing playing — start something on the Apple TV to record against it."}
-          </span>
-        </li>
+        {#each taggedGroups as group (group.category)}
+          {@const isExpanded = expandedTagged[group.category] ?? true}
+          <li>
+            <div class="list-row category-row">
+              <button
+                type="button"
+                class="category-label"
+                onclick={() => toggleTaggedExpanded(group.category)}
+                aria-expanded={isExpanded}
+              >
+                <span class="cat-dot" data-cat={isLanguageCategory(group.category) ? "language" : group.category}></span>
+                {group.label}
+                <span class="hint">{group.cues.length} {group.cues.length === 1 ? "Cue" : "Cues"}</span>
+              </button>
+              <button
+                type="button"
+                class="disclosure"
+                class:expanded={isExpanded}
+                onclick={() => toggleTaggedExpanded(group.category)}
+                aria-label={`${isExpanded ? "Collapse" : "Expand"} ${group.label}`}
+              >
+                ›
+              </button>
+            </div>
+
+            {#if isExpanded}
+              <ul class="list nested-list">
+                {#each group.cues as cue (cue.index)}
+                  {@const detail = cueDetailText(cue)}
+                  <li>
+                    <button type="button" class="list-row cue-row" onclick={() => (labeling = { cue, mode: "edit" })}>
+                      <span class="device-row-text">
+                        <span class="cue-time">{fmtTime(cue.start)}–{fmtTime(cue.end)}</span>
+                        {#if detail}
+                          <span class="cue-label">{detail}</span>
+                        {/if}
+                      </span>
+                      <span class="cue-pill" data-action={cue.action}>{cue.action === "mute" ? "MUTE" : "SKIP"}</span>
+                    </button>
+                  </li>
+                {/each}
+              </ul>
+            {/if}
+          </li>
+        {/each}
       </ul>
+    {:else}
+      <div class="waiting-box">
+        <p class="hint centered" style="margin:0">Nothing tagged yet — labeled marks land here, grouped by category.</p>
+      </div>
     {/if}
 
     <div class="stack">
-      <button
-        class="btn-primary"
-        style={armed ? "background: var(--success-bg); color: oklch(0.36 0.07 152); border:1px solid var(--accent-line)" : ""}
-        onclick={useDraftAsActiveFilter}
-        disabled={filterState.filterBusy || armed}
-      >
-        {armed ? "Active filter — cues apply live" : "Use this draft as the active filter"}
-      </button>
-      <button class="btn-secondary" onclick={resetCreation} disabled={creationState.busy}>Close draft</button>
+      <button class="btn-primary" onclick={resetCreation} disabled={creationState.busy}>Save</button>
+      <button class="btn-destructive" onclick={confirmDeleteDraft} disabled={creationState.busy}>Delete</button>
     </div>
   {/if}
 </section>

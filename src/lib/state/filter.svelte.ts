@@ -69,6 +69,12 @@ export const filterState = $state({
   onlineTiles: [] as OnlineFilterTile[],
   onlineTilesLoading: false,
   onlineTilesError: "",
+  // Set once loadOnlineTiles has resolved at least once (success or
+  // failure) -- distinguishes "checked, library's actually empty" from
+  // "haven't checked yet" for detailNeedsPublish below, which would
+  // otherwise flash "not published" for every local title on first open,
+  // before the real answer comes back.
+  onlineTilesEverLoaded: false,
   downloadingTitle: null as string | null,
 
   // Online grid's tap target: a read-only look at one tile's entry (see
@@ -214,6 +220,7 @@ export async function loadOnlineTiles() {
     filterState.onlineTilesError = String(e);
   } finally {
     filterState.onlineTilesLoading = false;
+    filterState.onlineTilesEverLoaded = true;
   }
 }
 
