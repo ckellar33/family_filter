@@ -11,7 +11,7 @@ dialogue for profanity and blasphemy using an editable word list, and writes
           "title": "...",
           "service": "...",
           "cues": [
-            { "start": 123.4, "end": 125.0, "action": "mute", "category": "language-profanity", "word": "s#@!" },
+            { "start": "00:02:03.40", "end": "00:02:05.00", "action": "mute", "category": "language-profanity", "word": "s#@!" },
             ...
           ]
         }
@@ -604,13 +604,32 @@ def _dump_cues(cues: list[dict], level: int) -> str:
     return "[\n" + ",\n".join(lines) + "\n" + pad + "]"
 
 
+def _seconds_to_hms(total: float) -> str:
+    """Python port of filter.rs's seconds_to_hms: zero-padded
+    "HH:MM:SS.ss" -- the same on-disk format `FilterList::save` writes, so a
+    cue this script produces lines up with a video's own on-screen timestamp
+    and matches whatever the app itself would write for the same cue.
+    Rounds to whole centiseconds before decomposing into h/m/s/cs (rather
+    than formatting the float directly) so e.g. 59.999999 seconds of float
+    imprecision rolls over into the next minute instead of printing "60.00"."""
+    total = max(total, 0.0) if total == total and total not in (float("inf"), float("-inf")) else 0.0
+    total_centis = int(total * 100.0 + 0.5)
+    centis = total_centis % 100
+    total_secs = total_centis // 100
+    secs = total_secs % 60
+    total_mins = total_secs // 60
+    mins = total_mins % 60
+    hours = total_mins // 60
+    return f"{hours:02d}:{mins:02d}:{secs:02d}.{centis:02d}"
+
+
 def _cue_dict(c: Cue) -> dict:
     """"word" is only ever present when non-empty -- mirrors the Rust side's
     `#[serde(skip_serializing_if = "Option::is_none")]` on filter::Cue::word,
     so a cue nothing matched a word for round-trips exactly like it did
     before this field existed, and --no-words output is indistinguishable
     from the pre-word-field format."""
-    d = {"start": round(c.start, 2), "end": round(c.end, 2), "action": c.action, "category": c.category}
+    d = {"start": _seconds_to_hms(c.start), "end": _seconds_to_hms(c.end), "action": c.action, "category": c.category}
     if c.word:
         d["word"] = c.word
     return d
