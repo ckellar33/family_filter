@@ -268,6 +268,86 @@ body {
   gap: 16px;
 }
 
+/* Wraps SelectFilterPage's grid (.edge-back-layer) and, while one's open,
+   its detail/online-preview screen (.edge-front-layer) -- the two are
+   stacked on top of each other rather than swapped exclusively, so an
+   edge-swipe-back drag can reveal the grid out from underneath as the
+   front screen slides away, iOS-style, instead of just sliding away over
+   blank canvas. Just a positioning context; `.edge-back-layer` alone
+   (relatively positioned, normal flow) is what actually gives this box its
+   height. */
+.screen-stack {
+  position: relative;
+}
+
+/* The grid, always mounted underneath. Nothing here needs its own
+   transition/dragging state by default -- at rest it's simply fully
+   covered by `.edge-front-layer` painted on top of it (see below), and
+   edgeSwipeBack (actions.ts) only ever touches its transform/dim while a
+   front layer actually exists to drag. */
+.edge-back-layer {
+  position: relative;
+}
+
+/* Belt-and-suspenders alongside the `inert` attribute itself (WKWebView on
+   older iOS may not honor it) -- either way, nothing under a front layer
+   should be tappable/focusable while it's covered. */
+.edge-back-layer[inert] {
+  pointer-events: none;
+}
+
+/* Same drag-follow/settle transition as `.content` below uses for the
+   screens with no split front/back layer (e.g. the Devices overlay) --
+   kept in sync so a back-swipe reads identically everywhere it appears.
+   `edge-dragging` suspends it for 1:1 finger tracking mid-drag; the
+   default transition here handles the spring-back or fully-off settle. */
+.edge-back-layer,
+.edge-back-layer::after {
+  transition:
+    transform 0.28s cubic-bezier(0.32, 0.72, 0, 1),
+    opacity 0.28s cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+.edge-back-layer.edge-dragging,
+.edge-back-layer.edge-dragging::after {
+  transition: none;
+}
+
+/* The dimming veil iOS lays over the revealed screen while it's still
+   mostly tucked behind the front one -- edgeSwipeBack (actions.ts) drives
+   its opacity via `--edge-back-dim` (0 = fully revealed, unset/0 = at
+   rest) rather than the layer's own opacity, so the grid underneath stays
+   fully legible (not washed out) the instant it's fully revealed. */
+.edge-back-layer::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: #000;
+  opacity: var(--edge-back-dim, 0);
+  pointer-events: none;
+}
+
+/* The screen actually being dragged: absolutely positioned over
+   `.edge-back-layer` (pinned top/left/right, natural height) so it visibly
+   covers the grid at rest without stretching to match its height, and so
+   swiping it doesn't add to `.edge-back-layer`'s own layout height. Same
+   opaque background as `.content`'s so there's no seam between the two
+   layers before a drag starts moving anything. */
+.edge-front-layer {
+  position: absolute;
+  inset: 0 0 auto 0;
+  background: var(--bg);
+  transition: transform 0.28s cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+.edge-front-layer.edge-dragging {
+  transition: none;
+}
+
+.edge-front-layer.edge-active {
+  box-shadow: -12px 0 32px rgba(0, 0, 0, 0.22);
+}
+
 .group {
   margin-top: 12px;
   display: flex;

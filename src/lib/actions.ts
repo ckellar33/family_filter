@@ -137,8 +137,9 @@ export function swipeDownToClose(node: HTMLElement, onDismiss: () => void) {
 // The iOS "drag in from the left edge to go back" gesture -- a second way
 // to trigger whatever `onBack` already does (+page.svelte's `goBack`,
 // wired to both the NavBar's `‹ Back` button and, via its own
-// closeDetail() branch, SelectFilterPage's `‹ All titles` link), not a
-// replacement for either -- both stay exactly as they were.
+// closeDetail()/closeOnlinePreview() branches, SelectFilterPage's
+// `‹ All titles`/`‹ Online` links), not a replacement for either -- both
+// stay exactly as they were.
 //
 // `node` is +page.svelte's `.edge-swipe-zone`: a thin invisible strip
 // nested inside `.canvas` (see app.css) and only ever rendered while
@@ -148,81 +149,123 @@ export function swipeDownToClose(node: HTMLElement, onDismiss: () => void) {
 // z-index comment on `.edge-swipe-zone` -- so it can't shadow the back
 // button, the app mark, or a tab.
 //
-// Same live-follow/retract-aware physics as swipeDownToClose above,
-// turned sideways: `.content` -- deliberately not `.canvas`, so the
-// sticky navbar and tab bar stay put and only the content between them
-// moves -- translates 1:1 with the pointer while it's down, judged
-// against the deepest point the drag reached rather than raw total
-// travel (so dragging past COMMIT_FRACTION and then pulling back toward
-// the edge -- changing your mind mid-gesture -- cancels the back
-// navigation instead of committing to it). Past the threshold, `.content`
-// keeps sliding until it's fully offscreen and `onBack` only fires once
-// that slide's `transitionend` lands; short of it, `.content` springs
-// back to translateX(0). Either way the transform is reset the instant
-// the settle finishes -- committed, `.content` is offscreen and invisible
-// when `onBack` swaps in whatever screen it's going back to, so the reset
-// itself is imperceptible; cancelled, there's nothing left to reset.
+// Same live-follow/retract-aware physics as swipeDownToClose above, turned
+// sideways: whatever's dragged translates 1:1 with the pointer while it's
+// down, judged against the deepest point the drag reached rather than raw
+// total travel (so dragging past COMMIT_FRACTION and then pulling back
+// toward the edge -- changing your mind mid-gesture -- cancels the back
+// navigation instead of committing to it). Past the threshold, it keeps
+// sliding until it's fully offscreen and `onBack` only fires once that
+// slide's `transitionend` lands; short of it, it springs back to
+// translateX(0). Either way the transform is reset the instant the settle
+// finishes -- committed, the dragged element is offscreen and invisible
+// (or, for a split front/back layer, already unmounted by onBack) when
+// the reset happens, so it's imperceptible; cancelled, there's nothing
+// left to reset.
+//
+// What actually gets dragged is resolved fresh on every pointerdown,
+// rather than once up front, since Svelte swaps these nodes out from
+// under this one long-lived listener as screens change:
+//   - If `.content` contains an `.edge-front-layer` (SelectFilterPage's
+//     detail/online-preview screen, stacked over its `.edge-back-layer`
+//     grid -- see app.css), that's what's dragged, and the grid
+//     underneath is parallaxed + dimmed into view as it goes, the way a
+//     real iOS push/pop reveals the screen behind the one being popped.
+//   - Otherwise (e.g. the Devices overlay, which has no such split --
+//     "back" there can mean an earlier wizard step, not a fixed screen
+//     behind it) this falls back to dragging `.content` itself with
+//     nothing revealed underneath, same as before this layering existed.
 export function edgeSwipeBack(node: HTMLElement, onBack: () => void) {
   const EDGE_WIDTH = 20; // px from the true left edge a drag has to start within to count
   const COMMIT_FRACTION = 0.3; // fraction of the screen's width to drag before it commits to going back
   const RETRACT_TOLERANCE = 16; // px of pull-back from the deepest point that still counts as "still committing", not a change of mind
+  const BACK_PARALLAX = 90; // px the revealed back layer starts offset by (iOS's own back-screen parallax distance is in this ballpark), closing to 0 as the front layer finishes sliding away
+  const BACK_DIM_MAX = 0.24; // opacity of the veil over the back layer at rest, fading to 0 as it's revealed -- iOS dims the screen behind for the same reason: sell it as "further back", not just "underneath"
 
   const canvas = node.closest<HTMLElement>(".canvas");
-  const content = canvas?.querySelector<HTMLElement>(":scope > .content") ?? null;
+  const contentEl = canvas?.querySelector<HTMLElement>(":scope > .content") ?? null;
 
   let startX: number | null = null;
   let maxDelta = 0;
   let width = 0;
+  let front: HTMLElement | null = null; // the element actually dragged this gesture
+  let back: HTMLElement | null = null; // the .edge-back-layer revealed underneath it, if any
 
-  function setTransform(x: number) {
-    if (content) content.style.transform = x > 0 ? `translateX(${x}px)` : "";
+  function setTransform(delta: number) {
+    if (front) front.style.transform = delta > 0 ? `translateX(${delta}px)` : "";
+    if (back) {
+      const progress = width > 0 ? Math.min(1, delta / width) : 0;
+      back.style.transform = delta > 0 ? `translateX(${(progress - 1) * BACK_PARALLAX}px)` : "";
+      back.style.setProperty("--edge-back-dim", String(BACK_DIM_MAX * (1 - progress)));
+    }
   }
 
   function onPointerDown(e: PointerEvent) {
-    if (!content) return;
+    if (!contentEl) return;
     const rect = node.getBoundingClientRect();
     if (e.clientX - rect.left > EDGE_WIDTH) return; // only a drag starting at the true edge counts
+    front = contentEl.querySelector<HTMLElement>(":scope .edge-front-layer") ?? contentEl;
+    back = contentEl.querySelector<HTMLElement>(":scope .edge-back-layer");
     startX = e.clientX;
     maxDelta = 0;
-    width = content.clientWidth;
-    content.classList.add("edge-dragging");
+    width = contentEl.clientWidth;
+    front.classList.add("edge-dragging");
+    back?.classList.add("edge-dragging");
     node.setPointerCapture(e.pointerId);
   }
 
   function onPointerMove(e: PointerEvent) {
-    if (startX == null || !content) return;
+    if (startX == null || !front) return;
     // Only rightward travel moves it -- dragging back toward the edge
     // meets the same resistance a resting screen gives you (none; it
     // just doesn't budge past home) instead of tucking it under the edge.
     const delta = Math.max(0, e.clientX - startX);
-    if (delta > 0 && maxDelta === 0) content.classList.add("edge-active"); // first real movement -- now it's a drag, not a stray tap
+    if (delta > 0 && maxDelta === 0) front.classList.add("edge-active"); // first real movement -- now it's a drag, not a stray tap
     maxDelta = Math.max(maxDelta, delta);
     setTransform(delta);
   }
 
   function settle(committing: boolean) {
-    if (!content) return;
-    content.classList.remove("edge-dragging"); // let .content's own transition take over for the settle
+    if (!front) return;
+    const f = front;
+    const b = back;
+    f.classList.remove("edge-dragging"); // let its own transition take over for the settle
+    b?.classList.remove("edge-dragging");
     const onTransitionEnd = (e: TransitionEvent) => {
       if (e.propertyName !== "transform") return;
-      content.removeEventListener("transitionend", onTransitionEnd);
-      content.classList.remove("edge-active");
+      f.removeEventListener("transitionend", onTransitionEnd);
+      f.classList.remove("edge-active");
       if (committing) {
         onBack();
-        content.classList.add("edge-dragging"); // reset instantly, no transition -- see comment above
-        setTransform(0);
-        requestAnimationFrame(() => content.classList.remove("edge-dragging"));
+        f.classList.add("edge-dragging"); // reset instantly, no transition -- see comment above
+        f.style.transform = "";
+        if (b) {
+          b.classList.add("edge-dragging");
+          b.style.transform = "";
+          b.style.removeProperty("--edge-back-dim");
+        }
+        requestAnimationFrame(() => {
+          f.classList.remove("edge-dragging");
+          b?.classList.remove("edge-dragging");
+        });
+      } else {
+        b?.style.removeProperty("--edge-back-dim");
       }
     };
-    content.addEventListener("transitionend", onTransitionEnd);
-    setTransform(committing ? width + 60 : 0);
+    f.addEventListener("transitionend", onTransitionEnd);
+    f.style.transform = committing ? `translateX(${width + 60}px)` : "";
+    if (b) {
+      b.style.transform = committing ? "" : `translateX(${-BACK_PARALLAX}px)`;
+      b.style.setProperty("--edge-back-dim", committing ? "0" : String(BACK_DIM_MAX));
+    }
   }
 
   function finishDrag(delta: number) {
     if (maxDelta === 0) {
       // No real movement -- a stray tap at the edge, not a drag. Nothing
       // was ever displaced, so there's nothing to animate back from.
-      content?.classList.remove("edge-dragging");
+      front?.classList.remove("edge-dragging");
+      back?.classList.remove("edge-dragging");
       return;
     }
     const retracting = maxDelta - delta > RETRACT_TOLERANCE;
@@ -254,10 +297,15 @@ export function edgeSwipeBack(node: HTMLElement, onBack: () => void) {
       node.removeEventListener("pointerup", onPointerUp);
       node.removeEventListener("pointercancel", onPointerCancel);
       // In case this unmounts mid-drag (the screen it'd go back from
-      // disappearing out from under it) -- don't leave `.content` stuck
+      // disappearing out from under it) -- don't leave anything stuck
       // half-displaced with no listener left to settle it.
-      content?.classList.remove("edge-dragging", "edge-active");
-      if (content) content.style.transform = "";
+      front?.classList.remove("edge-dragging", "edge-active");
+      if (front) front.style.transform = "";
+      back?.classList.remove("edge-dragging");
+      if (back) {
+        back.style.transform = "";
+        back.style.removeProperty("--edge-back-dim");
+      }
     },
   };
 }

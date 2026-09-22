@@ -18,7 +18,7 @@
   // succeeded.
   import { listen } from "@tauri-apps/api/event";
   import { session, checkSaved, openControls, refreshPlayback, STEPS } from "$lib/state/session.svelte";
-  import { checkSavedFilter, filterState, closeDetail, selectTile, checkAvailableForPlayback } from "$lib/state/filter.svelte";
+  import { checkSavedFilter, filterState, closeDetail, closeOnlinePreview, selectTile, checkAvailableForPlayback } from "$lib/state/filter.svelte";
   import { resetCreation } from "$lib/state/creation.svelte";
   import { edgeSwipeBack } from "$lib/actions";
   import type { Tab } from "$lib/types";
@@ -225,9 +225,13 @@
 
   // Broader than `canGoBack` above -- this also covers the title detail
   // case, whose back lives in the page ("‹ All titles") rather than the
-  // nav bar. Both are just alternate triggers for the same `goBack()`,
-  // which already has a branch for each; this doesn't add a new one.
-  let edgeBackAvailable = $derived(devicesOpen || (activeTab === "select-filter" && !!filterState.detail));
+  // nav bar, and the online preview case, whose back lives in the page
+  // ("‹ Online"). Both are just alternate triggers for the same
+  // `goBack()`, which already has a branch for each; this doesn't add a
+  // new one.
+  let edgeBackAvailable = $derived(
+    devicesOpen || (activeTab === "select-filter" && (!!filterState.detail || !!filterState.onlinePreview)),
+  );
 
   function goBack() {
     session.error = "";
@@ -252,6 +256,8 @@
     }
     if (activeTab === "select-filter" && filterState.detail) {
       closeDetail();
+    } else if (activeTab === "select-filter" && filterState.onlinePreview) {
+      closeOnlinePreview();
     }
   }
 </script>

@@ -207,10 +207,143 @@
   }
 </script>
 
-<section class="screen">
+<section class="screen-stack">
+  <!-- Always mounted underneath, even while detail/preview is open on top:
+       edgeSwipeBack (actions.ts) looks for this exact class at drag-start
+       to parallax it into view from behind the front layer, iOS-style,
+       instead of just sliding the front layer away over blank space. Kept
+       interactive-only when it's actually on top (inert + aria-hidden
+       while a front layer covers it) so it can't steal focus/taps through
+       whatever's on top of it. -->
+  <div
+    class="screen edge-back-layer"
+    inert={!!(filterState.detail || filterState.onlinePreview)}
+    aria-hidden={!!(filterState.detail || filterState.onlinePreview)}
+  >
+    <!-- My Filters (this device's local library) vs Online (the shared
+         Neon-backed library, see online.rs) -- same tab bar shape as the
+         service switcher above, not a NavBar-level thing, since it only
+         ever matters within this one screen. -->
+    <!-- Search leads; the two libraries are scope tabs under it rather than
+         a pair of buttons, since the online library outgrows browsing. -->
+    <div class="search-field">
+      <span class="search-icon" aria-hidden="true">⌕</span>
+      <input type="search" placeholder="Search titles" bind:value={query} autocapitalize="none" autocorrect="off" spellcheck="false" />
+      {#if query !== ""}
+        <button type="button" class="search-clear" onclick={() => (query = "")} aria-label="Clear search">×</button>
+      {/if}
+    </div>
+
+    <div class="scope-tabs">
+      <button type="button" class="scope-tab" class:selected={gridSource === "local"} onclick={() => (gridSource = "local")}>
+        <span class="scope-label">On this device <span class="scope-count">{filterState.tiles.length}</span></span>
+        <span class="scope-rule"></span>
+      </button>
+      <button type="button" class="scope-tab" class:selected={gridSource === "online"} onclick={() => (gridSource = "online")}>
+        <span class="scope-label"
+          >Online{#if filterState.onlineTiles.length > 0}<span class="scope-count">{filterState.onlineTiles.length}</span>{/if}</span
+        >
+        <span class="scope-rule"></span>
+      </button>
+    </div>
+
+    {#if gridSource === "local"}
+      {#if filterState.tilesError}
+        <p class="banner error">{filterState.tilesError}</p>
+      {/if}
+
+      {#if filterState.tilesLoading && filterState.tiles.length === 0}
+        <p class="hint centered">Loading filters…</p>
+      {:else if filterState.tiles.length === 0}
+        <EmptyState
+          kind="no-filters"
+          onPrimary={addFilterFiles}
+          onSecondary={onRecordInstead}
+          onTertiary={filterState.folderImportSupported ? addFilterDirectory : undefined}
+        />
+      {:else}
+        <div class="stack">
+          <div style="display:flex; gap:9px">
+            <button class="btn-secondary" style="min-height:46px" onclick={addFilterFiles}>Add file…</button>
+            {#if filterState.folderImportSupported}
+              <button class="btn-secondary" style="min-height:46px" onclick={addFilterDirectory}>Add folder…</button>
+            {/if}
+          </div>
+        </div>
+        <p class="footnote">
+          {#if query.trim() !== ""}
+            {shownTiles.length} of {filterState.tiles.length} {filterState.tiles.length === 1 ? "title" : "titles"}
+          {:else}
+            {filterState.tiles.length} {filterState.tiles.length === 1 ? "title" : "titles"}
+          {/if}
+        </p>
+        {#if shownTiles.length === 0}
+          <p class="hint centered">No titles on this device match “{query.trim()}” — try Online.</p>
+        {/if}
+        <div class="poster-grid">
+          {#each shownTiles as tile (tile.title)}
+            <!-- Wrapped rather than built into PosterTile itself: the tile
+                 stays one big tap target (a <button>), and the delete
+                 affordance is a sibling positioned over its corner --
+                 nesting a second interactive element inside that button
+                 wouldn't be valid HTML. -->
+            <div class="poster-tile-wrap">
+              <PosterTile title={tile.title} poster={tile.poster} cueCount={tile.cue_count} onclick={() => openTitle(tile.title)} />
+              <button
+                type="button"
+                class="poster-delete"
+                onclick={() => confirmDeleteTile(tile)}
+                aria-label={`Remove ${tile.title} from My Filters`}
+              >
+                ✕
+              </button>
+            </div>
+          {/each}
+        </div>
+      {/if}
+    {:else}
+      {#if filterState.onlineTilesError}
+        <p class="banner error">{filterState.onlineTilesError}</p>
+      {/if}
+
+      {#if filterState.downloadingTitle}
+        <p class="hint centered">Downloading “{filterState.downloadingTitle}”…</p>
+      {/if}
+
+      {#if filterState.onlineTilesLoading && filterState.onlineTiles.length === 0}
+        <p class="hint centered">Loading online filters…</p>
+      {:else if filterState.onlineTiles.length === 0 && !filterState.onlineTilesError}
+        <p class="hint centered">Nothing in the online library yet.</p>
+      {:else}
+        <p class="footnote">
+          {#if query.trim() !== ""}
+            {shownOnlineTiles.length} of {filterState.onlineTiles.length} match — tap one to preview it
+          {:else}
+            {filterState.onlineTiles.length}
+            {filterState.onlineTiles.length === 1 ? "title" : "titles"} — tap one to preview it
+          {/if}
+        </p>
+        {#if shownOnlineTiles.length === 0}
+          <p class="hint centered">Nothing in the online library matches “{query.trim()}”.</p>
+        {/if}
+        <div class="poster-grid">
+          {#each shownOnlineTiles as tile (tile.title)}
+            <PosterTile
+              title={tile.title}
+              poster={tile.poster}
+              cueCount={tile.cue_count}
+              onclick={() => openOnlinePreview(tile)}
+            />
+          {/each}
+        </div>
+      {/if}
+    {/if}
+  </div>
+
   {#if filterState.detail}
     {@const detail = filterState.detail}
     {@const tile = filterState.tiles.find((t) => t.title === detail.title)}
+    <div class="screen edge-front-layer">
     {#if filterState.detailError}
       <p class="banner error">{filterState.detailError}</p>
     {/if}
@@ -354,8 +487,10 @@
     {/if}
 
     <button type="button" class="btn-secondary" style="min-height:46px" onclick={() => (showAddCue = true)}>+ Add cue</button>
+    </div>
   {:else if filterState.onlinePreview}
     {@const preview = filterState.onlinePreview}
+    <div class="screen edge-front-layer">
     <!-- Read-only look at an Online tile -- no Enabled switch, no per-
          category/cue toggles (neither concept applies to something that
          isn't loaded as the active filter list), just what's in it and a
@@ -466,125 +601,7 @@
     {/if}
 
     <button type="button" class="btn-secondary" style="min-height:46px" onclick={addCueFromPreview}>+ Add cue</button>
-  {:else}
-    <!-- My Filters (this device's local library) vs Online (the shared
-         Neon-backed library, see online.rs) -- same tab bar shape as the
-         service switcher above, not a NavBar-level thing, since it only
-         ever matters within this one screen. -->
-    <!-- Search leads; the two libraries are scope tabs under it rather than
-         a pair of buttons, since the online library outgrows browsing. -->
-    <div class="search-field">
-      <span class="search-icon" aria-hidden="true">⌕</span>
-      <input type="search" placeholder="Search titles" bind:value={query} autocapitalize="none" autocorrect="off" spellcheck="false" />
-      {#if query !== ""}
-        <button type="button" class="search-clear" onclick={() => (query = "")} aria-label="Clear search">×</button>
-      {/if}
     </div>
-
-    <div class="scope-tabs">
-      <button type="button" class="scope-tab" class:selected={gridSource === "local"} onclick={() => (gridSource = "local")}>
-        <span class="scope-label">On this device <span class="scope-count">{filterState.tiles.length}</span></span>
-        <span class="scope-rule"></span>
-      </button>
-      <button type="button" class="scope-tab" class:selected={gridSource === "online"} onclick={() => (gridSource = "online")}>
-        <span class="scope-label"
-          >Online{#if filterState.onlineTiles.length > 0}<span class="scope-count">{filterState.onlineTiles.length}</span>{/if}</span
-        >
-        <span class="scope-rule"></span>
-      </button>
-    </div>
-
-    {#if gridSource === "local"}
-      {#if filterState.tilesError}
-        <p class="banner error">{filterState.tilesError}</p>
-      {/if}
-
-      {#if filterState.tilesLoading && filterState.tiles.length === 0}
-        <p class="hint centered">Loading filters…</p>
-      {:else if filterState.tiles.length === 0}
-        <EmptyState
-          kind="no-filters"
-          onPrimary={addFilterFiles}
-          onSecondary={onRecordInstead}
-          onTertiary={filterState.folderImportSupported ? addFilterDirectory : undefined}
-        />
-      {:else}
-        <div class="stack">
-          <div style="display:flex; gap:9px">
-            <button class="btn-secondary" style="min-height:46px" onclick={addFilterFiles}>Add file…</button>
-            {#if filterState.folderImportSupported}
-              <button class="btn-secondary" style="min-height:46px" onclick={addFilterDirectory}>Add folder…</button>
-            {/if}
-          </div>
-        </div>
-        <p class="footnote">
-          {#if query.trim() !== ""}
-            {shownTiles.length} of {filterState.tiles.length} {filterState.tiles.length === 1 ? "title" : "titles"}
-          {:else}
-            {filterState.tiles.length} {filterState.tiles.length === 1 ? "title" : "titles"}
-          {/if}
-        </p>
-        {#if shownTiles.length === 0}
-          <p class="hint centered">No titles on this device match “{query.trim()}” — try Online.</p>
-        {/if}
-        <div class="poster-grid">
-          {#each shownTiles as tile (tile.title)}
-            <!-- Wrapped rather than built into PosterTile itself: the tile
-                 stays one big tap target (a <button>), and the delete
-                 affordance is a sibling positioned over its corner --
-                 nesting a second interactive element inside that button
-                 wouldn't be valid HTML. -->
-            <div class="poster-tile-wrap">
-              <PosterTile title={tile.title} poster={tile.poster} cueCount={tile.cue_count} onclick={() => openTitle(tile.title)} />
-              <button
-                type="button"
-                class="poster-delete"
-                onclick={() => confirmDeleteTile(tile)}
-                aria-label={`Remove ${tile.title} from My Filters`}
-              >
-                ✕
-              </button>
-            </div>
-          {/each}
-        </div>
-      {/if}
-    {:else}
-      {#if filterState.onlineTilesError}
-        <p class="banner error">{filterState.onlineTilesError}</p>
-      {/if}
-
-      {#if filterState.downloadingTitle}
-        <p class="hint centered">Downloading “{filterState.downloadingTitle}”…</p>
-      {/if}
-
-      {#if filterState.onlineTilesLoading && filterState.onlineTiles.length === 0}
-        <p class="hint centered">Loading online filters…</p>
-      {:else if filterState.onlineTiles.length === 0 && !filterState.onlineTilesError}
-        <p class="hint centered">Nothing in the online library yet.</p>
-      {:else}
-        <p class="footnote">
-          {#if query.trim() !== ""}
-            {shownOnlineTiles.length} of {filterState.onlineTiles.length} match — tap one to preview it
-          {:else}
-            {filterState.onlineTiles.length}
-            {filterState.onlineTiles.length === 1 ? "title" : "titles"} — tap one to preview it
-          {/if}
-        </p>
-        {#if shownOnlineTiles.length === 0}
-          <p class="hint centered">Nothing in the online library matches “{query.trim()}”.</p>
-        {/if}
-        <div class="poster-grid">
-          {#each shownOnlineTiles as tile (tile.title)}
-            <PosterTile
-              title={tile.title}
-              poster={tile.poster}
-              cueCount={tile.cue_count}
-              onclick={() => openOnlinePreview(tile)}
-            />
-          {/each}
-        </div>
-      {/if}
-    {/if}
   {/if}
 </section>
 
