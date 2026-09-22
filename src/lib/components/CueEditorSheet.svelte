@@ -44,28 +44,128 @@
     onClose: () => void;
   } = $props();
 
-  // Fixed for the lifetime of the sheet, so nudging visibly moves the bar
-  // inside a stable window rather than rescaling under your thumb.
-  const w0 = Math.max(0, start - 30);
-  const w1 = end + 30;
-  const span = Math.max(1, w1 - w0);
+  // Stays fixed at the initial ±30s window while the draft stays inside it,
+  // so nudging visibly moves the bar rather than rescaling under your
+  // thumb -- but grows on whichever side the draft pushes past, so the bar
+  // keeps extending as far as start/end are nudged instead of clamping.
+  const initialW0 = Math.max(0, start - 30);
+  const initialW1 = end + 30;
 
   let draftStart = $state(start);
   let draftEnd = $state(end);
+
+  let w0 = $derived(Math.min(initialW0, Math.max(0, draftStart - 30)));
+  let w1 = $derived(Math.max(initialW1, draftEnd + 30));
+  let span = $derived(Math.max(1, w1 - w0));
 
   let left = $derived(((draftStart - w0) / span) * 100);
   let width = $derived(((draftEnd - draftStart) / span) * 100);
 
   function nudge(field: "start" | "end", delta: number) {
-    if (field === "start") draftStart = Math.max(w0, Math.min(draftEnd - 1, draftStart + delta));
-    else draftEnd = Math.max(draftStart + 1, Math.min(w1, draftEnd + delta));
+    if (field === "start") draftStart = Math.max(0, Math.min(draftEnd - 1, draftStart + delta));
+    else draftEnd = Math.max(draftStart + 1, draftEnd + delta);
   }
 
   function typeTime(field: "start" | "end", text: string) {
     const seconds = parseTime(text);
     if (seconds == null) return;
-    if (field === "start") draftStart = Math.min(draftEnd - 1, seconds);
+    if (field === "start") draftStart = Math.max(0, Math.min(draftEnd - 1, seconds));
     else draftEnd = Math.max(draftStart + 1, seconds);
+  }
+
+  // The track element the bar's percentages are laid out against --
+  // pointer x has to go through its bounding box to turn back into a
+  // second, same as `left`/`width` above go from seconds to a percentage
+  // of it.
+  let trackEl: HTMLDivElement | undefined = $state();
+
+  function secondsAtClientX(clientX: number): number {
+    if (!trackEl) return draftStart;
+    const rect = trackEl.getBoundingClientRect();
+    const fraction = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+    return w0 + fraction * span;
+  }
+
+  // Drags one edge of the bar -- same clamps as nudge()/typeTime(), just
+  // driven by pointer position instead of a button or a typed value. `w0`/
+  // `span` (and so `secondsAtClientX`) are re-read live on every move, so
+  // if the drag pushes the window's edge outward mid-gesture (see w0/w1
+  // above) the pointer keeps tracking correctly rather than drifting.
+  function dragEdge(node: HTMLElement, field: "start" | "end") {
+    let dragging = false;
+
+    function onPointerDown(e: PointerEvent) {
+      dragging = true;
+      node.setPointerCapture(e.pointerId);
+    }
+
+    function onPointerMove(e: PointerEvent) {
+      if (!dragging) return;
+      const seconds = Math.round(secondsAtClientX(e.clientX));
+      if (field === "start") draftStart = Math.max(0, Math.min(draftEnd - 1, seconds));
+      else draftEnd = Math.max(draftStart + 1, seconds);
+    }
+
+    function onPointerUp() {
+      dragging = false;
+    }
+
+    node.addEventListener("pointerdown", onPointerDown);
+    node.addEventListener("pointermove", onPointerMove);
+    node.addEventListener("pointerup", onPointerUp);
+    node.addEventListener("pointercancel", onPointerUp);
+
+    return {
+      destroy() {
+        node.removeEventListener("pointerdown", onPointerDown);
+        node.removeEventListener("pointermove", onPointerMove);
+        node.removeEventListener("pointerup", onPointerUp);
+        node.removeEventListener("pointercancel", onPointerUp);
+      },
+    };
+  }
+
+  // Drags the bar's body -- shifts start and end together by the same
+  // amount, preserving the cue's length, like dragging a clip in a trim
+  // UI moves it without resizing it. `offset` keeps the grab point fixed
+  // under the pointer regardless of where on the bar the drag started,
+  // rather than snapping the near edge to the pointer.
+  function dragBody(node: HTMLElement) {
+    let dragging = false;
+    let offset = 0;
+    let duration = 0;
+
+    function onPointerDown(e: PointerEvent) {
+      dragging = true;
+      offset = secondsAtClientX(e.clientX) - draftStart;
+      duration = draftEnd - draftStart;
+      node.setPointerCapture(e.pointerId);
+    }
+
+    function onPointerMove(e: PointerEvent) {
+      if (!dragging) return;
+      const newStart = Math.max(0, Math.round(secondsAtClientX(e.clientX) - offset));
+      draftStart = newStart;
+      draftEnd = newStart + duration;
+    }
+
+    function onPointerUp() {
+      dragging = false;
+    }
+
+    node.addEventListener("pointerdown", onPointerDown);
+    node.addEventListener("pointermove", onPointerMove);
+    node.addEventListener("pointerup", onPointerUp);
+    node.addEventListener("pointercancel", onPointerUp);
+
+    return {
+      destroy() {
+        node.removeEventListener("pointerdown", onPointerDown);
+        node.removeEventListener("pointermove", onPointerMove);
+        node.removeEventListener("pointerup", onPointerUp);
+        node.removeEventListener("pointercancel", onPointerUp);
+      },
+    };
   }
 
   // How far ahead of the cue's (draft) start to land -- enough runway to
@@ -112,8 +212,10 @@
     </div>
 
     <div class="cue-window">
-      <div class="cue-window-track">
-        <div class="cue-window-fill" data-action={action} style={`left:${left}%; width:${width}%`}></div>
+      <div class="cue-window-track" bind:this={trackEl}>
+        <div class="cue-window-fill" data-action={action} style={`left:${left}%; width:${width}%`} use:dragBody></div>
+        <div class="cue-edge-handle" style={`left:${left}%`} use:dragEdge={"start"} aria-label="Drag start"></div>
+        <div class="cue-edge-handle" style={`left:${left + width}%`} use:dragEdge={"end"} aria-label="Drag end"></div>
       </div>
       <div class="cue-window-scale"><span>{fmtTime(w0)}</span><span>{fmtTime(w1)}</span></div>
     </div>

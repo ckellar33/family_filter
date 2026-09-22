@@ -1412,10 +1412,39 @@ code {
   border-radius: 6px;
   background: var(--skip);
   opacity: 0.85;
+  cursor: grab;
+  touch-action: none;
 }
 
 .cue-window-fill[data-action="mute"] {
   background: var(--mute);
+}
+
+/* Trim handles at each edge of .cue-window-fill -- a wide invisible hit
+   area (same "small visual, bigger invisible tap target" trick as
+   .sheet-grabber::after) around a slim visible grip, centered on the
+   fill's edge via translateX(-50%) so it straddles the boundary rather
+   than sitting to one side of it. */
+.cue-edge-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 28px;
+  transform: translateX(-50%);
+  cursor: ew-resize;
+  touch-action: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.cue-edge-handle::after {
+  content: "";
+  width: 4px;
+  height: 24px;
+  border-radius: 2px;
+  background: var(--screen-label);
+  opacity: 0.9;
 }
 
 .cue-window-scale {
