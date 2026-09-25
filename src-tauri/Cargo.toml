@@ -49,3 +49,12 @@ tokio-postgres-rustls = "0.13"
 rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"] }
 webpki-roots = "0.26"
 
+# tokio-postgres pulls in `whoami` (for a default connection username, unused
+# here since online.rs always sets an explicit user) only as a transitive
+# dependency, but Cargo unifies its features across the build -- declaring it
+# here too, with `force-stub`, is enough to make that unification apply.
+# Without this, whoami's apple-vendor `devicename()` branch calls the
+# macOS-only SCDynamicStoreCopyComputerName symbol, missing from iOS's
+# SystemConfiguration.framework, which fails the iOS link.
+whoami = { version = "2", features = ["force-stub"] }
+

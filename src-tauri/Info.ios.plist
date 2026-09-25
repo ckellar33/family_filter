@@ -22,5 +22,29 @@
     <string>_mediaremotetv._tcp</string>
     <string>_airplay._tcp</string>
   </array>
+
+  <!-- iOS 27 SDK builds hard-crash at launch (EXC_BREAKPOINT in
+       _UIApplicationEvaluateRuntimeIssueForNoSceneLifecycleAdoption) unless
+       the app declares UIScene lifecycle adoption -- tao (Tauri's iOS
+       windowing backend) already implements TaoSceneDelegate for this, it
+       just needs to be named here. See
+       https://github.com/tauri-apps/tao/issues/1340. -->
+  <key>UIApplicationSceneManifest</key>
+  <dict>
+    <key>UIApplicationSupportsMultipleScenes</key>
+    <true/>
+    <key>UISceneConfigurations</key>
+    <dict>
+      <key>UIWindowSceneSessionRoleApplication</key>
+      <array>
+        <dict>
+          <key>UISceneConfigurationName</key>
+          <string>Default Configuration</string>
+          <key>UISceneDelegateClassName</key>
+          <string>TaoSceneDelegate</string>
+        </dict>
+      </array>
+    </dict>
+  </dict>
 </dict>
 </plist>

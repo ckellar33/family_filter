@@ -39,7 +39,9 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        .manage::<PairingStateHandle>(std::sync::Arc::new(std::sync::Mutex::new(PairingState::default())))
+        .manage::<PairingStateHandle>(std::sync::Arc::new(std::sync::Mutex::new(
+            PairingState::default(),
+        )))
         .manage::<ControlStateHandle>(Default::default())
         .setup(|app| {
             // Point every sidecar `*.store` file (pairing/device credentials,
@@ -49,7 +51,10 @@ pub fn run() {
             // that matters on iOS specifically. Must happen before any
             // command that reads/writes one of those stores runs, so this
             // is the very first thing `setup` does.
-            let data_dir = app.path().app_data_dir().expect("no app data directory available");
+            let data_dir = app
+                .path()
+                .app_data_dir()
+                .expect("no app data directory available");
             std::fs::create_dir_all(&data_dir).expect("failed to create app data directory");
             paths::set_base_dir(data_dir.clone());
             appletv::storage::set_base_dir(data_dir);
@@ -129,7 +134,9 @@ pub fn run() {
             // signal, not a background/foreground transition, and re-running
             // the reconnect flow on every window focus would be both wrong and
             // wasteful there.
-            if matches!(event, tauri::RunEvent::Resumed) && cfg!(any(target_os = "ios", target_os = "android")) {
+            if matches!(event, tauri::RunEvent::Resumed)
+                && cfg!(any(target_os = "ios", target_os = "android"))
+            {
                 let _ = app_handle.emit("app-resumed", ());
             }
         });
