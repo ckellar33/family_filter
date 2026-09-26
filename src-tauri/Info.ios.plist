@@ -23,6 +23,19 @@
     <string>_airplay._tcp</string>
   </array>
 
+  <!-- Lock the app to portrait only -- Tauri/tao's generated Info.plist
+       otherwise defaults to portrait + both landscapes, and there's no
+       tauri.conf.json field for this, so it's set here to survive a
+       `src-tauri/gen` wipe/regenerate. -->
+  <key>UISupportedInterfaceOrientations</key>
+  <array>
+    <string>UIInterfaceOrientationPortrait</string>
+  </array>
+  <key>UISupportedInterfaceOrientations~ipad</key>
+  <array>
+    <string>UIInterfaceOrientationPortrait</string>
+  </array>
+
   <!-- iOS 27 SDK builds hard-crash at launch (EXC_BREAKPOINT in
        _UIApplicationEvaluateRuntimeIssueForNoSceneLifecycleAdoption) unless
        the app declares UIScene lifecycle adoption -- tao (Tauri's iOS
