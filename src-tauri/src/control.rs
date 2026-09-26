@@ -163,7 +163,7 @@ async fn apply_filter(guard: &mut ControlState) -> (Option<String>, Option<Strin
 /// (`+page.svelte`) at the time of writing, though nothing requires them to
 /// stay in lockstep now that the frontend's poll is no longer load-bearing
 /// for on-time enforcement -- see `spawn_heartbeat`'s doc.
-const HEARTBEAT_INTERVAL: Duration = Duration::from_millis(250);
+const HEARTBEAT_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Spawns the loop that's now the sole thing actually responsible for
 /// firing mute/unmute/skip on time. Before this existed, that only ever

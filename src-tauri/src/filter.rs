@@ -55,16 +55,16 @@ const SKIP_RETRY_COOLDOWN: Duration = Duration::from_secs(3);
 /// this much before `end` too, rather than only ever firing early on entry
 /// and staying muted needlessly long past the real exit.
 ///
-/// 0.3s comfortably covers the current 250ms poll interval plus a typical
+/// 0.15s comfortably covers the current 100ms poll interval plus a typical
 /// local-network command round trip; tune this alongside that interval if
-/// either changes. Deliberately a fixed margin rather than something
-/// per-cue -- the delay it's compensating for comes from this app's own
-/// polling/transport, not from anything about a specific cue, so one value
-/// covers every cue the same way. Doesn't apply to the raw `start`/`end`
-/// shown to the frontend (`CueStatus`) or to the exact position a skip
-/// seeks to (`cue.end`, unchanged) -- only to *when* evaluate decides a cue
-/// is in effect.
-const PRE_ROLL: f64 = 0.3;
+/// either changes (was 0.3s covering a 250ms poll). Deliberately a fixed
+/// margin rather than something per-cue -- the delay it's compensating for
+/// comes from this app's own polling/transport, not from anything about a
+/// specific cue, so one value covers every cue the same way. Doesn't apply
+/// to the raw `start`/`end` shown to the frontend (`CueStatus`) or to the
+/// exact position a skip seeks to (`cue.end`, unchanged) -- only to *when*
+/// evaluate decides a cue is in effect.
+const PRE_ROLL: f64 = 0.15;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
