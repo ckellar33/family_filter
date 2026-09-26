@@ -23,6 +23,23 @@
     <string>_airplay._tcp</string>
   </array>
 
+  <!-- Lock the app to portrait. Tauri's generated Info.plist allows every
+       orientation by default; these keys replace its lists on merge. iPad
+       reads its own ~ipad key, and needs UIRequiresFullScreen to opt out
+       of multitasking, since App Store validation otherwise rejects an
+       iPad app that doesn't support all four orientations. -->
+  <key>UISupportedInterfaceOrientations</key>
+  <array>
+    <string>UIInterfaceOrientationPortrait</string>
+  </array>
+  <key>UISupportedInterfaceOrientations~ipad</key>
+  <array>
+    <string>UIInterfaceOrientationPortrait</string>
+    <string>UIInterfaceOrientationPortraitUpsideDown</string>
+  </array>
+  <key>UIRequiresFullScreen</key>
+  <true/>
+
   <!-- iOS 27 SDK builds hard-crash at launch (EXC_BREAKPOINT in
        _UIApplicationEvaluateRuntimeIssueForNoSceneLifecycleAdoption) unless
        the app declares UIScene lifecycle adoption -- tao (Tauri's iOS
