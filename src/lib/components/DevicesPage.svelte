@@ -19,9 +19,10 @@
     skipStep,
     save,
     verifySaved,
+    renameDevice,
     deleteDevice,
     startPairingWizard,
-  } from "$lib/state/session.svelte";
+   } from "$lib/state/session.svelte";
   import type { Protocol, Step } from "$lib/types";
   import PinKeypad from "$lib/components/PinKeypad.svelte";
 
@@ -47,6 +48,38 @@
     } else {
       confirmDeleteId = id;
     }
+  }
+
+  // Per-card inline rename -- tapping Rename swaps the card's button row for a
+  // single-line editor; Save commits via renameDevice(), Cancel or Escape
+  // dismisses it. Only one card edits at a time (renameId), and a blank or
+  // unchanged name just dismisses without a round-trip to the backend.
+  let renameId = $state<string | null>(null);
+  let renameDraft = $state("");
+  let renaming = $state(false);
+
+  function startRename(id: string, current: string) {
+    confirmDeleteId = null;
+    renameId = id;
+    renameDraft = current;
+  }
+
+  function cancelRename() {
+    renameId = null;
+    renameDraft = "";
+  }
+
+  async function commitRename(id: string) {
+    const current = session.savedDevices.find((d) => d.id === id)?.name;
+    const name = renameDraft.trim();
+    if (!name || name === current) {
+      cancelRename();
+      return;
+    }
+    renaming = true;
+    const ok = await renameDevice(id, name);
+    renaming = false;
+    if (ok) cancelRename();
   }
 
   // One sentence per wizard step, so each screen says what it's for and
@@ -107,6 +140,9 @@
     (async () => {
       if (untrack(() => session.page) === "control") return;
       confirmDeleteId = null;
+      renameId = null;
+      renameDraft = "";
+      renaming = false;
       await checkSaved();
       if (session.page === "saved" && session.lastDeviceId && session.savedDevices.some((d) => d.id === session.lastDeviceId)) {
         await onOpenControls(session.lastDeviceId);
@@ -279,19 +315,42 @@
                 {isConnecting ? "Connecting…" : sessionActive ? "Switch to this device" : "Open controls"}
               </button>
             {/if}
-            <div style="display:flex; gap:10px">
-              <button class="btn-secondary" onclick={() => verifySaved(device.id)} disabled={session.connecting || session.verifying}>
-                {isVerifying ? "Verifying…" : "Verify"}
-              </button>
-              <button
-                class="btn-secondary"
-                style={confirmDeleteId === device.id ? "color: var(--destructive); border-color: var(--error-line)" : ""}
-                onclick={() => requestDelete(device.id)}
-                disabled={session.connecting || session.verifying}
-              >
-                {confirmDeleteId === device.id ? "Tap again to remove" : "Remove"}
-              </button>
-            </div>
+            {#if renameId === device.id}
+              <input
+               class="field"
+               type="text"
+               bind:value={renameDraft}
+               placeholder={device.host}
+               maxlength="60"
+               onkeydown={(e) => {
+                if (e.key === "Enter") commitRename(device.id);
+                else if (e.key === "Escape") cancelRename();
+                }}
+              />
+              <div style="display:flex; gap:10px">
+                <button class="btn-primary" onclick={() => commitRename(device.id)} disabled={renaming || session.connecting || session.verifying}>
+                  {renaming ? "Saving…" : "Rename"}
+                </button>
+                <button class="btn-secondary" onclick={cancelRename} disabled={renaming}>Cancel</button>
+              </div>
+            {:else}
+              <div style="display:flex; gap:10px">
+                <button class="btn-secondary" onclick={() => startRename(device.id, device.name)} disabled={session.connecting || session.verifying}>
+                  Rename
+                </button>
+                <button class="btn-secondary" onclick={() => verifySaved(device.id)} disabled={session.connecting || session.verifying}>
+                  {isVerifying ? "Verifying…" : "Verify"}
+                </button>
+                <button
+                 class="btn-secondary"
+                 style={confirmDeleteId === device.id ? "color: var(--destructive); border-color: var(--error-line)" : ""}
+                 onclick={() => requestDelete(device.id)}
+                 disabled={session.connecting || session.verifying}
+                >
+                  {confirmDeleteId === device.id ? "Tap again to remove" : "Remove"}
+                </button>
+              </div>
+            {/if}
           </div>
         </div>
       {/each}

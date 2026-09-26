@@ -1016,6 +1016,7 @@ button.list-row:active:not(:disabled) {
   background: var(--card-bg);
   border: 1px solid rgba(0, 0, 0, 0.09);
   font-size: 14px;
+  color: #000000;
 }
 
 .field::placeholder {

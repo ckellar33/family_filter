@@ -178,14 +178,16 @@ export async function verifySaved(id: string) {
 
 // Renames a saved device in place -- updates the local list optimistically
 // on success rather than re-fetching the whole list for a one-field change.
-export async function renameDevice(id: string, name: string) {
+export async function renameDevice(id: string, name: string): Promise<boolean> {
   try {
     await invoke("rename_saved_device", { id, name });
     const device = session.savedDevices.find((d) => d.id === id);
     if (device) device.name = name;
     if (session.activeDevice?.id === id) session.activeDevice.name = name;
+    return true;
   } catch (e) {
     session.error = String(e);
+    return false;
   }
 }
 
