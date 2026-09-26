@@ -1,0 +1,31 @@
+[package]
+name = "bonjour-sys"
+version = "0.3.1"
+authors = ["Walker Crouse <walkercrouse@hotmail.com>"]
+edition = "2018"
+description = "Bindings for low-level Bonjour services (a.k.a. zeroconf)."
+readme = "README.md"
+homepage = "https://github.com/windy1/bonjour-sys"
+repository = "https://github.com/windy1/bonjour-sys"
+license-file = "LICENSE"
+keywords = ["bonjour", "zeroconf", "mdns", "avahi", "dnssd"]
+categories = [
+    "api-bindings",
+    "external-ffi-bindings",
+    "network-programming",
+    "os",
+    "os::macos-apis",
+]
+build = "build.rs"
+
+[lib]
+doctest = false
+
+[build-dependencies]
+bindgen = "0.68.1"
+
+[dependencies]
+libc = "0.2.77"
+
+[package.metadata.docs.rs]
+targets = ["aarch64-apple-darwin"]

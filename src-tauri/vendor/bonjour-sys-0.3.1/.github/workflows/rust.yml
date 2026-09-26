@@ -1,0 +1,31 @@
+name: Rust
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master, release/**]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  macOS:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: cargo build
+      - name: Run tests
+        run: cargo test --verbose
+
+  windows-latest:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Bonjour
+        run: choco install -y bonjour
+      - name: Build
+        run: cargo build
+      - name: Run tests
+        run: cargo test --verbose
