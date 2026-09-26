@@ -58,3 +58,28 @@ webpki-roots = "0.26"
 # SystemConfiguration.framework, which fails the iOS link.
 whoami = { version = "2", features = ["force-stub"] }
 
+# tao 0.35.3 (transitive, via tauri-runtime-wry) hands UIKit a dangling
+# pointer from its iOS scene-configuration callback -- harmless in debug (the
+# autorelease pool papers over it) but an immediate crash on launch in
+# release builds. Fixed upstream by tao#1245/commit f216350, not yet released
+# to crates.io -- pinned to that exact commit (still version 0.35.3, so Cargo
+# accepts it as a patch; the `dev` branch's later scene-lifecycle rewrite
+# bumped to 0.36.0, which Cargo won't substitute for a "0.35" requirement).
+# See https://github.com/tauri-apps/tao/issues/1340.
+#
+# swift-rs 1.0.8 (already required above) has its own separate Xcode 27 bug:
+# its globalize_cdecl_symbols() release-build workaround only re-globalizes
+# the consuming package's own object member, never the shared SwiftRs.o
+# runtime shim every package bundles a private copy of -- so retain_object,
+# release_object, string_from_bytes, and data_from_bytes stay locally-scoped
+# and any real (more-than-trivial) app fails to link in release with
+# "Undefined symbols" for those plus every plugin's own @_cdecl entry points.
+# Fixed by swift-rs#82 (open, not yet merged/released) on top of the current
+# 1.0.8 tag -- pinned to that exact commit, not a branch, since an unmerged
+# PR head can move or disappear; if `cargo update` ever fails to fetch this
+# rev, check whether #82 merged and switch to a released version instead.
+# See https://github.com/Brendonovich/swift-rs/issues/81.
+[patch.crates-io]
+tao = { git = "https://github.com/tauri-apps/tao", rev = "f2163508104413ef0609178dcebdd5803b496211" }
+swift-rs = { git = "https://github.com/Brendonovich/swift-rs", rev = "3788d3d2bae8e7a863b3e281a59477438e12c632" }
+

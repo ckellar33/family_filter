@@ -4208,8 +4208,7 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 [[package]]
 name = "swift-rs"
 version = "1.0.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e45c444e496845d3f2a351146bff59aae4975b2280238df1dfaa0c7d1846f38e"
+source = "git+https://github.com/Brendonovich/swift-rs?rev=3788d3d2bae8e7a863b3e281a59477438e12c632#3788d3d2bae8e7a863b3e281a59477438e12c632"
 dependencies = [
  "base64 0.21.7",
  "serde",
@@ -4285,8 +4284,7 @@ dependencies = [
 [[package]]
 name = "tao"
 version = "0.35.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d1c93047acf68669466a34690ac58cca7010bd1b201e1ec86f1fd0a75d3dd4a9"
+source = "git+https://github.com/tauri-apps/tao?rev=f2163508104413ef0609178dcebdd5803b496211#f2163508104413ef0609178dcebdd5803b496211"
 dependencies = [
  "bitflags 2.13.1",
  "block2",
@@ -4313,13 +4311,23 @@ dependencies = [
  "parking_lot",
  "percent-encoding",
  "raw-window-handle",
- "tao-macros",
+ "tao-macros 0.1.3",
  "unicode-segmentation",
  "url",
  "windows",
  "windows-core 0.61.2",
  "windows-version",
  "x11-dl",
+]
+
+[[package]]
+name = "tao-macros"
+version = "0.1.3"
+source = "git+https://github.com/tauri-apps/tao?rev=f2163508104413ef0609178dcebdd5803b496211#f2163508104413ef0609178dcebdd5803b496211"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -6068,7 +6076,7 @@ dependencies = [
  "raw-window-handle",
  "sha2 0.10.9",
  "soup3",
- "tao-macros",
+ "tao-macros 0.1.4",
  "thiserror 2.0.20",
  "url",
  "webkit2gtk",
