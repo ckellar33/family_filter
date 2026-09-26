@@ -58,14 +58,37 @@ webpki-roots = "0.26"
 # SystemConfiguration.framework, which fails the iOS link.
 whoami = { version = "2", features = ["force-stub"] }
 
-# tao 0.35.3 (transitive, via tauri-runtime-wry) hands UIKit a dangling
-# pointer from its iOS scene-configuration callback -- harmless in debug (the
-# autorelease pool papers over it) but an immediate crash on launch in
-# release builds. Fixed upstream by tao#1245/commit f216350, not yet released
-# to crates.io -- pinned to that exact commit (still version 0.35.3, so Cargo
-# accepts it as a patch; the `dev` branch's later scene-lifecycle rewrite
-# bumped to 0.36.0, which Cargo won't substitute for a "0.35" requirement).
-# See https://github.com/tauri-apps/tao/issues/1340.
+# tao 0.35.3 (transitive, via tauri-runtime-wry) has two iOS bugs plus one
+# gap we hit once the app adopted the scene lifecycle:
+#  1. Its iOS scene-configuration callback hands UIKit a dangling pointer --
+#     harmless in debug (the autorelease pool papers over it) but an
+#     immediate crash on launch in release builds. Fixed upstream by
+#     tao#1245/commit f216350, not yet released to crates.io (the `dev`
+#     branch's later scene-lifecycle rewrite bumped to 0.36.0, which Cargo
+#     won't accept as a patch for a "0.35" requirement, so that commit is
+#     this vendored copy's base rather than a git patch pinned to it
+#     directly). See https://github.com/tauri-apps/tao/issues/1340.
+#  2. Its scene-delegate `sceneWillResignActive`/`sceneWillEnterForeground`
+#     never emitted `Event::Suspended`/`Event::Resumed` the way the
+#     pre-scene AppDelegate path did -- so on iOS 27+ (scene lifecycle
+#     mandatory), `RunEvent::Resumed` in lib.rs's `run()` silently stopped
+#     firing after the first background/foreground cycle, and with it the
+#     `app-resumed` reconnect this app's control sockets depend on
+#     surviving the phone being locked. No upstream fix exists for this
+#     one; vendor/tao-0.35.3/src/platform_impl/ios/scene.rs wires it in
+#     directly, on top of the vendored f216350 fix above.
+# Vendored rather than git-pinned since it combines an upstream commit with
+# a local fix of our own, which no single public commit captures.
+#
+# tao 0.37.0 (latest on crates.io) already has both fixes upstream, properly
+# done -- but tauri-runtime-wry 2.11.4 (latest released, and what every
+# released `tauri` up to 2.11.6 depends on) hard-requires tao "0.35" and its
+# own code still matches on tao's old top-level `Event::Resumed`/`Suspended`,
+# which 0.37 removed in favor of window-scoped `WindowEvent::Resumed`/
+# `Suspended` -- confirmed by trying it: patching just tauri-runtime-wry's
+# Cargo.toml version bound (no upstream source change) fails to compile
+# against tao 0.37 for exactly that reason. Revisit this vendor once a
+# tauri-runtime-wry release adopts tao 0.36+.
 #
 # swift-rs 1.0.8 (already required above) has its own separate Xcode 27 bug:
 # its globalize_cdecl_symbols() release-build workaround only re-globalizes
@@ -80,6 +103,6 @@ whoami = { version = "2", features = ["force-stub"] }
 # rev, check whether #82 merged and switch to a released version instead.
 # See https://github.com/Brendonovich/swift-rs/issues/81.
 [patch.crates-io]
-tao = { git = "https://github.com/tauri-apps/tao", rev = "f2163508104413ef0609178dcebdd5803b496211" }
+tao = { path = "vendor/tao-0.35.3" }
 swift-rs = { git = "https://github.com/Brendonovich/swift-rs", rev = "3788d3d2bae8e7a863b3e281a59477438e12c632" }
 

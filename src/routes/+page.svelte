@@ -280,7 +280,11 @@
       />
     {/if}
 
-    <div class="content" class:with-tabbar={!devicesOpen && !showSplash}>
+    <div
+      class="content"
+      class:with-tabbar={!devicesOpen && !showSplash}
+      class:no-scroll={activeTab === "controls" && !devicesOpen && !showSplash}
+    >
       {#if showSplash}
         <LaunchScreen onDone={() => { splashDone = true; }}></LaunchScreen>
       {:else if devicesOpen}

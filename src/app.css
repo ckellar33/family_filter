@@ -246,6 +246,14 @@ body {
   padding-bottom: calc(env(safe-area-inset-bottom) + 104px);
 }
 
+/* Now Playing (OpenControlsPage): a fixed transport screen, not a list --
+   nothing on it should ever need scrolling, so it doesn't get `.content`'s
+   usual overflow-y/momentum scrolling. */
+.content.no-scroll {
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: auto;
+}
+
 /* While a finger/pointer is down dragging from the edge, `.content` must
    track it 1:1 with zero lag -- the eased transition above is only for
    the two moments *after* release, so it's suspended for the drag itself
