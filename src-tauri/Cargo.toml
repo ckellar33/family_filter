@@ -105,4 +105,14 @@ whoami = { version = "2", features = ["force-stub"] }
 [patch.crates-io]
 tao = { path = "vendor/tao-0.35.3" }
 swift-rs = { git = "https://github.com/Brendonovich/swift-rs", rev = "3788d3d2bae8e7a863b3e281a59477438e12c632" }
+# zeroconf (via appletv's mDNS discovery) pulls in bonjour-sys, whose build.rs
+# feeds bindgen the raw `aarch64-apple-ios-sim` triple. Clang doesn't
+# understand the "-sim" env suffix -- only "-simulator" -- so it errors out
+# on an invalid target and then can't find the iOS SDK headers either.
+# zeroconf 0.15.1 pins bonjour-sys to "0.3.0" (caret, so <0.4.0), which rules
+# out patching to the newer 0.4.0 release -- it doesn't fix this anyway, so
+# we stay on 0.3.1 with our own patch translating the target triple and
+# passing an explicit -isysroot for iOS/iOS Simulator.
+# See vendor/bonjour-sys-0.3.1/build.rs.
+bonjour-sys = { path = "vendor/bonjour-sys-0.3.1" }
 

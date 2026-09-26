@@ -34,6 +34,7 @@
   import EmptyState from "$lib/components/EmptyState.svelte";
   import CueEditorSheet from "$lib/components/CueEditorSheet.svelte";
   import AddCueSheet from "$lib/components/AddCueSheet.svelte";
+  import LibrarySearchTabs from "$lib/components/LibrarySearchTabs.svelte";
 
   let { onRecordInstead }: { onRecordInstead: () => void } = $props();
 
@@ -225,28 +226,20 @@
          service switcher above, not a NavBar-level thing, since it only
          ever matters within this one screen. -->
     <!-- Search leads; the two libraries are scope tabs under it rather than
-         a pair of buttons, since the online library outgrows browsing. -->
-    <div class="search-field">
-      <span class="search-icon" aria-hidden="true">⌕</span>
-      <input type="search" placeholder="Search titles" bind:value={query} autocapitalize="none" autocorrect="off" spellcheck="false" />
-      {#if query !== ""}
-        <button type="button" class="search-clear" onclick={() => (query = "")} aria-label="Clear search">×</button>
-      {/if}
-    </div>
+         a pair of buttons, since the online library outgrows browsing.
+         Handled by its own component (query/gridSource live here and are
+         passed down bound) so this screen's job is just deciding what
+         content to show for the resulting scope -- not how you pick it. -->
+    <LibrarySearchTabs bind:query bind:gridSource localCount={filterState.tiles.length} onlineCount={filterState.onlineTiles.length} />
 
-    <div class="scope-tabs">
-      <button type="button" class="scope-tab" class:selected={gridSource === "local"} onclick={() => (gridSource = "local")}>
-        <span class="scope-label">On this device <span class="scope-count">{filterState.tiles.length}</span></span>
-        <span class="scope-rule"></span>
-      </button>
-      <button type="button" class="scope-tab" class:selected={gridSource === "online"} onclick={() => (gridSource = "online")}>
-        <span class="scope-label"
-          >Online{#if filterState.onlineTiles.length > 0}<span class="scope-count">{filterState.onlineTiles.length}</span>{/if}</span
-        >
-        <span class="scope-rule"></span>
-      </button>
-    </div>
-
+    <!-- Takes whatever height the search field + scope tabs above leave
+         over, but isn't itself a scroll container: EmptyState/loading/error
+         states render straight in here and just sit still. Once there's a
+         grid to show, it's wrapped in a `.stack` (see below) which is the
+         thing that actually scrolls -- so a long poster grid scrolls in
+         place without dragging the header along with it, and a short
+         EmptyState never gets a scrollbar it doesn't need. -->
+    <div class="library-body">
     {#if gridSource === "local"}
       {#if filterState.tilesError}
         <p class="banner error">{filterState.tilesError}</p>
@@ -269,36 +262,36 @@
               <button class="btn-secondary" style="min-height:46px" onclick={addFilterDirectory}>Add folder…</button>
             {/if}
           </div>
-        </div>
-        <p class="footnote">
-          {#if query.trim() !== ""}
-            {shownTiles.length} of {filterState.tiles.length} {filterState.tiles.length === 1 ? "title" : "titles"}
-          {:else}
-            {filterState.tiles.length} {filterState.tiles.length === 1 ? "title" : "titles"}
+          <p class="footnote">
+            {#if query.trim() !== ""}
+              {shownTiles.length} of {filterState.tiles.length} {filterState.tiles.length === 1 ? "title" : "titles"}
+            {:else}
+              {filterState.tiles.length} {filterState.tiles.length === 1 ? "title" : "titles"}
+            {/if}
+          </p>
+          {#if shownTiles.length === 0}
+            <p class="hint centered">No titles on this device match “{query.trim()}” — try Online.</p>
           {/if}
-        </p>
-        {#if shownTiles.length === 0}
-          <p class="hint centered">No titles on this device match “{query.trim()}” — try Online.</p>
-        {/if}
-        <div class="poster-grid">
-          {#each shownTiles as tile (tile.title)}
-            <!-- Wrapped rather than built into PosterTile itself: the tile
-                 stays one big tap target (a <button>), and the delete
-                 affordance is a sibling positioned over its corner --
-                 nesting a second interactive element inside that button
-                 wouldn't be valid HTML. -->
-            <div class="poster-tile-wrap">
-              <PosterTile title={tile.title} poster={tile.poster} cueCount={tile.cue_count} onclick={() => openTitle(tile.title)} />
-              <button
-                type="button"
-                class="poster-delete"
-                onclick={() => confirmDeleteTile(tile)}
-                aria-label={`Remove ${tile.title} from My Filters`}
-              >
-                ✕
-              </button>
-            </div>
-          {/each}
+          <div class="poster-grid">
+            {#each shownTiles as tile (tile.title)}
+              <!-- Wrapped rather than built into PosterTile itself: the tile
+                   stays one big tap target (a <button>), and the delete
+                   affordance is a sibling positioned over its corner --
+                   nesting a second interactive element inside that button
+                   wouldn't be valid HTML. -->
+              <div class="poster-tile-wrap">
+                <PosterTile title={tile.title} poster={tile.poster} cueCount={tile.cue_count} onclick={() => openTitle(tile.title)} />
+                <button
+                  type="button"
+                  class="poster-delete"
+                  onclick={() => confirmDeleteTile(tile)}
+                  aria-label={`Remove ${tile.title} from My Filters`}
+                >
+                  ✕
+                </button>
+              </div>
+            {/each}
+          </div>
         </div>
       {/if}
     {:else}
@@ -315,29 +308,32 @@
       {:else if filterState.onlineTiles.length === 0 && !filterState.onlineTilesError}
         <p class="hint centered">Nothing in the online library yet.</p>
       {:else}
-        <p class="footnote">
-          {#if query.trim() !== ""}
-            {shownOnlineTiles.length} of {filterState.onlineTiles.length} match — tap one to preview it
-          {:else}
-            {filterState.onlineTiles.length}
-            {filterState.onlineTiles.length === 1 ? "title" : "titles"} — tap one to preview it
+        <div class="stack">
+          <p class="footnote">
+            {#if query.trim() !== ""}
+              {shownOnlineTiles.length} of {filterState.onlineTiles.length} match — tap one to preview it
+            {:else}
+              {filterState.onlineTiles.length}
+              {filterState.onlineTiles.length === 1 ? "title" : "titles"} — tap one to preview it
+            {/if}
+          </p>
+          {#if shownOnlineTiles.length === 0}
+            <p class="hint centered">Nothing in the online library matches “{query.trim()}”.</p>
           {/if}
-        </p>
-        {#if shownOnlineTiles.length === 0}
-          <p class="hint centered">Nothing in the online library matches “{query.trim()}”.</p>
-        {/if}
-        <div class="poster-grid">
-          {#each shownOnlineTiles as tile (tile.title)}
-            <PosterTile
-              title={tile.title}
-              poster={tile.poster}
-              cueCount={tile.cue_count}
-              onclick={() => openOnlinePreview(tile)}
-            />
-          {/each}
+          <div class="poster-grid">
+            {#each shownOnlineTiles as tile (tile.title)}
+              <PosterTile
+                title={tile.title}
+                poster={tile.poster}
+                cueCount={tile.cue_count}
+                onclick={() => openOnlinePreview(tile)}
+              />
+            {/each}
+          </div>
         </div>
       {/if}
     {/if}
+    </div>
   </div>
 
   {#if filterState.detail}

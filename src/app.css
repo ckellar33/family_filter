@@ -246,6 +246,19 @@ body {
   padding-bottom: calc(env(safe-area-inset-bottom) + 104px);
 }
 
+/* SelectFilterPage (`.screen-stack`) alone: its own `.library-body .stack`
+   is the thing that scrolls (see app.css's `.library-body` comment), pinned
+   to `.content`'s own content-box via `.screen-stack`'s `height: 100%` --
+   so the usual `.with-tabbar` reserve above (sized for `.content` itself
+   scrolling, so a plain list's last row clears the tabbar) instead just
+   shrinks that pinned box, leaving a dead gap of blank padding between the
+   grid and the tabbar rather than any real clearance. Dropped back down to
+   the bare top/bottom padding here; `.library-body .stack` carries its own
+   bottom padding instead, where it actually scrolls past the last row. */
+.content.with-tabbar.self-scroll {
+  padding-bottom: 4px;
+}
+
 /* Now Playing (OpenControlsPage): a fixed transport screen, not a list --
    nothing on it should ever need scrolling, so it doesn't get `.content`'s
    usual overflow-y/momentum scrolling. */
@@ -286,6 +299,13 @@ body {
    height. */
 .screen-stack {
   position: relative;
+  /* Pinned, not a floor: resolves against `.content`'s own (definite,
+     flexed) height, and `.edge-back-layer` below matches it exactly so
+     `.content` itself never has anything to scroll for this screen --
+     scrolling instead happens (or doesn't) inside `.library-body`, one
+     level further down, while the search field/scope tabs above it and
+     this box's own edges stay put. */
+  height: 100%;
 }
 
 /* The grid, always mounted underneath. Nothing here needs its own
@@ -295,6 +315,42 @@ body {
    front layer actually exists to drag. */
 .edge-back-layer {
   position: relative;
+  /* Same pin as `.screen-stack` above, one level down -- needed here too
+     since a block box doesn't inherit its parent's stretched height on its
+     own. Search field + scope tabs (LibrarySearchTabs, plain flex siblings
+     with no scroll container) take their natural height out of this fixed
+     total; `.library-body` absorbs whatever's left via its own flex:1. */
+  height: 100%;
+}
+
+/* Takes whatever height is left under the search field + scope tabs
+   (`min-height: 0` is what lets it shrink to that instead of pushing
+   `.edge-back-layer` past its pinned 100%), but doesn't scroll itself --
+   EmptyState (and the loading/error text above it) render here directly
+   and just sit still, short enough to never need it. The `.stack` below
+   is the one that actually scrolls. */
+.library-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* The one scrolling region on this screen, once there's something to show
+   (a poster grid): takes whatever height `.library-body` leaves over and
+   scrolls internally if that's taller than it, without dragging the
+   search field/scope tabs along with it. EmptyState never mounts inside
+   this -- see `.library-body` above -- so it's never subject to this. */
+.library-body .stack {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  /* Breathing room past the last poster row once scrolled all the way down
+     -- see `.content.self-scroll` for why this lives here instead of on
+     `.content` itself, the way every other screen's does. */
+  padding-bottom: 24px;
 }
 
 /* Belt-and-suspenders alongside the `inert` attribute itself (WKWebView on
@@ -1600,6 +1656,17 @@ code {
   gap: 22px;
   text-align: center;
   padding: 60px 10px 30px;
+}
+
+/* Trimmed density for the one EmptyState that shares its screen with
+   another 91px-tall header (search field + scope tabs, SelectFilterPage) --
+   the base padding/gap above assumes a whole screen to itself (as
+   OpenControlsPage's three other kinds get), which is exactly what pushed
+   "No filter files yet" a wodge below the fold. Scoped to `.edge-back-layer`
+   alone so those other three keep their original spacing. */
+.edge-back-layer .empty-state {
+  gap: 16px;
+  padding: 20px 10px 12px;
 }
 
 .empty-icon {

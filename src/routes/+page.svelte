@@ -284,6 +284,7 @@
       class="content"
       class:with-tabbar={!devicesOpen && !showSplash}
       class:no-scroll={activeTab === "controls" && !devicesOpen && !showSplash}
+      class:self-scroll={activeTab === "select-filter" && !devicesOpen && !showSplash}
     >
       {#if showSplash}
         <LaunchScreen onDone={() => { splashDone = true; }}></LaunchScreen>
