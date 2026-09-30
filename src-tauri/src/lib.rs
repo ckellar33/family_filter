@@ -18,12 +18,6 @@ use pairing::{PairingState, PairingStateHandle};
 /// sessions -- same identity the CLI (`libs/appletv-cli`) uses.
 pub(crate) const DISPLAY_NAME: &str = "family-filter";
 
-// Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-#[tauri::command]
-fn greet(name: &str) -> String {
-    format!("Hello, {}! You've been greeted from Rust!", name)
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Installs `ring` as the process-wide default rustls crypto provider --
@@ -67,7 +61,6 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            greet,
             pairing::discover_devices,
             pairing::pair_companion,
             pairing::pair_mrp,
