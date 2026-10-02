@@ -34,6 +34,7 @@ export const SKIP_CATEGORIES: string[] = [
   "frightening",
   "crude humor",
   "peril",
+  "credits",
 ];
 
 // Mute *is* language -- the question a mute mark asks is which kind, since
