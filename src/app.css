@@ -396,10 +396,13 @@ body {
    covers the grid at rest without stretching to match its height, and so
    swiping it doesn't add to `.edge-back-layer`'s own layout height. Same
    opaque background as `.content`'s so there's no seam between the two
-   layers before a drag starts moving anything. */
+   layers before a drag starts moving anything. `min-height: 100%` keeps a
+   short front screen (e.g. a title with no cues yet, so no category list)
+   from ending partway down and leaving the grid peeking out below it. */
 .edge-front-layer {
   position: absolute;
   inset: 0 0 auto 0;
+  min-height: 100%;
   background: var(--bg);
   transition: transform 0.28s cubic-bezier(0.32, 0.72, 0, 1);
 }
