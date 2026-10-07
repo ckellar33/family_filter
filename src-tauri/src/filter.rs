@@ -18,7 +18,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 
 /// Sidecar file remembering the last filter file the user picked, so it
 /// reloads automatically on the next launch -- mirrors
@@ -146,7 +146,11 @@ pub struct FilterList {
 /// still works in; see `convert_seconds_to_hms_strings`/
 /// `convert_hms_strings_to_seconds` for where the two formats meet.
 fn seconds_to_hms(total: f64) -> String {
-    let total = if total.is_finite() { total.max(0.0) } else { 0.0 };
+    let total = if total.is_finite() {
+        total.max(0.0)
+    } else {
+        0.0
+    };
     // Rounds to whole centiseconds *before* decomposing into h/m/s/cs via
     // integer division -- doing that arithmetic in f64 risked e.g. 59.999999
     // seconds (float imprecision) formatting as "60.00" instead of rolling
@@ -168,12 +172,19 @@ fn hms_to_seconds(s: &str) -> Result<f64> {
     let parts: Vec<&str> = s.trim().split(':').collect();
     let parse = |p: &str| p.parse::<f64>().ok();
     let value = match parts.as_slice() {
-        [h, m, sec] => parse(h).zip(parse(m)).zip(parse(sec)).map(|((h, m), sec)| h * 3600.0 + m * 60.0 + sec),
+        [h, m, sec] => parse(h)
+            .zip(parse(m))
+            .zip(parse(sec))
+            .map(|((h, m), sec)| h * 3600.0 + m * 60.0 + sec),
         [m, sec] => parse(m).zip(parse(sec)).map(|(m, sec)| m * 60.0 + sec),
         [sec] => parse(sec),
         _ => None,
     };
-    value.with_context(|| format!("invalid cue time {s:?}, expected \"HH:MM:SS\"/\"MM:SS\" or a plain number of seconds"))
+    value.with_context(|| {
+        format!(
+            "invalid cue time {s:?}, expected \"HH:MM:SS\"/\"MM:SS\" or a plain number of seconds"
+        )
+    })
 }
 
 /// Rewrites every cue's `start`/`end` in a filter file's parsed `Value` from
@@ -184,9 +195,13 @@ fn hms_to_seconds(s: &str) -> Result<f64> {
 /// `test_filter.json`) passes through untouched -- both formats are always
 /// accepted on read; only `FilterList::save` picks one to write back out.
 fn convert_hms_strings_to_seconds(value: &mut serde_json::Value) -> Result<()> {
-    let Some(media) = value.get_mut("media").and_then(|m| m.as_array_mut()) else { return Ok(()) };
+    let Some(media) = value.get_mut("media").and_then(|m| m.as_array_mut()) else {
+        return Ok(());
+    };
     for entry in media {
-        let Some(cues) = entry.get_mut("cues").and_then(|c| c.as_array_mut()) else { continue };
+        let Some(cues) = entry.get_mut("cues").and_then(|c| c.as_array_mut()) else {
+            continue;
+        };
         for cue in cues {
             for field in ["start", "end"] {
                 if let Some(s) = cue.get(field).and_then(|v| v.as_str()) {
@@ -230,9 +245,13 @@ pub fn media_entry_from_value(mut value: serde_json::Value) -> Result<MediaEntry
 /// "HH:MM:SS.ss" strings before it's written to disk, so a saved file reads
 /// like a video's own timestamp rather than a raw second count.
 fn convert_seconds_to_hms_strings(value: &mut serde_json::Value) {
-    let Some(media) = value.get_mut("media").and_then(|m| m.as_array_mut()) else { return };
+    let Some(media) = value.get_mut("media").and_then(|m| m.as_array_mut()) else {
+        return;
+    };
     for entry in media {
-        let Some(cues) = entry.get_mut("cues").and_then(|c| c.as_array_mut()) else { continue };
+        let Some(cues) = entry.get_mut("cues").and_then(|c| c.as_array_mut()) else {
+            continue;
+        };
         for cue in cues {
             for field in ["start", "end"] {
                 if let Some(n) = cue.get(field).and_then(|v| v.as_f64()) {
@@ -270,8 +289,13 @@ pub type CueKey = (String, String, usize);
 /// `pub(crate)` rather than private: `control.rs` needs it too, to build the
 /// same key when the frontend reports which cue (by title + index) got
 /// toggled.
+///
+/// Also drops trademark/registered/copyright marks: some apps report the
+/// now-playing title with them (e.g. Disney+'s "Spider-Man™: Far From
+/// Home"), while filter files are written without -- an exact comparison
+/// would otherwise never match.
 pub(crate) fn normalize_title(t: &str) -> String {
-    t.trim().to_lowercase()
+    t.chars().filter(|c| !matches!(c, '™' | '®' | '©')).collect::<String>().trim().to_lowercase()
 }
 
 /// Same normalization as `normalize_title`, kept as its own function (rather
@@ -289,21 +313,44 @@ impl MediaEntry {
     /// methods below (`FilterList::add_cue`/`update_cue`), so both paths can
     /// never drift apart on what counts as a valid cue list.
     fn sort_and_validate(&mut self) -> Result<()> {
-        self.cues.sort_by(|a, b| a.start.partial_cmp(&b.start).unwrap_or(std::cmp::Ordering::Equal));
+        self.cues.sort_by(|a, b| {
+            a.start
+                .partial_cmp(&b.start)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         let mut prev_end: Option<f64> = None;
         for cue in &self.cues {
             if !(cue.start.is_finite() && cue.end.is_finite()) {
-                bail!("{:?} ({:?}) has a non-finite cue start/end", self.title, self.service);
+                bail!(
+                    "{:?} ({:?}) has a non-finite cue start/end",
+                    self.title,
+                    self.service
+                );
             }
             if cue.start < 0.0 || cue.end <= cue.start {
-                bail!("{:?} ({:?}) has a cue with start >= end ({} >= {})", self.title, self.service, cue.start, cue.end);
+                bail!(
+                    "{:?} ({:?}) has a cue with start >= end ({} >= {})",
+                    self.title,
+                    self.service,
+                    cue.start,
+                    cue.end
+                );
             }
             if cue.category.trim().is_empty() {
-                bail!("{:?} ({:?}) has a cue with an empty category", self.title, self.service);
+                bail!(
+                    "{:?} ({:?}) has a cue with an empty category",
+                    self.title,
+                    self.service
+                );
             }
             if let Some(prev_end) = prev_end {
                 if cue.start < prev_end {
-                    bail!("{:?} ({:?}) has overlapping cues around {}", self.title, self.service, cue.start);
+                    bail!(
+                        "{:?} ({:?}) has overlapping cues around {}",
+                        self.title,
+                        self.service,
+                        cue.start
+                    );
                 }
             }
             prev_end = Some(cue.end);
@@ -314,45 +361,70 @@ impl MediaEntry {
     /// This entry's contribution to a `CueKey` -- the normalized title and
     /// service, shared by every cue in it.
     fn key_prefix(&self) -> (String, String) {
-        (normalize_title(&self.title), normalize_service(&self.service))
+        (
+            normalize_title(&self.title),
+            normalize_service(&self.service),
+        )
     }
 
     /// Whether cue `idx` is currently eligible to fire at all -- neither its
     /// category nor the cue itself has been individually disabled.
-    fn cue_enabled(&self, idx: usize, cue: &Cue, disabled_categories: &HashSet<String>, disabled_cues: &HashSet<CueKey>) -> bool {
+    fn cue_enabled(
+        &self,
+        idx: usize,
+        cue: &Cue,
+        disabled_categories: &HashSet<String>,
+        disabled_cues: &HashSet<CueKey>,
+    ) -> bool {
         let (title, service) = self.key_prefix();
-        !disabled_categories.contains(&cue.category) && !disabled_cues.contains(&(title, service, idx))
+        !disabled_categories.contains(&cue.category)
+            && !disabled_cues.contains(&(title, service, idx))
     }
 
     /// The cue containing `pos` (`start <= pos < end`), if any, that's also
     /// currently enabled (see `cue_enabled`).
-    fn cue_at(&self, pos: f64, disabled_categories: &HashSet<String>, disabled_cues: &HashSet<CueKey>) -> Option<(usize, &Cue)> {
-        self.cues
-            .iter()
-            .enumerate()
-            .find(|(idx, c)| c.start <= pos && pos < c.end && self.cue_enabled(*idx, c, disabled_categories, disabled_cues))
+    fn cue_at(
+        &self,
+        pos: f64,
+        disabled_categories: &HashSet<String>,
+        disabled_cues: &HashSet<CueKey>,
+    ) -> Option<(usize, &Cue)> {
+        self.cues.iter().enumerate().find(|(idx, c)| {
+            c.start <= pos
+                && pos < c.end
+                && self.cue_enabled(*idx, c, disabled_categories, disabled_cues)
+        })
     }
-
 }
 
 impl FilterList {
     pub fn load(path: &Path) -> Result<Self> {
-        let text = fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
+        let text = fs::read_to_string(path)
+            .with_context(|| format!("failed to read {}", path.display()))?;
         Self::parse_and_validate(&text)
     }
 
     fn parse_and_validate(json: &str) -> Result<Self> {
-        let mut value: serde_json::Value = serde_json::from_str(json).context("invalid filter file JSON")?;
+        let mut value: serde_json::Value =
+            serde_json::from_str(json).context("invalid filter file JSON")?;
         convert_hms_strings_to_seconds(&mut value)?;
-        let mut list: FilterList = serde_json::from_value(value).context("invalid filter file JSON")?;
+        let mut list: FilterList =
+            serde_json::from_value(value).context("invalid filter file JSON")?;
 
         let mut seen = HashSet::new();
         for entry in &mut list.media {
             if entry.title.trim().is_empty() {
                 bail!("a media entry has an empty title");
             }
-            if !seen.insert((normalize_title(&entry.title), normalize_service(&entry.service))) {
-                bail!("duplicate title+service {:?}/{:?} in filter file", entry.title, entry.service);
+            if !seen.insert((
+                normalize_title(&entry.title),
+                normalize_service(&entry.service),
+            )) {
+                bail!(
+                    "duplicate title+service {:?}/{:?} in filter file",
+                    entry.title,
+                    entry.service
+                );
             }
             entry.sort_and_validate()?;
         }
@@ -368,7 +440,9 @@ impl FilterList {
     pub fn find_entry(&self, title: &str, service: &str) -> Option<&MediaEntry> {
         let t = normalize_title(title);
         let s = normalize_service(service);
-        self.media.iter().find(|e| normalize_title(&e.title) == t && normalize_service(&e.service) == s)
+        self.media
+            .iter()
+            .find(|e| normalize_title(&e.title) == t && normalize_service(&e.service) == s)
     }
 
     /// The entry to actually apply for `title` currently playing on
@@ -380,7 +454,11 @@ impl FilterList {
     /// deliberately service-agnostic ones) working -- but an exact match
     /// always wins when both exist, since it's the more accurate timing for
     /// what's actually playing.
-    pub fn find_entry_for_playback(&self, title: &str, service: Option<&str>) -> Option<&MediaEntry> {
+    pub fn find_entry_for_playback(
+        &self,
+        title: &str,
+        service: Option<&str>,
+    ) -> Option<&MediaEntry> {
         if let Some(s) = service {
             if let Some(entry) = self.find_entry(title, s) {
                 return Some(entry);
@@ -395,7 +473,10 @@ impl FilterList {
     /// enumerate. Includes the generic (`service == ""`) entry, if any.
     pub fn entries_for_title(&self, title: &str) -> Vec<&MediaEntry> {
         let t = normalize_title(title);
-        self.media.iter().filter(|e| normalize_title(&e.title) == t).collect()
+        self.media
+            .iter()
+            .filter(|e| normalize_title(&e.title) == t)
+            .collect()
     }
 
     /// Distinct categories across every entry, in first-seen order -- what
@@ -420,7 +501,9 @@ impl FilterList {
     fn find_entry_mut(&mut self, title: &str, service: &str) -> Option<&mut MediaEntry> {
         let t = normalize_title(title);
         let s = normalize_service(service);
-        self.media.iter_mut().find(|e| normalize_title(&e.title) == t && normalize_service(&e.service) == s)
+        self.media
+            .iter_mut()
+            .find(|e| normalize_title(&e.title) == t && normalize_service(&e.service) == s)
     }
 
     /// Same lookup as `find_entry_mut`, but creates a new (empty-cues) entry
@@ -430,9 +513,14 @@ impl FilterList {
     /// themselves.
     fn entry_mut(&mut self, title: &str, service: &str) -> &mut MediaEntry {
         if self.find_entry_mut(title, service).is_none() {
-            self.media.push(MediaEntry { title: title.to_string(), service: service.to_string(), cues: Vec::new() });
+            self.media.push(MediaEntry {
+                title: title.to_string(),
+                service: service.to_string(),
+                cues: Vec::new(),
+            });
         }
-        self.find_entry_mut(title, service).expect("just inserted if it was absent")
+        self.find_entry_mut(title, service)
+            .expect("just inserted if it was absent")
     }
 
     /// Corrects a mis-detected (or never-detected) service after the fact --
@@ -442,9 +530,18 @@ impl FilterList {
     /// Rejects the rename if `(title, new_service)` already has its own
     /// entry -- renaming into an existing entry would silently merge two
     /// independent cue lists, which is never what's wanted here.
-    pub fn set_entry_service(&mut self, title: &str, old_service: &str, new_service: &str) -> Result<()> {
+    pub fn set_entry_service(
+        &mut self,
+        title: &str,
+        old_service: &str,
+        new_service: &str,
+    ) -> Result<()> {
         if self.find_entry(title, new_service).is_some() {
-            bail!("{:?} already has an entry for service {:?}", title, new_service);
+            bail!(
+                "{:?} already has an entry for service {:?}",
+                title,
+                new_service
+            );
         }
         let entry = self
             .find_entry_mut(title, old_service)
@@ -488,7 +585,11 @@ impl FilterList {
             entry.cues = backup;
             return Err(e);
         }
-        Ok(entry.cues.iter().position(|c| c.start == start).expect("just inserted"))
+        Ok(entry
+            .cues
+            .iter()
+            .position(|c| c.start == start)
+            .expect("just inserted"))
     }
 
     /// Changes cue `index`'s start/end in place, then re-sorts/re-validates
@@ -502,12 +603,25 @@ impl FilterList {
     /// sheet, or a non-language cue) to leave whatever's already there
     /// untouched. On failure, the entry's cues are restored to their
     /// pre-call state, same as `add_cue`.
-    pub fn update_cue(&mut self, title: &str, service: &str, index: usize, start: f64, end: f64, word: Option<String>) -> Result<()> {
+    pub fn update_cue(
+        &mut self,
+        title: &str,
+        service: &str,
+        index: usize,
+        start: f64,
+        end: f64,
+        word: Option<String>,
+    ) -> Result<()> {
         let entry = self
             .find_entry_mut(title, service)
             .with_context(|| format!("no entry for {:?} on service {:?}", title, service))?;
         if index >= entry.cues.len() {
-            bail!("cue index {} out of range for {:?} ({} cues)", index, title, entry.cues.len());
+            bail!(
+                "cue index {} out of range for {:?} ({} cues)",
+                index,
+                title,
+                entry.cues.len()
+            );
         }
         let backup = entry.cues.clone();
         entry.cues[index].start = start;
@@ -545,7 +659,12 @@ impl FilterList {
             .find_entry_mut(title, service)
             .with_context(|| format!("no entry for {:?} on service {:?}", title, service))?;
         if index >= entry.cues.len() {
-            bail!("cue index {} out of range for {:?} ({} cues)", index, title, entry.cues.len());
+            bail!(
+                "cue index {} out of range for {:?} ({} cues)",
+                index,
+                title,
+                entry.cues.len()
+            );
         }
         if let Some(c) = category {
             if c.trim().is_empty() {
@@ -569,7 +688,12 @@ impl FilterList {
             .find_entry_mut(title, service)
             .with_context(|| format!("no entry for {:?} on service {:?}", title, service))?;
         if index >= entry.cues.len() {
-            bail!("cue index {} out of range for {:?} ({} cues)", index, title, entry.cues.len());
+            bail!(
+                "cue index {} out of range for {:?} ({} cues)",
+                index,
+                title,
+                entry.cues.len()
+            );
         }
         entry.cues.remove(index);
         Ok(())
@@ -585,7 +709,8 @@ impl FilterList {
     pub fn save(&self, path: &Path) -> Result<()> {
         let mut value = serde_json::to_value(self).context("failed to serialize filter list")?;
         convert_seconds_to_hms_strings(&mut value);
-        let json = serde_json::to_string_pretty(&value).context("failed to serialize filter list")?;
+        let json =
+            serde_json::to_string_pretty(&value).context("failed to serialize filter list")?;
         fs::write(path, json).with_context(|| format!("failed to write {}", path.display()))
     }
 }
@@ -599,7 +724,11 @@ pub fn load_saved_filter_path() -> Option<PathBuf> {
 pub fn save_filter_path(path: &Path) -> Result<()> {
     let dir = crate::paths::data_dir();
     fs::create_dir_all(&dir).context("failed to create app data directory")?;
-    fs::write(dir.join(FILTER_PATH_STORE), path.to_string_lossy().as_bytes()).context("failed to write filter_path.store")
+    fs::write(
+        dir.join(FILTER_PATH_STORE),
+        path.to_string_lossy().as_bytes(),
+    )
+    .context("failed to write filter_path.store")
 }
 
 /// Clears `filter_path.store` -- the counterpart to `save_filter_path`, for
@@ -623,13 +752,20 @@ pub fn clear_saved_filter_path() -> Result<()> {
 /// the safer of the two defaults regardless: a corrupt/absent store should
 /// never be the reason auto-filter mode silently turns itself on.
 pub fn load_saved_filter_enabled() -> bool {
-    fs::read_to_string(crate::paths::data_dir().join(FILTER_ENABLED_STORE)).ok().map(|s| s.trim() == "true").unwrap_or(false)
+    fs::read_to_string(crate::paths::data_dir().join(FILTER_ENABLED_STORE))
+        .ok()
+        .map(|s| s.trim() == "true")
+        .unwrap_or(false)
 }
 
 pub fn save_filter_enabled(enabled: bool) -> Result<()> {
     let dir = crate::paths::data_dir();
     fs::create_dir_all(&dir).context("failed to create app data directory")?;
-    fs::write(dir.join(FILTER_ENABLED_STORE), if enabled { "true" } else { "false" }).context("failed to write filter_enabled.store")
+    fs::write(
+        dir.join(FILTER_ENABLED_STORE),
+        if enabled { "true" } else { "false" },
+    )
+    .context("failed to write filter_enabled.store")
 }
 
 /// Per-session bookkeeping the evaluation engine carries across poll ticks --
@@ -733,8 +869,10 @@ pub fn evaluate(
 ) -> FilterOutcome {
     let mut outcome = FilterOutcome::default();
 
-    let key_changed = (runtime.active_title.as_deref().map(normalize_title), runtime.active_service.as_deref().map(normalize_service))
-        != (title.map(normalize_title), service.map(normalize_service));
+    let key_changed = (
+        runtime.active_title.as_deref().map(normalize_title),
+        runtime.active_service.as_deref().map(normalize_service),
+    ) != (title.map(normalize_title), service.map(normalize_service));
     if key_changed {
         // Never leave audio stuck muted across a title/service change --
         // whatever cue held the mute no longer applies once the entry we're
@@ -796,7 +934,8 @@ pub fn evaluate(
     // excludes both, so this sees exactly the same "no cue" case as the
     // range genuinely ending), and switching straight from one mute cue to
     // another.
-    let desired_mute_idx = found.and_then(|(idx, cue)| (cue.action == CueAction::Mute).then_some(idx));
+    let desired_mute_idx =
+        found.and_then(|(idx, cue)| (cue.action == CueAction::Mute).then_some(idx));
     if desired_mute_idx != runtime.muted_cue {
         if runtime.muted_cue.is_some() {
             outcome.commands.push(FilterCommand::Unmute);
@@ -813,7 +952,9 @@ pub fn evaluate(
     if let Some((idx, cue)) = found {
         if cue.action == CueAction::Skip {
             let should_dispatch = match runtime.last_skip {
-                Some((last_idx, at)) if last_idx == idx => now.duration_since(at) >= SKIP_RETRY_COOLDOWN,
+                Some((last_idx, at)) if last_idx == idx => {
+                    now.duration_since(at) >= SKIP_RETRY_COOLDOWN
+                }
                 _ => true,
             };
             if should_dispatch {
@@ -847,11 +988,22 @@ mod tests {
     use super::*;
 
     fn cue(start: f64, end: f64, action: CueAction, category: &str) -> Cue {
-        Cue { start, end, action, category: category.to_string(), word: None, note: None }
+        Cue {
+            start,
+            end,
+            action,
+            category: category.to_string(),
+            word: None,
+            note: None,
+        }
     }
 
     fn entry(title: &str, service: &str, cues: Vec<Cue>) -> MediaEntry {
-        MediaEntry { title: title.to_string(), service: service.to_string(), cues }
+        MediaEntry {
+            title: title.to_string(),
+            service: service.to_string(),
+            cues,
+        }
     }
 
     /// A single generic (service-unspecified) entry -- what most of the
@@ -862,7 +1014,10 @@ mod tests {
             media: vec![entry(
                 "Some Movie",
                 "",
-                vec![cue(10.0, 20.0, CueAction::Mute, "language"), cue(30.0, 40.0, CueAction::Skip, "gore")],
+                vec![
+                    cue(10.0, 20.0, CueAction::Mute, "language"),
+                    cue(30.0, 40.0, CueAction::Skip, "gore"),
+                ],
             )],
         }
     }
@@ -976,7 +1131,9 @@ mod tests {
 
     #[test]
     fn find_entry_is_case_insensitive_and_trims_title_and_service() {
-        let list = FilterList { media: vec![entry("Some Movie", "Netflix", vec![])] };
+        let list = FilterList {
+            media: vec![entry("Some Movie", "Netflix", vec![])],
+        };
         assert!(list.find_entry("  some movie ", " NETFLIX ").is_some());
         assert!(list.find_entry("SOME MOVIE", "netflix").is_some());
         assert!(list.find_entry("Some Other Movie", "Netflix").is_none());
@@ -987,11 +1144,21 @@ mod tests {
     fn find_entry_for_playback_prefers_exact_service_match() {
         let list = FilterList {
             media: vec![
-                entry("Some Movie", "", vec![cue(0.0, 1.0, CueAction::Mute, "language")]),
-                entry("Some Movie", "Netflix", vec![cue(5.0, 6.0, CueAction::Mute, "language")]),
+                entry(
+                    "Some Movie",
+                    "",
+                    vec![cue(0.0, 1.0, CueAction::Mute, "language")],
+                ),
+                entry(
+                    "Some Movie",
+                    "Netflix",
+                    vec![cue(5.0, 6.0, CueAction::Mute, "language")],
+                ),
             ],
         };
-        let found = list.find_entry_for_playback("Some Movie", Some("Netflix")).unwrap();
+        let found = list
+            .find_entry_for_playback("Some Movie", Some("Netflix"))
+            .unwrap();
         assert_eq!(found.service, "Netflix");
         assert_eq!(found.cues[0].start, 5.0);
     }
@@ -999,7 +1166,9 @@ mod tests {
     #[test]
     fn find_entry_for_playback_falls_back_to_generic_when_no_exact_match() {
         let list = sample_list(); // generic-only
-        let found = list.find_entry_for_playback("Some Movie", Some("Netflix")).unwrap();
+        let found = list
+            .find_entry_for_playback("Some Movie", Some("Netflix"))
+            .unwrap();
         assert_eq!(found.service, "");
     }
 
@@ -1011,9 +1180,21 @@ mod tests {
     }
 
     #[test]
+    fn find_entry_for_playback_ignores_trademark_symbols() {
+        let list = FilterList { media: vec![entry("Spider-Man: Far From Home", "Disney+", vec![])] };
+        let found = list.find_entry_for_playback("Spider-Man™: Far From Home", Some("Disney+"));
+        assert!(found.is_some());
+    }
+
+    #[test]
     fn find_entry_for_playback_none_when_neither_exists() {
-        let list = FilterList { media: vec![entry("Some Movie", "Netflix", vec![])] };
-        assert!(list.find_entry_for_playback("Some Movie", Some("Disney+")).is_none());
+        let list = FilterList {
+            media: vec![entry("Some Movie", "Netflix", vec![])],
+        };
+        assert!(
+            list.find_entry_for_playback("Some Movie", Some("Disney+"))
+                .is_none()
+        );
     }
 
     #[test]
@@ -1035,18 +1216,38 @@ mod tests {
     fn categories_dedupes_in_first_seen_order() {
         let list = FilterList {
             media: vec![
-                entry("A", "", vec![cue(0.0, 1.0, CueAction::Mute, "language"), cue(2.0, 3.0, CueAction::Skip, "gore")]),
+                entry(
+                    "A",
+                    "",
+                    vec![
+                        cue(0.0, 1.0, CueAction::Mute, "language"),
+                        cue(2.0, 3.0, CueAction::Skip, "gore"),
+                    ],
+                ),
                 entry("B", "", vec![cue(0.0, 1.0, CueAction::Mute, "language")]),
             ],
         };
-        assert_eq!(list.categories(), vec!["language".to_string(), "gore".to_string()]);
+        assert_eq!(
+            list.categories(),
+            vec!["language".to_string(), "gore".to_string()]
+        );
     }
 
     #[test]
     fn no_title_produces_no_match_or_commands() {
         let list = sample_list();
         let mut runtime = FilterRuntime::default();
-        let outcome = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), None, None, None, true, Instant::now());
+        let outcome = evaluate(
+            &list,
+            &mut runtime,
+            &empty_disabled(),
+            &empty_disabled_cues(),
+            None,
+            None,
+            None,
+            true,
+            Instant::now(),
+        );
         assert!(outcome.filter_match.is_none());
         assert!(outcome.commands.is_empty());
     }
@@ -1058,21 +1259,61 @@ mod tests {
         let now = Instant::now();
 
         // Before the cue: no commands.
-        let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(5.0), true, now);
+        let o = evaluate(
+            &list,
+            &mut runtime,
+            &empty_disabled(),
+            &empty_disabled_cues(),
+            Some("Some Movie"),
+            None,
+            Some(5.0),
+            true,
+            now,
+        );
         assert_eq!(o.filter_match.as_deref(), Some("Some Movie"));
         assert!(o.commands.is_empty());
 
         // Enters the mute range.
-        let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(12.0), true, now);
+        let o = evaluate(
+            &list,
+            &mut runtime,
+            &empty_disabled(),
+            &empty_disabled_cues(),
+            Some("Some Movie"),
+            None,
+            Some(12.0),
+            true,
+            now,
+        );
         assert_eq!(o.commands, vec![FilterCommand::Mute]);
         assert_eq!(o.filter_category.as_deref(), Some("language"));
 
         // Still inside: idempotent, no repeated Mute.
-        let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(15.0), true, now);
+        let o = evaluate(
+            &list,
+            &mut runtime,
+            &empty_disabled(),
+            &empty_disabled_cues(),
+            Some("Some Movie"),
+            None,
+            Some(15.0),
+            true,
+            now,
+        );
         assert!(o.commands.is_empty());
 
         // Leaves the range: unmute.
-        let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(25.0), true, now);
+        let o = evaluate(
+            &list,
+            &mut runtime,
+            &empty_disabled(),
+            &empty_disabled_cues(),
+            Some("Some Movie"),
+            None,
+            Some(25.0),
+            true,
+            now,
+        );
         assert_eq!(o.commands, vec![FilterCommand::Unmute]);
     }
 
@@ -1084,14 +1325,34 @@ mod tests {
 
         // Just before the pre-roll window opens: still nothing.
         let just_before = 10.0 - PRE_ROLL - 0.01;
-        let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(just_before), true, now);
+        let o = evaluate(
+            &list,
+            &mut runtime,
+            &empty_disabled(),
+            &empty_disabled_cues(),
+            Some("Some Movie"),
+            None,
+            Some(just_before),
+            true,
+            now,
+        );
         assert!(o.commands.is_empty());
 
         // Just inside it: mute engages ahead of the cue's real start --
         // compensating for detection + dispatch latency so the audible mute
         // lands close to the true boundary instead of noticeably after it.
         let just_after = 10.0 - PRE_ROLL + 0.01;
-        let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(just_after), true, now);
+        let o = evaluate(
+            &list,
+            &mut runtime,
+            &empty_disabled(),
+            &empty_disabled_cues(),
+            Some("Some Movie"),
+            None,
+            Some(just_after),
+            true,
+            now,
+        );
         assert_eq!(o.commands, vec![FilterCommand::Mute]);
     }
 
@@ -1100,19 +1361,49 @@ mod tests {
         let list = sample_list(); // mute cue at [10.0, 20.0)
         let mut runtime = FilterRuntime::default();
         let now = Instant::now();
-        evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(12.0), true, now);
+        evaluate(
+            &list,
+            &mut runtime,
+            &empty_disabled(),
+            &empty_disabled_cues(),
+            Some("Some Movie"),
+            None,
+            Some(12.0),
+            true,
+            now,
+        );
         assert!(runtime.is_muted());
 
         // Just before the pre-roll release point: still muted.
         let just_before = 20.0 - PRE_ROLL - 0.01;
-        let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(just_before), true, now);
+        let o = evaluate(
+            &list,
+            &mut runtime,
+            &empty_disabled(),
+            &empty_disabled_cues(),
+            Some("Some Movie"),
+            None,
+            Some(just_before),
+            true,
+            now,
+        );
         assert!(o.commands.is_empty());
         assert!(runtime.is_muted());
 
         // Just past it: releases ahead of the cue's real end, same
         // compensation as the entry side above.
         let just_after = 20.0 - PRE_ROLL + 0.01;
-        let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(just_after), true, now);
+        let o = evaluate(
+            &list,
+            &mut runtime,
+            &empty_disabled(),
+            &empty_disabled_cues(),
+            Some("Some Movie"),
+            None,
+            Some(just_after),
+            true,
+            now,
+        );
         assert_eq!(o.commands, vec![FilterCommand::Unmute]);
     }
 
@@ -1123,7 +1414,17 @@ mod tests {
         let now = Instant::now();
 
         let just_after = 30.0 - PRE_ROLL + 0.01;
-        let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(just_after), true, now);
+        let o = evaluate(
+            &list,
+            &mut runtime,
+            &empty_disabled(),
+            &empty_disabled_cues(),
+            Some("Some Movie"),
+            None,
+            Some(just_after),
+            true,
+            now,
+        );
         // Fires ahead of the cue's real start but still seeks to its actual,
         // unshifted end -- the margin only changes *when* this dispatches,
         // never *where* it lands.
@@ -1136,16 +1437,46 @@ mod tests {
         let mut runtime = FilterRuntime::default();
         let t0 = Instant::now();
 
-        let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(32.0), true, t0);
+        let o = evaluate(
+            &list,
+            &mut runtime,
+            &empty_disabled(),
+            &empty_disabled_cues(),
+            Some("Some Movie"),
+            None,
+            Some(32.0),
+            true,
+            t0,
+        );
         assert_eq!(o.commands, vec![FilterCommand::Seek(40.0)]); // cue.end, regardless of pos
 
         // Immediately again (device hasn't caught up yet): no re-dispatch.
-        let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(32.0), true, t0);
+        let o = evaluate(
+            &list,
+            &mut runtime,
+            &empty_disabled(),
+            &empty_disabled_cues(),
+            Some("Some Movie"),
+            None,
+            Some(32.0),
+            true,
+            t0,
+        );
         assert!(o.commands.is_empty());
 
         // After the cooldown, still stuck in range: dispatch again.
         let later = t0 + Duration::from_secs(4);
-        let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(32.0), true, later);
+        let o = evaluate(
+            &list,
+            &mut runtime,
+            &empty_disabled(),
+            &empty_disabled_cues(),
+            Some("Some Movie"),
+            None,
+            Some(32.0),
+            true,
+            later,
+        );
         assert_eq!(o.commands, vec![FilterCommand::Seek(40.0)]);
     }
 
@@ -1157,16 +1488,46 @@ mod tests {
 
         // Paused inside the skip window: no dispatch, even though the
         // position alone would normally trigger one.
-        let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(32.0), false, now);
+        let o = evaluate(
+            &list,
+            &mut runtime,
+            &empty_disabled(),
+            &empty_disabled_cues(),
+            Some("Some Movie"),
+            None,
+            Some(32.0),
+            false,
+            now,
+        );
         assert_eq!(o.filter_match.as_deref(), Some("Some Movie"));
         assert!(o.commands.is_empty());
 
         // Still paused, same position: still nothing.
-        let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(32.0), false, now);
+        let o = evaluate(
+            &list,
+            &mut runtime,
+            &empty_disabled(),
+            &empty_disabled_cues(),
+            Some("Some Movie"),
+            None,
+            Some(32.0),
+            false,
+            now,
+        );
         assert!(o.commands.is_empty());
 
         // Resumes at the same position: now it fires.
-        let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(32.0), true, now);
+        let o = evaluate(
+            &list,
+            &mut runtime,
+            &empty_disabled(),
+            &empty_disabled_cues(),
+            Some("Some Movie"),
+            None,
+            Some(32.0),
+            true,
+            now,
+        );
         assert_eq!(o.commands, vec![FilterCommand::Seek(40.0)]);
     }
 
@@ -1178,12 +1539,32 @@ mod tests {
 
         // Paused inside the mute window: no Mute command, and nothing ends
         // up tracked as muted either -- there's nothing to release later.
-        let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(12.0), false, now);
+        let o = evaluate(
+            &list,
+            &mut runtime,
+            &empty_disabled(),
+            &empty_disabled_cues(),
+            Some("Some Movie"),
+            None,
+            Some(12.0),
+            false,
+            now,
+        );
         assert!(o.commands.is_empty());
         assert!(!runtime.is_muted());
 
         // Resumes at the same position: mute engages now.
-        let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(12.0), true, now);
+        let o = evaluate(
+            &list,
+            &mut runtime,
+            &empty_disabled(),
+            &empty_disabled_cues(),
+            Some("Some Movie"),
+            None,
+            Some(12.0),
+            true,
+            now,
+        );
         assert_eq!(o.commands, vec![FilterCommand::Mute]);
     }
 
@@ -1194,19 +1575,49 @@ mod tests {
         let now = Instant::now();
 
         // Engages the mute while playing.
-        let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(12.0), true, now);
+        let o = evaluate(
+            &list,
+            &mut runtime,
+            &empty_disabled(),
+            &empty_disabled_cues(),
+            Some("Some Movie"),
+            None,
+            Some(12.0),
+            true,
+            now,
+        );
         assert_eq!(o.commands, vec![FilterCommand::Mute]);
         assert!(runtime.is_muted());
 
         // Paused, now past the mute range -- if this weren't paused, the
         // range ending would normally release the mute. It shouldn't while
         // paused.
-        let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(25.0), false, now);
+        let o = evaluate(
+            &list,
+            &mut runtime,
+            &empty_disabled(),
+            &empty_disabled_cues(),
+            Some("Some Movie"),
+            None,
+            Some(25.0),
+            false,
+            now,
+        );
         assert!(o.commands.is_empty());
         assert!(runtime.is_muted());
 
         // Resumes: now it releases.
-        let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(25.0), true, now);
+        let o = evaluate(
+            &list,
+            &mut runtime,
+            &empty_disabled(),
+            &empty_disabled_cues(),
+            Some("Some Movie"),
+            None,
+            Some(25.0),
+            true,
+            now,
+        );
         assert_eq!(o.commands, vec![FilterCommand::Unmute]);
     }
 
@@ -1217,7 +1628,17 @@ mod tests {
         let now = Instant::now();
 
         // Establishes a "previous position" before the skip cue's start.
-        let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(25.0), true, now);
+        let o = evaluate(
+            &list,
+            &mut runtime,
+            &empty_disabled(),
+            &empty_disabled_cues(),
+            Some("Some Movie"),
+            None,
+            Some(25.0),
+            true,
+            now,
+        );
         assert!(o.commands.is_empty());
 
         // Next poll lands past the *entire* window (e.g. a background gap,
@@ -1228,7 +1649,17 @@ mod tests {
         // would move backward, either replaying content already shown or
         // undoing the user's own scrub -- both wrong. See `evaluate`'s doc
         // just above the (removed) catch-up pass.
-        let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(45.0), true, now);
+        let o = evaluate(
+            &list,
+            &mut runtime,
+            &empty_disabled(),
+            &empty_disabled_cues(),
+            Some("Some Movie"),
+            None,
+            Some(45.0),
+            true,
+            now,
+        );
         assert!(o.commands.is_empty());
     }
 
@@ -1237,11 +1668,31 @@ mod tests {
         let list = sample_list();
         let mut runtime = FilterRuntime::default();
         let now = Instant::now();
-        evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(12.0), true, now);
+        evaluate(
+            &list,
+            &mut runtime,
+            &empty_disabled(),
+            &empty_disabled_cues(),
+            Some("Some Movie"),
+            None,
+            Some(12.0),
+            true,
+            now,
+        );
 
         let mut disabled = HashSet::new();
         disabled.insert("language".to_string());
-        let o = evaluate(&list, &mut runtime, &disabled, &empty_disabled_cues(), Some("Some Movie"), None, Some(13.0), true, now);
+        let o = evaluate(
+            &list,
+            &mut runtime,
+            &disabled,
+            &empty_disabled_cues(),
+            Some("Some Movie"),
+            None,
+            Some(13.0),
+            true,
+            now,
+        );
         assert_eq!(o.commands, vec![FilterCommand::Unmute]);
     }
 
@@ -1251,7 +1702,17 @@ mod tests {
         let mut runtime = FilterRuntime::default();
         let mut disabled = HashSet::new();
         disabled.insert("gore".to_string());
-        let o = evaluate(&list, &mut runtime, &disabled, &empty_disabled_cues(), Some("Some Movie"), None, Some(32.0), true, Instant::now());
+        let o = evaluate(
+            &list,
+            &mut runtime,
+            &disabled,
+            &empty_disabled_cues(),
+            Some("Some Movie"),
+            None,
+            Some(32.0),
+            true,
+            Instant::now(),
+        );
         assert!(o.commands.is_empty());
     }
 
@@ -1260,9 +1721,29 @@ mod tests {
         let list = sample_list();
         let mut runtime = FilterRuntime::default();
         let now = Instant::now();
-        evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(12.0), true, now);
+        evaluate(
+            &list,
+            &mut runtime,
+            &empty_disabled(),
+            &empty_disabled_cues(),
+            Some("Some Movie"),
+            None,
+            Some(12.0),
+            true,
+            now,
+        );
 
-        let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("A Different Movie"), None, Some(1.0), true, now);
+        let o = evaluate(
+            &list,
+            &mut runtime,
+            &empty_disabled(),
+            &empty_disabled_cues(),
+            Some("A Different Movie"),
+            None,
+            Some(1.0),
+            true,
+            now,
+        );
         assert_eq!(o.commands, vec![FilterCommand::Unmute]);
         assert!(o.filter_match.is_none());
     }
@@ -1275,19 +1756,47 @@ mod tests {
         // new entry) rather than silently carrying the mute over.
         let list = FilterList {
             media: vec![
-                entry("Some Movie", "Netflix", vec![cue(10.0, 20.0, CueAction::Mute, "language")]),
-                entry("Some Movie", "Disney+", vec![cue(10.0, 20.0, CueAction::Mute, "language")]),
+                entry(
+                    "Some Movie",
+                    "Netflix",
+                    vec![cue(10.0, 20.0, CueAction::Mute, "language")],
+                ),
+                entry(
+                    "Some Movie",
+                    "Disney+",
+                    vec![cue(10.0, 20.0, CueAction::Mute, "language")],
+                ),
             ],
         };
         let mut runtime = FilterRuntime::default();
         let now = Instant::now();
-        let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), Some("Netflix"), Some(12.0), true, now);
+        let o = evaluate(
+            &list,
+            &mut runtime,
+            &empty_disabled(),
+            &empty_disabled_cues(),
+            Some("Some Movie"),
+            Some("Netflix"),
+            Some(12.0),
+            true,
+            now,
+        );
         assert_eq!(o.commands, vec![FilterCommand::Mute]);
 
         // Switches service, same title, same position -- still inside the
         // new entry's mute range too, but the runtime must not assume the
         // mute is already accounted for.
-        let o = evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), Some("Disney+"), Some(12.0), true, now);
+        let o = evaluate(
+            &list,
+            &mut runtime,
+            &empty_disabled(),
+            &empty_disabled_cues(),
+            Some("Some Movie"),
+            Some("Disney+"),
+            Some(12.0),
+            true,
+            now,
+        );
         assert_eq!(o.commands, vec![FilterCommand::Unmute, FilterCommand::Mute]);
     }
 
@@ -1295,16 +1804,33 @@ mod tests {
     fn exact_service_entry_is_preferred_over_generic_when_both_exist() {
         let list = FilterList {
             media: vec![
-                entry("Some Movie", "", vec![cue(10.0, 20.0, CueAction::Mute, "language")]),
-                entry("Some Movie", "Netflix", vec![cue(30.0, 40.0, CueAction::Skip, "gore")]),
+                entry(
+                    "Some Movie",
+                    "",
+                    vec![cue(10.0, 20.0, CueAction::Mute, "language")],
+                ),
+                entry(
+                    "Some Movie",
+                    "Netflix",
+                    vec![cue(30.0, 40.0, CueAction::Skip, "gore")],
+                ),
             ],
         };
         let mut runtime = FilterRuntime::default();
         // At position 12 the generic entry would mute, but the Netflix
         // entry (which should win) has no cue there -- no command either
         // way confirms the generic entry's cue isn't the one being used.
-        let o =
-            evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), Some("Netflix"), Some(12.0), true, Instant::now());
+        let o = evaluate(
+            &list,
+            &mut runtime,
+            &empty_disabled(),
+            &empty_disabled_cues(),
+            Some("Some Movie"),
+            Some("Netflix"),
+            Some(12.0),
+            true,
+            Instant::now(),
+        );
         assert!(o.commands.is_empty());
     }
 
@@ -1316,7 +1842,10 @@ mod tests {
             media: vec![entry(
                 "Some Movie",
                 "",
-                vec![cue(10.0, 20.0, CueAction::Mute, "language"), cue(20.0, 30.0, CueAction::Mute, "language")],
+                vec![
+                    cue(10.0, 20.0, CueAction::Mute, "language"),
+                    cue(20.0, 30.0, CueAction::Mute, "language"),
+                ],
             )],
         };
         let mut runtime = FilterRuntime::default();
@@ -1324,11 +1853,31 @@ mod tests {
         disabled_cues.insert(("some movie".to_string(), String::new(), 0));
 
         // The disabled cue (index 0) never fires.
-        let o = evaluate(&list, &mut runtime, &empty_disabled(), &disabled_cues, Some("Some Movie"), None, Some(12.0), true, Instant::now());
+        let o = evaluate(
+            &list,
+            &mut runtime,
+            &empty_disabled(),
+            &disabled_cues,
+            Some("Some Movie"),
+            None,
+            Some(12.0),
+            true,
+            Instant::now(),
+        );
         assert!(o.commands.is_empty());
 
         // The still-enabled cue (index 1) fires normally.
-        let o = evaluate(&list, &mut runtime, &empty_disabled(), &disabled_cues, Some("Some Movie"), None, Some(22.0), true, Instant::now());
+        let o = evaluate(
+            &list,
+            &mut runtime,
+            &empty_disabled(),
+            &disabled_cues,
+            Some("Some Movie"),
+            None,
+            Some(22.0),
+            true,
+            Instant::now(),
+        );
         assert_eq!(o.commands, vec![FilterCommand::Mute]);
     }
 
@@ -1337,18 +1886,44 @@ mod tests {
         let list = sample_list();
         let mut runtime = FilterRuntime::default();
         let now = Instant::now();
-        evaluate(&list, &mut runtime, &empty_disabled(), &empty_disabled_cues(), Some("Some Movie"), None, Some(12.0), true, now);
+        evaluate(
+            &list,
+            &mut runtime,
+            &empty_disabled(),
+            &empty_disabled_cues(),
+            Some("Some Movie"),
+            None,
+            Some(12.0),
+            true,
+            now,
+        );
 
         let mut disabled_cues = HashSet::new();
         disabled_cues.insert(("some movie".to_string(), String::new(), 0)); // the mute cue is index 0
-        let o = evaluate(&list, &mut runtime, &empty_disabled(), &disabled_cues, Some("Some Movie"), None, Some(13.0), true, now);
+        let o = evaluate(
+            &list,
+            &mut runtime,
+            &empty_disabled(),
+            &disabled_cues,
+            Some("Some Movie"),
+            None,
+            Some(13.0),
+            true,
+            now,
+        );
         assert_eq!(o.commands, vec![FilterCommand::Unmute]);
     }
 
     #[test]
     fn add_cue_creates_entry_when_title_unseen() {
         let mut list = FilterList::default();
-        let index = list.add_cue("New Movie", "", cue(10.0, 20.0, CueAction::Mute, "language")).unwrap();
+        let index = list
+            .add_cue(
+                "New Movie",
+                "",
+                cue(10.0, 20.0, CueAction::Mute, "language"),
+            )
+            .unwrap();
         assert_eq!(index, 0);
         assert_eq!(list.media.len(), 1);
         assert_eq!(list.find_entry("New Movie", "").unwrap().cues.len(), 1);
@@ -1357,17 +1932,35 @@ mod tests {
     #[test]
     fn add_cue_creates_a_separate_entry_per_service() {
         let mut list = FilterList::default();
-        list.add_cue("New Movie", "Netflix", cue(10.0, 20.0, CueAction::Mute, "language")).unwrap();
-        list.add_cue("New Movie", "Disney+", cue(5.0, 6.0, CueAction::Skip, "gore")).unwrap();
+        list.add_cue(
+            "New Movie",
+            "Netflix",
+            cue(10.0, 20.0, CueAction::Mute, "language"),
+        )
+        .unwrap();
+        list.add_cue(
+            "New Movie",
+            "Disney+",
+            cue(5.0, 6.0, CueAction::Skip, "gore"),
+        )
+        .unwrap();
         assert_eq!(list.media.len(), 2);
-        assert_eq!(list.find_entry("New Movie", "Netflix").unwrap().cues.len(), 1);
-        assert_eq!(list.find_entry("New Movie", "Disney+").unwrap().cues.len(), 1);
+        assert_eq!(
+            list.find_entry("New Movie", "Netflix").unwrap().cues.len(),
+            1
+        );
+        assert_eq!(
+            list.find_entry("New Movie", "Disney+").unwrap().cues.len(),
+            1
+        );
     }
 
     #[test]
     fn add_cue_appends_and_resorts_existing_entry() {
         let mut list = sample_list(); // has cues at [10,20) and [30,40)
-        let index = list.add_cue("Some Movie", "", cue(0.0, 5.0, CueAction::Mute, "language")).unwrap();
+        let index = list
+            .add_cue("Some Movie", "", cue(0.0, 5.0, CueAction::Mute, "language"))
+            .unwrap();
         assert_eq!(index, 0); // sorts before the existing two
         assert_eq!(list.find_entry("Some Movie", "").unwrap().cues.len(), 3);
     }
@@ -1376,7 +1969,11 @@ mod tests {
     fn add_cue_rejects_overlap_and_leaves_entry_unchanged() {
         let mut list = sample_list();
         let before = list.find_entry("Some Movie", "").unwrap().cues.clone();
-        let err = list.add_cue("Some Movie", "", cue(15.0, 22.0, CueAction::Mute, "language"));
+        let err = list.add_cue(
+            "Some Movie",
+            "",
+            cue(15.0, 22.0, CueAction::Mute, "language"),
+        );
         assert!(err.is_err());
         assert_eq!(list.find_entry("Some Movie", "").unwrap().cues, before);
     }
@@ -1384,19 +1981,26 @@ mod tests {
     #[test]
     fn add_cue_rejects_end_before_start() {
         let mut list = FilterList::default();
-        assert!(list.add_cue("X", "", cue(10.0, 10.0, CueAction::Mute, "language")).is_err());
+        assert!(
+            list.add_cue("X", "", cue(10.0, 10.0, CueAction::Mute, "language"))
+                .is_err()
+        );
     }
 
     #[test]
     fn add_cue_rejects_empty_category() {
         let mut list = FilterList::default();
-        assert!(list.add_cue("X", "", cue(1.0, 2.0, CueAction::Mute, "")).is_err());
+        assert!(
+            list.add_cue("X", "", cue(1.0, 2.0, CueAction::Mute, ""))
+                .is_err()
+        );
     }
 
     #[test]
     fn update_cue_changes_times_and_resorts() {
         let mut list = sample_list(); // [10,20) mute, [30,40) skip
-        list.update_cue("Some Movie", "", 1, 0.0, 5.0, None).unwrap(); // move the skip cue (index 1) earliest
+        list.update_cue("Some Movie", "", 1, 0.0, 5.0, None)
+            .unwrap(); // move the skip cue (index 1) earliest
         let cues = &list.find_entry("Some Movie", "").unwrap().cues;
         assert_eq!(cues[0].start, 0.0);
         assert_eq!(cues[0].action, CueAction::Skip);
@@ -1414,7 +2018,10 @@ mod tests {
     #[test]
     fn update_cue_rejects_out_of_range_index() {
         let mut list = sample_list();
-        assert!(list.update_cue("Some Movie", "", 5, 0.0, 1.0, None).is_err());
+        assert!(
+            list.update_cue("Some Movie", "", 5, 0.0, 1.0, None)
+                .is_err()
+        );
     }
 
     #[test]
@@ -1443,13 +2050,19 @@ mod tests {
         let mut list = sample_list(); // generic entry
         list.set_entry_service("Some Movie", "", "Netflix").unwrap();
         assert!(list.find_entry("Some Movie", "").is_none());
-        assert_eq!(list.find_entry("Some Movie", "Netflix").unwrap().cues.len(), 2);
+        assert_eq!(
+            list.find_entry("Some Movie", "Netflix").unwrap().cues.len(),
+            2
+        );
     }
 
     #[test]
     fn set_entry_service_rejects_collision_with_an_existing_entry() {
         let mut list = FilterList {
-            media: vec![entry("Some Movie", "", vec![]), entry("Some Movie", "Netflix", vec![])],
+            media: vec![
+                entry("Some Movie", "", vec![]),
+                entry("Some Movie", "Netflix", vec![]),
+            ],
         };
         assert!(list.set_entry_service("Some Movie", "", "Netflix").is_err());
     }
@@ -1457,7 +2070,10 @@ mod tests {
     #[test]
     fn set_entry_service_rejects_unknown_source_entry() {
         let mut list = sample_list();
-        assert!(list.set_entry_service("Some Movie", "Netflix", "Disney+").is_err());
+        assert!(
+            list.set_entry_service("Some Movie", "Netflix", "Disney+")
+                .is_err()
+        );
     }
 
     #[test]
@@ -1528,7 +2144,10 @@ mod tests {
         assert!(written.contains("\"00:00:20.00\""));
         // And it must load back to the exact same seconds.
         let reloaded = FilterList::load(&path).unwrap();
-        assert_eq!(reloaded.find_entry("Some Movie", "").unwrap().cues[0].start, 10.0);
+        assert_eq!(
+            reloaded.find_entry("Some Movie", "").unwrap().cues[0].start,
+            10.0
+        );
         fs::remove_dir_all(&dir).ok();
     }
 }

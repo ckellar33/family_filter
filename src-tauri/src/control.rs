@@ -29,14 +29,14 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tauri::{AppHandle, State};
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::{Mutex, oneshot};
 
 use appletv::companion::{CompanionSession, HidButton};
-use appletv::{storage, LiveSession};
+use appletv::{LiveSession, storage};
 
 use crate::creation::CreationState;
 use crate::filter::{self, CueKey, FilterList, FilterRuntime};
-use crate::{library, metadata, DISPLAY_NAME};
+use crate::{DISPLAY_NAME, library, metadata};
 
 #[derive(Default)]
 pub struct ControlState {
@@ -96,7 +96,9 @@ impl ControlState {
 /// anything that changes filter state mid-playback (toggling the mode or a
 /// category) so that effect lands right away instead of waiting for the
 /// next poll tick.
-async fn apply_filter(guard: &mut ControlState) -> (Option<String>, Option<String>, Option<String>) {
+async fn apply_filter(
+    guard: &mut ControlState,
+) -> (Option<String>, Option<String>, Option<String>) {
     if !guard.filter_enabled || guard.filter_list.is_none() {
         return (None, None, None);
     }
@@ -154,7 +156,11 @@ async fn apply_filter(guard: &mut ControlState) -> (Option<String>, Option<Strin
         }
     }
 
-    (outcome.filter_match, outcome.filter_action.map(str::to_string), outcome.filter_category)
+    (
+        outcome.filter_match,
+        outcome.filter_action.map(str::to_string),
+        outcome.filter_category,
+    )
 }
 
 /// How often the backend's own heartbeat (see `spawn_heartbeat`) re-runs
@@ -223,7 +229,10 @@ pub struct FilterSummary {
 /// back its summary, so that logic lives once here, taking the state handle
 /// itself (rather than a `State` extractor, which only a `#[tauri::command]`
 /// can receive) so either caller can invoke it directly.
-async fn load_filter_file_inner(handle: &ControlStateHandle, path: String) -> Result<FilterSummary, String> {
+async fn load_filter_file_inner(
+    handle: &ControlStateHandle,
+    path: String,
+) -> Result<FilterSummary, String> {
     // `path` may be a `file://` URL (iOS/Android's dialog picker; see
     // `paths::from_picker`'s doc) rather than a bare path -- harmless to run
     // on every other caller too, since a plain path or an already-resolved
@@ -274,7 +283,12 @@ async fn load_filter_file_inner(handle: &ControlStateHandle, path: String) -> Re
         eprintln!("[filter] failed to persist filter_enabled.store: {e}");
     }
 
-    Ok(FilterSummary { path, media_count, categories, enabled: false })
+    Ok(FilterSummary {
+        path,
+        media_count,
+        categories,
+        enabled: false,
+    })
 }
 
 /// Opens the file at `path` (chosen by the frontend via
@@ -283,7 +297,10 @@ async fn load_filter_file_inner(handle: &ControlStateHandle, path: String) -> Re
 /// launch, and replaces whatever list was previously loaded. Does *not*
 /// enable auto-filter mode by itself -- see `set_filter_enabled`.
 #[tauri::command]
-pub async fn load_filter_file(state: State<'_, ControlStateHandle>, path: String) -> Result<FilterSummary, String> {
+pub async fn load_filter_file(
+    state: State<'_, ControlStateHandle>,
+    path: String,
+) -> Result<FilterSummary, String> {
     load_filter_file_inner(state.inner(), path).await
 }
 
@@ -299,7 +316,9 @@ pub async fn load_filter_file(state: State<'_, ControlStateHandle>, path: String
 /// prompt (and the enabled flag is left untouched on disk either way, so a
 /// transient load failure doesn't erase it for next launch).
 #[tauri::command]
-pub async fn check_saved_filter_file(state: State<'_, ControlStateHandle>) -> Result<Option<FilterSummary>, String> {
+pub async fn check_saved_filter_file(
+    state: State<'_, ControlStateHandle>,
+) -> Result<Option<FilterSummary>, String> {
     let Some(path) = filter::load_saved_filter_path() else {
         return Ok(None);
     };
@@ -325,14 +344,22 @@ pub async fn check_saved_filter_file(state: State<'_, ControlStateHandle>) -> Re
         let _ = apply_filter(&mut guard).await;
     }
 
-    Ok(Some(FilterSummary { path: path.to_string_lossy().into_owned(), media_count, categories, enabled }))
+    Ok(Some(FilterSummary {
+        path: path.to_string_lossy().into_owned(),
+        media_count,
+        categories,
+        enabled,
+    }))
 }
 
 /// Flips the master auto-filter toggle. Turning it off while a filter-
 /// applied mute is active immediately unmutes -- disabling the mode must
 /// never leave the family stuck with muted audio.
 #[tauri::command]
-pub async fn set_filter_enabled(state: State<'_, ControlStateHandle>, enabled: bool) -> Result<(), String> {
+pub async fn set_filter_enabled(
+    state: State<'_, ControlStateHandle>,
+    enabled: bool,
+) -> Result<(), String> {
     let mut guard = state.lock().await;
     guard.filter_enabled = enabled;
     // Best-effort, same tolerance as everywhere else this pattern shows up:
@@ -390,7 +417,11 @@ pub async fn set_filter_cue_enabled(
     enabled: bool,
 ) -> Result<(), String> {
     let mut guard = state.lock().await;
-    let key: CueKey = (filter::normalize_title(&title), filter::normalize_service(&service), index);
+    let key: CueKey = (
+        filter::normalize_title(&title),
+        filter::normalize_service(&service),
+        index,
+    );
     if enabled {
         guard.disabled_cues.remove(&key);
     } else {
@@ -409,7 +440,8 @@ pub async fn set_filter_cue_enabled(
 /// perfectly good in-memory edit into a hard error the user can't do
 /// anything about from the Filters tab.
 fn persist_active_filter_list(guard: &ControlState) {
-    let (Some(list), Some(path)) = (guard.filter_list.as_ref(), guard.filter_list_path.as_ref()) else {
+    let (Some(list), Some(path)) = (guard.filter_list.as_ref(), guard.filter_list_path.as_ref())
+    else {
         return;
     };
     if let Err(e) = list.save(path) {
@@ -425,7 +457,9 @@ fn persist_active_filter_list(guard: &ControlState) {
 /// than the one the user actually turned off. The user re-toggling whichever
 /// cues they'd disabled is a fair trade against that happening quietly.
 fn clear_disabled_cues_for(guard: &mut ControlState, title_key: &str, service_key: &str) {
-    guard.disabled_cues.retain(|(t, s, _)| t != title_key || s != service_key);
+    guard
+        .disabled_cues
+        .retain(|(t, s, _)| t != title_key || s != service_key);
 }
 
 /// Corrects an existing cue's timing in the *active* auto-filter list -- the
@@ -450,10 +484,18 @@ pub async fn update_filter_cue(
     word: Option<String>,
 ) -> Result<(), String> {
     let mut guard = state.lock().await;
-    let list = guard.filter_list.as_mut().ok_or_else(|| "no filter list loaded".to_string())?;
-    list.update_cue(&title, &service, index, start, end, word).map_err(|e| describe(&e))?;
+    let list = guard
+        .filter_list
+        .as_mut()
+        .ok_or_else(|| "no filter list loaded".to_string())?;
+    list.update_cue(&title, &service, index, start, end, word)
+        .map_err(|e| describe(&e))?;
     persist_active_filter_list(&guard);
-    clear_disabled_cues_for(&mut guard, &filter::normalize_title(&title), &filter::normalize_service(&service));
+    clear_disabled_cues_for(
+        &mut guard,
+        &filter::normalize_title(&title),
+        &filter::normalize_service(&service),
+    );
     let _ = apply_filter(&mut guard).await;
     Ok(())
 }
@@ -478,9 +520,21 @@ pub async fn add_filter_cue(
     note: Option<String>,
 ) -> Result<usize, String> {
     let mut guard = state.lock().await;
-    let list = guard.filter_list.as_mut().ok_or_else(|| "no filter list loaded".to_string())?;
-    let cue = filter::Cue { start, end, action, category, word, note };
-    let index = list.add_cue(&title, &service, cue).map_err(|e| describe(&e))?;
+    let list = guard
+        .filter_list
+        .as_mut()
+        .ok_or_else(|| "no filter list loaded".to_string())?;
+    let cue = filter::Cue {
+        start,
+        end,
+        action,
+        category,
+        word,
+        note,
+    };
+    let index = list
+        .add_cue(&title, &service, cue)
+        .map_err(|e| describe(&e))?;
     persist_active_filter_list(&guard);
     let _ = apply_filter(&mut guard).await;
     Ok(index)
@@ -490,12 +544,25 @@ pub async fn add_filter_cue(
 /// Filters-tab counterpart to `creation::creation_delete_cue`, same
 /// distinction as `update_filter_cue` above.
 #[tauri::command]
-pub async fn delete_filter_cue(state: State<'_, ControlStateHandle>, title: String, service: String, index: usize) -> Result<(), String> {
+pub async fn delete_filter_cue(
+    state: State<'_, ControlStateHandle>,
+    title: String,
+    service: String,
+    index: usize,
+) -> Result<(), String> {
     let mut guard = state.lock().await;
-    let list = guard.filter_list.as_mut().ok_or_else(|| "no filter list loaded".to_string())?;
-    list.delete_cue(&title, &service, index).map_err(|e| describe(&e))?;
+    let list = guard
+        .filter_list
+        .as_mut()
+        .ok_or_else(|| "no filter list loaded".to_string())?;
+    list.delete_cue(&title, &service, index)
+        .map_err(|e| describe(&e))?;
     persist_active_filter_list(&guard);
-    clear_disabled_cues_for(&mut guard, &filter::normalize_title(&title), &filter::normalize_service(&service));
+    clear_disabled_cues_for(
+        &mut guard,
+        &filter::normalize_title(&title),
+        &filter::normalize_service(&service),
+    );
     let _ = apply_filter(&mut guard).await;
     Ok(())
 }
@@ -512,13 +579,20 @@ pub async fn delete_filter_cue(state: State<'_, ControlStateHandle>, title: Stri
 /// `online::publish_media_entry`, next to the rest of this app's Neon
 /// connection logic.
 #[tauri::command]
-pub async fn publish_filter_entry_online(state: State<'_, ControlStateHandle>, title: String, service: String) -> Result<(), String> {
+pub async fn publish_filter_entry_online(
+    state: State<'_, ControlStateHandle>,
+    title: String,
+    service: String,
+) -> Result<(), String> {
     let entry = {
         let guard = state.lock().await;
-        let list = guard.filter_list.as_ref().ok_or_else(|| "no filter list loaded".to_string())?;
-        list.find_entry(&title, &service)
-            .cloned()
-            .ok_or_else(|| format!("{title:?} on {service:?} not found in the active filter file"))?
+        let list = guard
+            .filter_list
+            .as_ref()
+            .ok_or_else(|| "no filter list loaded".to_string())?;
+        list.find_entry(&title, &service).cloned().ok_or_else(|| {
+            format!("{title:?} on {service:?} not found in the active filter file")
+        })?
     };
     crate::online::publish_media_entry(&entry).await
 }
@@ -539,7 +613,8 @@ pub fn add_filter_files(paths: Vec<String>) -> Result<usize, String> {
         let picked = crate::paths::from_picker(&path);
         // See `library::import_picked_path`'s doc -- a no-op everywhere but
         // iOS, where `path` is a picker-owned temporary copy.
-        let path_buf = library::import_picked_path(&picked).map_err(|e| format!("{path}: {}", describe(&e)))?;
+        let path_buf = library::import_picked_path(&picked)
+            .map_err(|e| format!("{path}: {}", describe(&e)))?;
         FilterList::load(&path_buf).map_err(|e| format!("{path}: {}", describe(&e)))?;
         library::register_filter_path(&path_buf).map_err(|e| describe(&e))?;
         added += 1;
@@ -587,7 +662,8 @@ pub fn add_filter_directory(path: String) -> Result<usize, String> {
     // platform this command is actually reachable from (see
     // `supports_folder_import`).
     let dir = crate::paths::from_picker(&path);
-    let entries = std::fs::read_dir(&dir).map_err(|e| format!("failed to read {}: {e}", dir.display()))?;
+    let entries =
+        std::fs::read_dir(&dir).map_err(|e| format!("failed to read {}: {e}", dir.display()))?;
     let mut added = 0;
     for entry in entries.flatten() {
         let entry_path = entry.path();
@@ -740,17 +816,30 @@ pub async fn select_filter_tile(
             action: cue.action,
             category: cue.category.clone(),
             enabled: !guard.disabled_categories.contains(&cue.category)
-                && !guard.disabled_cues.contains(&(title_key.clone(), service_key.clone(), index)),
+                && !guard
+                    .disabled_cues
+                    .contains(&(title_key.clone(), service_key.clone(), index)),
             word: cue.word.clone(),
             note: cue.note.clone(),
         })
         .collect();
     let resolved_title = entry.title.clone();
     let resolved_service = entry.service.clone();
-    let disabled_categories: Vec<String> = categories.iter().filter(|c| guard.disabled_categories.contains(*c)).cloned().collect();
+    let disabled_categories: Vec<String> = categories
+        .iter()
+        .filter(|c| guard.disabled_categories.contains(*c))
+        .cloned()
+        .collect();
     let enabled = guard.filter_enabled;
 
-    Ok(FilterEntryDetail { title: resolved_title, service: resolved_service, categories, disabled_categories, cues, enabled })
+    Ok(FilterEntryDetail {
+        title: resolved_title,
+        service: resolved_service,
+        categories,
+        disabled_categories,
+        cues,
+        enabled,
+    })
 }
 
 /// Removes `path` from the local library outright: deletes the file from
@@ -763,7 +852,10 @@ pub async fn select_filter_tile(
 /// clears `filter_path.store` too, so nothing tries to reload a file
 /// that's about to stop existing on next launch.
 #[tauri::command]
-pub async fn delete_filter_file(state: State<'_, ControlStateHandle>, path: String) -> Result<(), String> {
+pub async fn delete_filter_file(
+    state: State<'_, ControlStateHandle>,
+    path: String,
+) -> Result<(), String> {
     let path_buf = PathBuf::from(&path);
     {
         let mut guard = state.lock().await;
@@ -818,11 +910,16 @@ pub fn list_services_for_title(title: String) -> Vec<ServiceOption> {
     let mut seen = HashSet::new();
     let mut out = Vec::new();
     for path in library::list_library_paths() {
-        let Ok(list) = FilterList::load(&path) else { continue };
+        let Ok(list) = FilterList::load(&path) else {
+            continue;
+        };
         let path_str = path.to_string_lossy().into_owned();
         for entry in list.entries_for_title(&title) {
             if seen.insert(filter::normalize_service(&entry.service)) {
-                out.push(ServiceOption { service: entry.service.clone(), path: path_str.clone() });
+                out.push(ServiceOption {
+                    service: entry.service.clone(),
+                    path: path_str.clone(),
+                });
             }
         }
     }
@@ -865,19 +962,32 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(6);
 /// different id. Marks `id` as the last-used device on success, so the next
 /// launch offers to auto-reconnect to it (see `saved::last_saved_device_id`).
 #[tauri::command]
-pub async fn start_control_session(state: State<'_, ControlStateHandle>, id: String) -> Result<ControlInfo, String> {
+pub async fn start_control_session(
+    state: State<'_, ControlStateHandle>,
+    id: String,
+) -> Result<ControlInfo, String> {
     let mut saved = storage::load_device(&id).map_err(|e| describe(&e))?;
 
-    let (mut stream, port) = appletv::connect_companion(&saved.companion.host, saved.companion.port, CONNECT_TIMEOUT)
-        .await
-        .map_err(|e| describe(&e))?;
+    let (mut stream, port) =
+        appletv::connect_companion(&saved.companion.host, saved.companion.port, CONNECT_TIMEOUT)
+            .await
+            .map_err(|e| describe(&e))?;
     if port != saved.companion.port {
         // The Apple TV re-advertised Companion on a different port (common
         // after a reboot or tvOS update); persist it now so the next
         // launch connects directly instead of needing this fallback again.
         saved.companion.port = port;
-        if let Err(e) = storage::update_device(&id, &saved.name, &saved.companion, saved.mrp.as_ref(), saved.airplay.as_ref()) {
-            eprintln!("[pairing] failed to persist refreshed Companion port: {}", describe(&e));
+        if let Err(e) = storage::update_device(
+            &id,
+            &saved.name,
+            &saved.companion,
+            saved.mrp.as_ref(),
+            saved.airplay.as_ref(),
+        ) {
+            eprintln!(
+                "[pairing] failed to persist refreshed Companion port: {}",
+                describe(&e)
+            );
         }
     }
     let keys = appletv::hap_pair::pair_verify(&mut stream, &saved.companion.creds)
@@ -902,7 +1012,11 @@ pub async fn start_control_session(state: State<'_, ControlStateHandle>, id: Str
     // all that loop needs to end -- see that field's doc. The freshly built
     // state then gets its own heartbeat spawned against it below.
     let mut guard = state.lock().await;
-    *guard = ControlState { session: Some(session), live, ..Default::default() };
+    *guard = ControlState {
+        session: Some(session),
+        live,
+        ..Default::default()
+    };
     guard.heartbeat_stop = Some(spawn_heartbeat(state.inner().clone()));
     drop(guard);
 
@@ -914,26 +1028,29 @@ pub async fn start_control_session(state: State<'_, ControlStateHandle>, id: Str
         eprintln!("[pairing] failed to persist last_device.store: {e}");
     }
 
-    Ok(ControlInfo { has_live, id, name: saved.name, host: saved.companion.host })
+    Ok(ControlInfo {
+        has_live,
+        id,
+        name: saved.name,
+        host: saved.companion.host,
+    })
 }
 
 #[tauri::command]
 pub async fn control_mute(state: State<'_, ControlStateHandle>) -> Result<(), String> {
     let mut guard = state.lock().await;
-    let live = guard
-        .live
-        .as_mut()
-        .ok_or_else(|| "No live transport paired (pair MRP or AirPlay to enable mute/unmute)".to_string())?;
+    let live = guard.live.as_mut().ok_or_else(|| {
+        "No live transport paired (pair MRP or AirPlay to enable mute/unmute)".to_string()
+    })?;
     live.mute().await.map_err(|e| describe(&e))
 }
 
 #[tauri::command]
 pub async fn control_unmute(state: State<'_, ControlStateHandle>) -> Result<(), String> {
     let mut guard = state.lock().await;
-    let live = guard
-        .live
-        .as_mut()
-        .ok_or_else(|| "No live transport paired (pair MRP or AirPlay to enable mute/unmute)".to_string())?;
+    let live = guard.live.as_mut().ok_or_else(|| {
+        "No live transport paired (pair MRP or AirPlay to enable mute/unmute)".to_string()
+    })?;
     live.unmute().await.map_err(|e| describe(&e))
 }
 
@@ -946,18 +1063,23 @@ pub async fn control_unmute(state: State<'_, ControlStateHandle>) -> Result<(), 
 /// see `FilterCommand::Seek`'s doc for the full story. Needs the live
 /// (MRP/AirPlay) transport, not Companion, same as mute/unmute above.
 #[tauri::command]
-pub async fn control_seek(state: State<'_, ControlStateHandle>, position: f64) -> Result<(), String> {
+pub async fn control_seek(
+    state: State<'_, ControlStateHandle>,
+    position: f64,
+) -> Result<(), String> {
     let mut guard = state.lock().await;
-    let live = guard
-        .live
-        .as_mut()
-        .ok_or_else(|| "No live transport paired (pair MRP or AirPlay to enable seeking)".to_string())?;
+    let live = guard.live.as_mut().ok_or_else(|| {
+        "No live transport paired (pair MRP or AirPlay to enable seeking)".to_string()
+    })?;
     live.seek(position).await.map_err(|e| describe(&e))
 }
 
 /// Skip forward (`seconds > 0`) or back (`seconds < 0`) via Companion.
 #[tauri::command]
-pub async fn control_skip(state: State<'_, ControlStateHandle>, seconds: f64) -> Result<(), String> {
+pub async fn control_skip(
+    state: State<'_, ControlStateHandle>,
+    seconds: f64,
+) -> Result<(), String> {
     let mut guard = state.lock().await;
     let session = guard
         .session
@@ -1003,13 +1125,19 @@ impl From<RemoteButton> for HidButton {
 /// transport `control_skip` uses, so it needs the Companion session, not
 /// the optional live (MRP/AirPlay) one.
 #[tauri::command]
-pub async fn control_button(state: State<'_, ControlStateHandle>, button: RemoteButton) -> Result<(), String> {
+pub async fn control_button(
+    state: State<'_, ControlStateHandle>,
+    button: RemoteButton,
+) -> Result<(), String> {
     let mut guard = state.lock().await;
     let session = guard
         .session
         .as_mut()
         .ok_or_else(|| "No control session active -- open controls again".to_string())?;
-    session.hid_press(button.into()).await.map_err(|e| describe(&e))
+    session
+        .hid_press(button.into())
+        .await
+        .map_err(|e| describe(&e))
 }
 
 /// One cue as shown to the frontend: the raw cue fields plus its position in
@@ -1072,6 +1200,9 @@ pub struct PlaybackStatus {
     /// enabled toggle, so the schedule below is visible as a preview even
     /// before auto-filter mode is turned on.
     pub filter_match: Option<String>,
+    /// The master auto-filter toggle, so the frontend can tell a matched
+    /// title that's only being previewed from one that's actually filtering.
+    pub filter_enabled: bool,
     /// Every cue for the matched title, in order -- lets the frontend show
     /// the full schedule (with times) rather than just the one currently
     /// firing.
@@ -1129,7 +1260,9 @@ pub(crate) fn app_display_name(bundle_id: &str) -> Option<&'static str> {
 /// sync, at the cost of one extra request per poll interval against the
 /// device.
 #[tauri::command]
-pub async fn control_playback_status(state: State<'_, ControlStateHandle>) -> Result<Option<PlaybackStatus>, String> {
+pub async fn control_playback_status(
+    state: State<'_, ControlStateHandle>,
+) -> Result<Option<PlaybackStatus>, String> {
     let mut guard = state.lock().await;
     let Some(live) = guard.live.as_mut() else {
         return Ok(None);
@@ -1148,16 +1281,20 @@ pub async fn control_playback_status(state: State<'_, ControlStateHandle>) -> Re
     let playback_state = format!("{:?}", playback.playback_state());
     let is_advancing = playback.is_advancing();
     let app_bundle_id = playback.app_bundle_id().map(str::to_string);
-    let app_name = app_bundle_id.as_deref().and_then(app_display_name).map(str::to_string);
+    let app_name = app_bundle_id
+        .as_deref()
+        .and_then(app_display_name)
+        .map(str::to_string);
 
     // Looked up independently of the master enabled toggle -- unlike
     // `apply_filter` below, this is a preview ("what would happen"), not an
     // application of it, so it stays populated even while auto-filter mode
     // is off.
-    let matched_entry = guard
-        .filter_list
-        .as_ref()
-        .and_then(|list| title.as_deref().and_then(|t| list.find_entry_for_playback(t, app_name.as_deref())));
+    let matched_entry = guard.filter_list.as_ref().and_then(|list| {
+        title
+            .as_deref()
+            .and_then(|t| list.find_entry_for_playback(t, app_name.as_deref()))
+    });
     let filter_match = matched_entry.map(|e| e.title.clone());
     let filter_cues: Vec<CueStatus> = matched_entry
         .map(|entry| {
@@ -1174,7 +1311,11 @@ pub async fn control_playback_status(state: State<'_, ControlStateHandle>) -> Re
                     action: cue.action,
                     category: cue.category.clone(),
                     enabled: !guard.disabled_categories.contains(&cue.category)
-                        && !guard.disabled_cues.contains(&(title_key.clone(), service_key.clone(), index)),
+                        && !guard.disabled_cues.contains(&(
+                            title_key.clone(),
+                            service_key.clone(),
+                            index,
+                        )),
                     word: cue.word.clone(),
                     note: cue.note.clone(),
                 })
@@ -1187,6 +1328,7 @@ pub async fn control_playback_status(state: State<'_, ControlStateHandle>) -> Re
     // decides on shows up in this same response rather than a poll late.
     // Its own `filter_match` is redundant with the one above (same lookup,
     // just gated on `filter_enabled` too) so it's discarded here.
+    let filter_enabled = guard.filter_enabled;
     let (_, filter_action, filter_category) = apply_filter(&mut guard).await;
 
     Ok(Some(PlaybackStatus {
@@ -1201,6 +1343,7 @@ pub async fn control_playback_status(state: State<'_, ControlStateHandle>) -> Re
         app_name,
         filter_cues,
         filter_match,
+        filter_enabled,
         filter_action,
         filter_category,
     }))

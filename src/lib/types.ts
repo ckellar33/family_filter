@@ -80,6 +80,7 @@ export interface PlaybackStatus {
   // regardless of whether auto-filter mode is actually turned on -- so
   // the schedule is visible as a preview even while it's off.
   filter_match: string | null;
+  filter_enabled: boolean;
   filter_cues: Cue[];
   // Only ever set while auto-filter mode is on (nothing is actually
   // applied while it's off).

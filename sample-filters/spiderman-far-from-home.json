@@ -1,7 +1,7 @@
 {
   "media": [
     {
-      "title": "Spider Man: Far from home",
+"title": "Spider-Man: Far From Home",
       "cues": [
         { "start": "00:03:06.46", "end": "00:03:09.46", "action": "mute", "category": "language" },
         { "start": "00:20:57.07", "end": "00:21:00.07", "action": "mute", "category": "language" },
