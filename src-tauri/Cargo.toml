@@ -27,6 +27,9 @@ appletv = { path = "../libs/appletv" }
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
+# In-repo plugin: iOS Live Activity + widget data + background keep-alive
+# (see plugins/live-activity and src/live_activity.rs).
+tauri-plugin-live-activity = { path = "plugins/live-activity" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 anyhow = "1.0.99"

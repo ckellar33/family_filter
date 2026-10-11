@@ -34,7 +34,9 @@
       "icons/icon.ico"
     ],
     "iOS": {
-      "developmentTeam": "2V433T22KL"
+      "developmentTeam": "2V433T22KL",
+      "template": "src-tauri/ios/project.yml",
+      "minimumSystemVersion": "27.0"
     }
   }
 }

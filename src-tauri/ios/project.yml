@@ -1,0 +1,160 @@
+# Custom XcodeGen spec, wired up via `bundle.iOS.template` in
+# tauri.conf.json. `cargo tauri ios init` renders this (as a Handlebars
+# template, so never use double curly braces in here) to `gen/apple/project.yml` and runs
+# `xcodegen generate` on it. `src-tauri/gen` is gitignored, so this file is
+# what makes the iOS project -- including the widget extension target --
+# reproducible: edit this, never `gen/apple/project.yml`, then re-run
+# `cargo tauri ios init`. Paths below are relative to `gen/apple`.
+name: family_filter
+options:
+  bundleIdPrefix: com.ckellar33.familyfilter
+  # The iOS 27 SDK (Xcode 27) rejects anything below 15.0; 27.0 matches what
+  # the app and widget were previously hand-set to in Xcode. Keep in sync with
+  # `bundle.iOS.minimumSystemVersion` in tauri.conf.json.
+  deploymentTarget:
+    iOS: 27.0
+fileGroups: [../../src]
+configs:
+  debug: debug
+  release: release
+settingGroups:
+  app:
+    base:
+      PRODUCT_NAME: Family Filter
+      PRODUCT_BUNDLE_IDENTIFIER: com.ckellar33.familyfilter
+      DEVELOPMENT_TEAM: 2V433T22KL
+targetTemplates:
+  app:
+    type: application
+    sources:
+      - path: Sources
+    scheme:
+      environmentVariables:
+        RUST_BACKTRACE: full
+        RUST_LOG: info
+    settings:
+      groups: [app]
+targets:
+  family_filter_iOS:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+      - path: Assets.xcassets
+      # Pre-existing bug, unrelated to the Live Activity extension: XcodeGen
+      # was adding every libapp.a found under here (one per arch/config) to
+      # the Resources build phase -- nonsensical (a static archive doesn't
+      # belong copied into the app bundle) and silently harmless only by
+      # accident, as long as just one config's Externals subfolder existed
+      # at generation time. The real linking already happens via
+      # `dependencies: - framework: libapp.a` below plus the
+      # LIBRARY_SEARCH_PATHS settings -- surfaced as "Multiple commands
+      # produce .../libapp.a" the first time both debug and release
+      # variants existed on disk together (e.g. after `cargo tauri ios
+      # build`, which does both). `buildPhase: none` keeps the folder
+      # referenced without adding its contents to any build phase.
+      - path: Externals
+        buildPhase: none
+      - path: family_filter_iOS
+      - path: assets
+        buildPhase: resources
+        type: folder
+      - path: LaunchScreen.storyboard
+    info:
+      path: family_filter_iOS/Info.plist
+      properties:
+        LSRequiresIPhoneOS: true
+        UILaunchStoryboardName: LaunchScreen
+        UIRequiredDeviceCapabilities: [arm64, metal]
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        CFBundleShortVersionString: 0.1.0
+        CFBundleVersion: "0.1.0"
+    entitlements:
+      path: family_filter_iOS/family_filter_iOS.entitlements
+      properties:
+        # Shared UserDefaults suite with the widget extension (see
+        # live_activity/Storage.swift).
+        com.apple.security.application-groups:
+          - group.com.ckellar33.familyfilter
+    scheme:
+      environmentVariables:
+        RUST_BACKTRACE: full
+        RUST_LOG: info
+    settings:
+      base:
+        ENABLE_BITCODE: false
+        ARCHS: [arm64]
+        VALID_ARCHS: arm64 
+        LIBRARY_SEARCH_PATHS[arch=x86_64]: $(inherited) $(PROJECT_DIR)/Externals/x86_64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)
+        LIBRARY_SEARCH_PATHS[arch=arm64]: $(inherited) $(PROJECT_DIR)/Externals/arm64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)
+        ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES: true
+        EXCLUDED_ARCHS[sdk=iphoneos*]: x86_64
+      groups: [app]
+    dependencies:
+      - target: FamilyFilterExtensionExtension
+      - framework: libapp.a
+        embed: false
+      - sdk: CoreGraphics.framework
+      - sdk: Metal.framework
+      - sdk: MetalKit.framework
+      - sdk: QuartzCore.framework
+      - sdk: Security.framework
+      - sdk: UIKit.framework
+      - sdk: WebKit.framework
+    preBuildScripts:
+      - script: |
+          export PATH="$HOME/.cargo/bin:/usr/local/bin:/opt/homebrew/bin:$PATH"
+          cargo tauri ios xcode-script -v --platform ${PLATFORM_DISPLAY_NAME:?} --sdk-root ${SDKROOT:?} --framework-search-paths "${FRAMEWORK_SEARCH_PATHS:?}" --header-search-paths "${HEADER_SEARCH_PATHS:?}" --gcc-preprocessor-definitions "${GCC_PREPROCESSOR_DEFINITIONS:-}" --configuration ${CONFIGURATION:?} ${FORCE_COLOR} ${ARCHS:?}
+        name: Build Rust Code
+        basedOnDependencyAnalysis: false
+        outputFiles:
+          - $(SRCROOT)/Externals/x86_64/${CONFIGURATION}/libapp.a
+          - $(SRCROOT)/Externals/arm64/${CONFIGURATION}/libapp.a
+  # Home-screen widget. Sources are compiled straight out of the tracked
+  # src-tauri/live_activity/ directory -- nothing is copied into gen/. It's a
+  # synced folder, so files added/removed there are picked up by Xcode
+  # automatically without regenerating the project.
+  # The target name must NOT contain "_iOS": tauri-cli 2.11.5 identifies the
+  # main app's build settings by searching for "_iOS" in config-list names
+  # and would otherwise randomly stamp this target with the app's bundle ID.
+  FamilyFilterExtensionExtension:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: ../../live_activity
+        type: syncedFolder
+        excludes:
+          - "*.md"
+      # Shared with the app (it's part of the live-activity plugin there) --
+      # see that file's header for why both sides must compile the same one.
+      - path: ../../plugins/live-activity/ios/Sources/FamilyFilterShared.swift
+    info:
+      path: FamilyFilterExtension/Info.plist
+      properties:
+        CFBundleDisplayName: FamilyFilterExtension
+        CFBundleShortVersionString: 0.1.0
+        CFBundleVersion: "0.1.0"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    entitlements:
+      path: FamilyFilterExtension/FamilyFilterExtensionExtension.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.com.ckellar33.familyfilter
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.ckellar33.familyfilter.FamilyFilterExtension
+        DEVELOPMENT_TEAM: 2V433T22KL
+        CODE_SIGN_STYLE: Automatic
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SWIFT_VERSION: "5.0"
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME: WidgetBackground

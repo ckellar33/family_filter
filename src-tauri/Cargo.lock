@@ -1355,6 +1355,7 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
+ "tauri-plugin-live-activity",
  "tauri-plugin-opener",
  "tokio",
  "tokio-postgres",
@@ -4512,6 +4513,15 @@ dependencies = [
  "thiserror 2.0.20",
  "toml 1.1.4+spec-1.1.0",
  "url",
+]
+
+[[package]]
+name = "tauri-plugin-live-activity"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "tauri",
+ "tauri-plugin",
 ]
 
 [[package]]

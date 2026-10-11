@@ -1,0 +1,15 @@
+[package]
+name = "tauri-plugin-live-activity"
+version = "0.1.0"
+description = "Family Filter's iOS Live Activity, Lock Screen widget data, and background keep-alive"
+edition = "2024"
+# Required by tauri-plugin's build script, which links the Swift package in
+# ios/ under this name.
+links = "tauri-plugin-live-activity"
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+
+[build-dependencies]
+tauri-plugin = { version = "2", features = ["build"] }

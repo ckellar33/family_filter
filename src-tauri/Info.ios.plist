@@ -23,6 +23,30 @@
     <string>_airplay._tcp</string>
   </array>
 
+  <!-- App Groups for Live Activity extension communication --
+       enables the main app and the widget extension to share state
+       via UserDefaults with the "group." prefix. Required for the
+       Live Activity to receive updates from the main app. -->
+  <key>UIAppGroups</key>
+  <array>
+    <string>group.com.ckellar33.familyfilter</string>
+  </array>
+
+  <!-- Lock Screen / Dynamic Island Live Activity (see plugins/live-activity
+       and live_activity/FamilyFilterLiveActivity.swift). -->
+  <key>NSSupportsLiveActivities</key>
+  <true/>
+
+  <!-- Keeps the app running while the phone is locked, so the Rust filter
+       heartbeat keeps muting/skipping and the Apple TV sockets stay open.
+       Held only while a Live Activity is running (auto-filter on + Apple TV
+       connected), by looping silent, mix-with-others audio -- see
+       BackgroundKeepAlive in plugins/live-activity. -->
+  <key>UIBackgroundModes</key>
+  <array>
+    <string>audio</string>
+  </array>
+
   <!-- Lock the app to portrait only -- Tauri/tao's generated Info.plist
        otherwise defaults to portrait + both landscapes, and there's no
        tauri.conf.json field for this, so it's set here to survive a

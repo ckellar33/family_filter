@@ -3,6 +3,7 @@ mod control;
 mod creation;
 mod filter;
 mod library;
+mod live_activity;
 mod metadata;
 mod online;
 mod pairing;
@@ -33,6 +34,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_live_activity::init())
         .manage::<PairingStateHandle>(std::sync::Arc::new(std::sync::Mutex::new(
             PairingState::default(),
         )))

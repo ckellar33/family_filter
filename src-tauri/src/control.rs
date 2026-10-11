@@ -36,6 +36,7 @@ use appletv::{LiveSession, storage};
 
 use crate::creation::CreationState;
 use crate::filter::{self, CueKey, FilterList, FilterRuntime};
+use crate::live_activity::{self, ActivityContent, LiveActivitySync};
 use crate::{DISPLAY_NAME, library, metadata};
 
 #[derive(Default)]
@@ -171,6 +172,11 @@ async fn apply_filter(
 /// for on-time enforcement -- see `spawn_heartbeat`'s doc.
 const HEARTBEAT_INTERVAL: Duration = Duration::from_millis(100);
 
+/// The heartbeat refreshes the Live Activity on every Nth tick (once a
+/// second) -- its content only changes at cue boundaries or on a
+/// seek/pause, and the countdown in between is rendered by iOS itself.
+const LIVE_ACTIVITY_EVERY: u32 = 10;
+
 /// Spawns the loop that's now the sole thing actually responsible for
 /// firing mute/unmute/skip on time. Before this existed, that only ever
 /// happened as a side effect of the frontend's `setInterval` calling
@@ -191,15 +197,27 @@ const HEARTBEAT_INTERVAL: Duration = Duration::from_millis(100);
 /// Returns the stop half of a one-shot channel to stash in the new
 /// `ControlState::heartbeat_stop` -- see that field's doc for why nothing
 /// ever needs to send on it explicitly.
-fn spawn_heartbeat(handle: ControlStateHandle) -> oneshot::Sender<()> {
+///
+/// Every `LIVE_ACTIVITY_EVERY` ticks it also refreshes the iOS Live Activity
+/// (see `live_activity.rs`), which is what keeps the app alive in the
+/// background, and with it this loop.
+fn spawn_heartbeat(handle: ControlStateHandle, app: AppHandle) -> oneshot::Sender<()> {
     let (stop_tx, mut stop_rx) = oneshot::channel();
     tauri::async_runtime::spawn(async move {
         let mut ticker = tokio::time::interval(HEARTBEAT_INTERVAL);
+        let mut live_activity = LiveActivitySync::new(app);
+        let mut ticks: u32 = 0;
         loop {
             tokio::select! {
                 _ = ticker.tick() => {
                     let mut guard = handle.lock().await;
                     let _ = apply_filter(&mut guard).await;
+                    ticks = ticks.wrapping_add(1);
+                    if ticks % LIVE_ACTIVITY_EVERY == 1 {
+                        let content = live_activity_content(&guard);
+                        drop(guard);
+                        live_activity.sync(content);
+                    }
                 }
                 // Resolves (Ok from an explicit send, or Err from the
                 // sender simply being dropped -- either way, we don't care
@@ -963,6 +981,7 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(6);
 /// launch offers to auto-reconnect to it (see `saved::last_saved_device_id`).
 #[tauri::command]
 pub async fn start_control_session(
+    app: AppHandle,
     state: State<'_, ControlStateHandle>,
     id: String,
 ) -> Result<ControlInfo, String> {
@@ -1017,7 +1036,7 @@ pub async fn start_control_session(
         live,
         ..Default::default()
     };
-    guard.heartbeat_stop = Some(spawn_heartbeat(state.inner().clone()));
+    guard.heartbeat_stop = Some(spawn_heartbeat(state.inner().clone(), app));
     drop(guard);
 
     // Best-effort, same tolerance as the port refresh above -- a failure to
@@ -1248,6 +1267,90 @@ pub(crate) fn app_display_name(bundle_id: &str) -> Option<&'static str> {
     })
 }
 
+/// Every cue of `entry`, with each one's effective on/off state after the
+/// session's category- and cue-level toggles. Shared by
+/// `control_playback_status` and `live_activity_content`.
+fn cue_statuses(guard: &ControlState, entry: &filter::MediaEntry) -> Vec<CueStatus> {
+    let title_key = filter::normalize_title(&entry.title);
+    let service_key = filter::normalize_service(&entry.service);
+    entry
+        .cues
+        .iter()
+        .enumerate()
+        .map(|(index, cue)| CueStatus {
+            index,
+            start: cue.start,
+            end: cue.end,
+            action: cue.action,
+            category: cue.category.clone(),
+            enabled: !guard.disabled_categories.contains(&cue.category)
+                && !guard
+                    .disabled_cues
+                    .contains(&(title_key.clone(), service_key.clone(), index)),
+            word: cue.word.clone(),
+            note: cue.note.clone(),
+        })
+        .collect()
+}
+
+/// What the Lock Screen Live Activity should show right now, or `None` when
+/// there shouldn't be one: auto-filter is off, or there's no live
+/// (MRP/AirPlay) connection to read playback from. Deliberately not gated on
+/// the current title matching the filter list -- the activity (and with it
+/// the background keep-alive) must survive e.g. the gap between autoplayed
+/// episodes, or the app would get suspended before the next one starts.
+fn live_activity_content(guard: &ControlState) -> Option<ActivityContent> {
+    if !guard.filter_enabled {
+        return None;
+    }
+    let live = guard.live.as_ref()?;
+    let playback = live.playback();
+    let title = playback.title().map(str::to_string);
+    let app_name = playback
+        .app_bundle_id()
+        .and_then(app_display_name)
+        .map(str::to_string);
+    let position = playback.position_now();
+
+    let matched_entry = guard.filter_list.as_ref().and_then(|list| {
+        title
+            .as_deref()
+            .and_then(|t| list.find_entry_for_playback(t, app_name.as_deref()))
+    });
+    // Same "next" rule the control page uses: the first enabled cue that
+    // hasn't finished yet (so a cue in progress counts as next).
+    let next_cue = matched_entry.and_then(|entry| {
+        cue_statuses(guard, entry)
+            .into_iter()
+            .find(|c| c.enabled && position.is_none_or(|p| c.end > p))
+    });
+
+    Some(ActivityContent {
+        title: title.unwrap_or_else(|| "Nothing playing".to_string()),
+        subtitle: playback
+            .series_name()
+            .or_else(|| playback.subtitle())
+            .map(str::to_string),
+        app_name,
+        is_filtering: matched_entry.is_some(),
+        next_cue_action: next_cue.as_ref().map(|c| {
+            match c.action {
+                filter::CueAction::Mute => "MUTE",
+                filter::CueAction::Skip => "SKIP",
+            }
+            .to_string()
+        }),
+        next_cue_category: next_cue.as_ref().map(|c| c.category.clone()),
+        next_cue_time: next_cue.as_ref().map(|c| live_activity::fmt_time(c.start)),
+        next_cue_epoch_ms: next_cue.as_ref().and_then(|c| {
+            let position = position?;
+            playback
+                .is_advancing()
+                .then(|| live_activity::epoch_ms_in(c.start - position))
+        }),
+    })
+}
+
 /// One snapshot of the current now-playing state, for the frontend to poll
 /// on an interval (currently 250ms, see +page.svelte). Returns `Ok(None)` rather than an
 /// error when there's no live transport -- that's an expected, steady
@@ -1296,31 +1399,8 @@ pub async fn control_playback_status(
             .and_then(|t| list.find_entry_for_playback(t, app_name.as_deref()))
     });
     let filter_match = matched_entry.map(|e| e.title.clone());
-    let filter_cues: Vec<CueStatus> = matched_entry
-        .map(|entry| {
-            let title_key = filter::normalize_title(&entry.title);
-            let service_key = filter::normalize_service(&entry.service);
-            entry
-                .cues
-                .iter()
-                .enumerate()
-                .map(|(index, cue)| CueStatus {
-                    index,
-                    start: cue.start,
-                    end: cue.end,
-                    action: cue.action,
-                    category: cue.category.clone(),
-                    enabled: !guard.disabled_categories.contains(&cue.category)
-                        && !guard.disabled_cues.contains(&(
-                            title_key.clone(),
-                            service_key.clone(),
-                            index,
-                        )),
-                    word: cue.word.clone(),
-                    note: cue.note.clone(),
-                })
-                .collect()
-        })
+    let filter_cues = matched_entry
+        .map(|entry| cue_statuses(&guard, entry))
         .unwrap_or_default();
 
     // Runs after the position refresh above so it's evaluating against the
