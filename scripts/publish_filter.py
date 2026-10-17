@@ -20,6 +20,7 @@ Setup:
 Usage:
     python3 scripts/publish_filter.py sample-filters/the-princess-bride.json
     python3 scripts/publish_filter.py sample-filters/*.json
+    python3 scripts/publish_filter.py sample-filters/              # publish all .json in a folder
 
 Re-running for a title+service already published overwrites its cues (and
 bumps updated_at) rather than erroring or duplicating -- same
@@ -44,6 +45,19 @@ def normalize_title(title: str) -> str:
     # Must match filter::normalize_title exactly -- it's part of this
     # table's uniqueness constraint (see db/schema.sql).
     return title.strip().lower()
+
+
+def expand_paths(paths: list[str]) -> list[str]:
+    """Expand a list of paths: files stay as-is, directories become all .json files within."""
+    result: list[str] = []
+    for p in paths:
+        if os.path.isdir(p):
+            for fname in sorted(os.listdir(p)):
+                if fname.endswith(".json"):
+                    result.append(os.path.join(p, fname))
+        else:
+            result.append(p)
+    return result
 
 
 def publish_file(cur, path: str) -> int:
@@ -83,7 +97,7 @@ def publish_file(cur, path: str) -> int:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("files", nargs="+", help="Filter JSON file(s) to publish")
+    parser.add_argument("paths", nargs="+", help="Filter JSON file(s) or folder(s) to publish")
     args = parser.parse_args()
 
     database_url = os.environ.get("NEON_DATABASE_URL")
@@ -91,12 +105,14 @@ def main():
         print("Set NEON_DATABASE_URL to your Neon direct connection string first.", file=sys.stderr)
         sys.exit(1)
 
+    paths = expand_paths(args.paths)
+
     conn = psycopg2.connect(database_url)
     try:
         total = 0
         with conn:
             with conn.cursor() as cur:
-                for path in args.files:
+                for path in paths:
                     print(f"{path}:")
                     total += publish_file(cur, path)
         print(f"Published {total} entr{'y' if total == 1 else 'ies'}.")

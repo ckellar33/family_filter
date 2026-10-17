@@ -34,6 +34,14 @@ even masked, it still reveals a word's first letter and length, which
 --no-words avoids for anyone who'd rather the file carry no word info at
 all.
 
+Batch mode
+----------
+    python3 scripts/build_language_filter.py --batch-movies movies.csv \
+        --service "Netflix" --output sample-filters/
+
+The CSV should have one movie title per row (optional second column: year).
+A separate JSON file is written for each movie inside --output.
+
 Setup
 -----
     pip install requests
@@ -41,9 +49,14 @@ Setup
 
 Usage
 -----
-    python3 scripts/build_language_filter.py "The Princess Bride" \\
-        --year 1987 --service "Disney+" \\
+    python3 scripts/build_language_filter.py "The Princess Bride" \
+        --year 1987 --service "Disney+" \
         --output sample-filters/the-princess-bride.json
+
+    # Batch mode: process a CSV file with one movie title per row.
+    # The CSV may have two columns: title,year (year is optional per row).
+    python3 scripts/build_language_filter.py --batch-movies movies.csv \
+        --service "Netflix" --output sample-filters/
 
     # Pick which search result to use instead of auto-selecting the top hit:
     python3 scripts/build_language_filter.py "Star Wars" --year 1977 --interactive \\
@@ -71,11 +84,13 @@ from __future__ import annotations
 
 import argparse
 import base64
+import csv
 import io
 import json
 import os
 import re
 import sys
+import unicodedata
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -654,83 +669,16 @@ def write_filter_file(output_path: Path, title: str, service: str, cues: list[Cu
 
 
 # --------------------------------------------------------------------------
-# Main
+# Core processing (extracted so both single and batch modes can reuse it)
 # --------------------------------------------------------------------------
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("title", help="Movie title to search for / to record in the filter file.")
-    parser.add_argument("--year", type=int, default=None, help="Release year, improves SubDL matching.")
-    parser.add_argument("--service", default="", help='Streaming service to record on the entry (e.g. "Disney+").')
-    parser.add_argument("--language", default="en", help="Subtitle language code to search for. Default: en.")
-    parser.add_argument("--output", "-o", required=True, type=Path, help="Filter JSON path to write/merge into.")
-    parser.add_argument("--wordlist", type=Path, default=DEFAULT_WORDLIST_PATH, help="Word list JSON to scan with.")
-    parser.add_argument(
-        "--min-severity", choices=["mild", "moderate", "strong"], default="mild",
-        help="Ignore word-list entries below this severity. Default: mild (all entries).",
-    )
-    parser.add_argument("--action", choices=["mute", "skip"], default="mute", help="Cue action. Default: mute.")
-    parser.add_argument("--pad", type=float, default=0.15, help="Seconds padded before/after each hit. Default: 0.15.")
-    parser.add_argument(
-        "--merge-gap", type=float, default=0.75,
-        help="Merge same-category cues within this many seconds of each other. Default: 0.75.",
-    )
-    parser.add_argument(
-        "--no-words", action="store_true",
-        help="Don't populate cues' 'word' field at all -- 'word' is always masked (see censor_word) even without "
-        "this flag, but leaving it off entirely means the file carries no word info -- not even a first letter "
-        "and length -- matching this script's behavior before that field existed.",
-    )
-    parser.add_argument("--api-key", default=os.environ.get("SUBDL_API_KEY"))
-    parser.add_argument(
-        "--interactive", action="store_true",
-        help="Choose which SubDL search result to use instead of auto-picking the top one. "
-        "Not usable together with --sources > 1.",
-    )
-    parser.add_argument(
-        "--sources", type=int, default=1,
-        help="Download this many top SubDL results and cross-check them against each other "
-        "instead of trusting a single release's timing: hits on the same word within "
-        "--cross-check-tolerance seconds of each other across sources are folded into one "
-        "cue using the median timestamp. Default: 1 (no cross-check).",
-    )
-    parser.add_argument(
-        "--cross-check-tolerance", type=float, default=1.5,
-        help="When --sources > 1, hits on the same word across sources within this many "
-        "seconds of each other are treated as the same utterance. Default: 1.5.",
-    )
-    parser.add_argument(
-        "--release-filter", default=DEFAULT_RELEASE_FILTER,
-        help="Case-insensitive regex a SubDL result's release/file name must match to be "
-        "considered. Defaults to any WEB-tagged release (matches 'WEBRip', 'WEB-DL', 'WEBHD', "
-        "etc.) since those are sourced from a streaming service and tend to already line up "
-        "with what's playing, unlike a disc-rip release (BluRay/DVD) with a different cut or "
-        "runtime. Pass '' to consider all releases, or a stricter pattern like 'web[-. ]?dl' to "
-        "require true WEB-DL (uncommon on SubDL -- most streaming-sourced subs there are "
-        "tagged WEBRip instead).",
-    )
-    parser.add_argument("--save-srt", type=Path, default=None, help="Also save the raw downloaded subtitle file(s) here.")
-    parser.add_argument(
-        "--srt-file", type=Path, default=None,
-        help="Skip the SubDL download and scan this local .srt/.vtt file instead.",
-    )
-    args = parser.parse_args()
 
-    if args.sources < 1:
-        parser.error("--sources must be >= 1.")
-    if args.interactive and args.sources > 1:
-        parser.error("--interactive picks a single result, which conflicts with --sources > 1.")
-    if args.srt_file and args.sources > 1:
-        parser.error("--srt-file scans one local file, which conflicts with --sources > 1.")
-
-    release_filter: Optional[re.Pattern] = None
-    if args.release_filter:
-        try:
-            release_filter = re.compile(args.release_filter, re.IGNORECASE)
-        except re.error as e:
-            parser.error(f"--release-filter is not a valid regex: {e}")
-
-    matchers = load_matchers(args.wordlist, args.min_severity)
+def _run_single(
+    args: argparse.Namespace,
+    matchers: dict[str, list[tuple[str, re.Pattern]]],
+    release_filter: Optional[re.Pattern] = None,
+) -> int:
+    """Execute the full pipeline for a single movie, using args.title."""
 
     if args.srt_file:
         raw = args.srt_file.read_text(encoding="utf-8", errors="replace")
@@ -748,7 +696,8 @@ def main() -> int:
         print(f"Found {len(hits)} raw hits before merging.")
     else:
         if not args.api_key:
-            parser.error("--api-key or SUBDL_API_KEY is required unless --srt-file is given.")
+            print("--api-key or SUBDL_API_KEY is required unless --srt-file is given.", file=sys.stderr)
+            return 1
         try:
             if args.sources > 1:
                 downloads = subdl_search_sources(
@@ -808,6 +757,213 @@ def main() -> int:
             cue.word = ""
     write_filter_file(args.output, args.title, args.service, cues)
     return 0
+
+
+# --------------------------------------------------------------------------
+# Batch helpers
+# --------------------------------------------------------------------------
+
+
+def _slugify(value: str) -> str:
+    """Convert *value* to a filesystem-safe slug: lowercase, accented chars
+    normalized to ASCII, non-alphanumeric chars replaced by hyphens,
+    collapsing multiple hyphens and stripping leading/trailing dashes."""
+    value = unicodedata.normalize("NFKD", value)
+    value = value.encode("ascii", "ignore").decode("ascii")
+    value = re.sub(r"[^a-z0-9]+", "-", value, flags=re.IGNORECASE).lower().strip("-")
+    return value or "movie"
+
+
+def _parse_csv(path: Path) -> list[tuple[str, Optional[int]]]:
+    """Read a CSV of movie titles, returning [(title, year), ...].
+
+    Supports two column formats:
+      - Single column: title only (year defaults to None)
+      - Two columns: title, year (year may be empty)
+
+    Skips rows where the title column is empty after stripping.
+    """
+    with open(path, "r", encoding="utf-8") as f:
+        reader = csv.reader(f)
+        rows: list[tuple[str, Optional[int]]] = []
+        for row in reader:
+            if not row:
+                continue
+            title = row[0].strip()
+            if not title:
+                continue
+            year: Optional[int] = None
+            if len(row) > 1 and row[1].strip():
+                try:
+                    year = int(row[1].strip())
+                except ValueError:
+                    pass  # Ignore malformed year, treat as None.
+            rows.append((title, year))
+    return rows
+
+
+def _process_movie(
+    title: str,
+    year: Optional[int],
+    args: argparse.Namespace,
+    matchers: dict[str, list[tuple[str, re.Pattern]]],
+    base_output: Path,
+) -> None:
+    """Process a single movie title and write its JSON filter file."""
+    slug = _slugify(title)
+    output_path = base_output / f"{slug}.json"
+    print(f"\n--- Processing: {title!r} (year={year}) ---")
+    print(f"  Output: {output_path}")
+
+    # Temporarily override args.title / args.year for the processing pipeline.
+    orig_title = args.title
+    orig_year = args.year
+    args.title = title
+    args.year = year
+    args.output = output_path  # override output per-movie
+
+    try:
+        _run_single(args, matchers)
+    finally:
+        args.title = orig_title
+        args.year = orig_year
+        args.output = base_output  # restore base
+
+
+# --------------------------------------------------------------------------
+# Main
+# --------------------------------------------------------------------------
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("title", nargs="?", default=None, help="Movie title to search for / to record in the filter file.")
+    parser.add_argument("--year", type=int, default=None, help="Release year, improves SubDL matching.")
+    parser.add_argument("--service", default="", help='Streaming service to record on the entry (e.g. "Disney+").')
+    parser.add_argument("--language", default="en", help="Subtitle language code to search for. Default: en.")
+    parser.add_argument("--output", "-o", required=True, type=Path, help="Filter JSON path (single title) or directory (batch mode).")
+    parser.add_argument("--wordlist", type=Path, default=DEFAULT_WORDLIST_PATH, help="Word list JSON to scan with.")
+    parser.add_argument(
+        "--min-severity", choices=["mild", "moderate", "strong"], default="mild",
+        help="Ignore word-list entries below this severity. Default: mild (all entries).",
+    )
+    parser.add_argument("--action", choices=["mute", "skip"], default="mute", help="Cue action. Default: mute.")
+    parser.add_argument("--pad", type=float, default=0.15, help="Seconds padded before/after each hit. Default: 0.15.")
+    parser.add_argument(
+        "--merge-gap", type=float, default=0.75,
+        help="Merge same-category cues within this many seconds of each other. Default: 0.75.",
+    )
+    parser.add_argument(
+        "--no-words", action="store_true",
+        help="Don't populate cues' 'word' field at all -- 'word' is always masked (see censor_word) even without "
+        "this flag, but leaving it off entirely means the file carries no word info -- not even a first letter "
+        "and length -- matching this script's behavior before that field existed.",
+    )
+    parser.add_argument("--api-key", default=os.environ.get("SUBDL_API_KEY"))
+    parser.add_argument(
+        "--interactive", action="store_true",
+        help="Choose which SubDL search result to use instead of auto-picking the top one. "
+        "Not usable together with --sources > 1.",
+    )
+    parser.add_argument(
+        "--sources", type=int, default=1,
+        help="Download this many top SubDL results and cross-check them against each other "
+        "instead of trusting a single release's timing: hits on the same word within "
+        "--cross-check-tolerance seconds of each other across sources are folded into one "
+        "cue using the median timestamp. Default: 1 (no cross-check).",
+    )
+    parser.add_argument(
+        "--cross-check-tolerance", type=float, default=1.5,
+        help="When --sources > 1, hits on the same word across sources within this many "
+        "seconds of each other are treated as the same utterance. Default: 1.5.",
+    )
+    parser.add_argument(
+        "--release-filter", default=DEFAULT_RELEASE_FILTER,
+        help="Case-insensitive regex a SubDL result's release/file name must match to be "
+        "considered. Defaults to any WEB-tagged release (matches 'WEBRip', 'WEB-DL', 'WEBHD', "
+        "etc.) since those are sourced from a streaming service and tend to already line up "
+        "with what's playing, unlike a disc-rip release (BluRay/DVD) with a different cut or "
+        "runtime. Pass '' to consider all releases, or a stricter pattern like 'web[-. ]?dl' to "
+        "require true WEB-DL (uncommon on SubDL -- most streaming-sourced subs there are "
+        "tagged WEBRip instead).",
+    )
+    parser.add_argument("--save-srt", type=Path, default=None, help="Also save the raw downloaded subtitle file(s) here.")
+    parser.add_argument(
+        "--srt-file", type=Path, default=None,
+        help="Skip the SubDL download and scan this local .srt/.vtt file instead.",
+    )
+    parser.add_argument(
+        "--batch-movies", type=Path, default=None,
+        help="Path to a CSV file with one movie title per row (optional second column: year). "
+        "Generates a separate JSON file per movie inside --output directory.",
+    )
+    args = parser.parse_args()
+
+    # Validate mutual exclusivity.
+    if args.batch_movies and args.title is not None:
+        parser.error("Cannot use positional --title with --batch-movies.")
+    if args.batch_movies is None and args.title is None:
+        parser.error("Must provide either a positional TITLE or --batch-movies CSV.")
+    if args.batch_movies and args.interactive:
+        parser.error("--interactive is not compatible with --batch-movies.")
+    if args.batch_movies and args.sources > 1:
+        parser.error("--sources > 1 is not compatible with --batch-movies (per-movie sources ok, but not cross-check).")
+
+    if args.batch_movies:
+        # ---- Batch mode ----
+        movies = _parse_csv(args.batch_movies)
+        if not movies:
+            print(f"error: no valid movie rows found in {args.batch_movies}", file=sys.stderr)
+            return 1
+
+        base_dir = args.output
+        base_dir.mkdir(parents=True, exist_ok=True)
+
+        if args.srt_file:
+            print("error: --srt-file is not compatible with --batch-movies.", file=sys.stderr)
+            return 1
+        if not args.api_key:
+            print("--api-key or SUBDL_API_KEY is required for batch mode.", file=sys.stderr)
+            return 1
+        if args.save_srt:
+            print("error: --save-srt is not compatible with --batch-movies.", file=sys.stderr)
+            return 1
+
+        release_filter: Optional[re.Pattern] = None
+        if args.release_filter:
+            release_filter = re.compile(args.release_filter, re.IGNORECASE)
+
+        matchers = load_matchers(args.wordlist, args.min_severity)
+
+        print(f"Batch processing {len(movies)} movie(s) from {args.batch_movies}")
+        ok = 0
+        fail = 0
+        for title, year in movies:
+            try:
+                _process_movie(title, year, args, matchers, base_dir)
+                ok += 1
+            except Exception as e:
+                print(f"  FAILED: {title!r} -- {e}", file=sys.stderr)
+                fail += 1
+        print(f"\nDone: {ok} succeeded, {fail} failed out of {len(movies)} total.")
+        return 1 if fail > 0 else 0
+
+    # ---- Single-title mode (original behavior) ----
+    release_filter: Optional[re.Pattern] = None
+    if args.release_filter:
+        try:
+            release_filter = re.compile(args.release_filter, re.IGNORECASE)
+        except re.error as e:
+            parser.error(f"--release-filter is not a valid regex: {e}")
+
+    if args.sources < 1:
+        parser.error("--sources must be >= 1.")
+    if args.interactive and args.sources > 1:
+        parser.error("--interactive picks a single result, which conflicts with --sources > 1.")
+    if args.srt_file and args.sources > 1:
+        parser.error("--srt-file scans one local file, which conflicts with --sources > 1.")
+
+    matchers = load_matchers(args.wordlist, args.min_severity)
+    return _run_single(args, matchers, release_filter)
 
 
 if __name__ == "__main__":
