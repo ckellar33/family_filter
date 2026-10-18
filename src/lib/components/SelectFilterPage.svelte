@@ -22,6 +22,7 @@
     toggleFilterEnabled,
     toggleDetailCategory,
     toggleDetailCue,
+    toggleWordEnabled,
     updateDetailCueTime,
     deleteDetailCue,
     addDetailCue,
@@ -192,6 +193,41 @@
 
   function toggleExpanded(category: string) {
     expandedCategories = { ...expandedCategories, [category]: !(expandedCategories[category] ?? true) };
+  }
+
+  // Which word groups are expanded inside each category. Uses a
+  // composite key to avoid collisions across categories sharing the
+  // same word.
+  let expandedWords = $state<Record<string, boolean>>({});
+
+  function toggleWordExpanded(category: string, word: string) {
+    const key = `${category}::${word}`;
+    expandedWords = { ...expandedWords, [key]: !(expandedWords[key] ?? true) };
+  }
+
+  // Group cues by their `word` value (null/empty first), preserving
+  // insertion order -- returns an array so it works with {#each}.
+  interface WordGroup {
+    word: string;
+    cues: Cue[];
+  }
+  function groupByWord(cues: Cue[]): WordGroup[] {
+    const byWord: Record<string, Cue[]> = {};
+    const order: string[] = [];
+    for (const cue of cues) {
+      const w = cue.word ?? "";
+      if (!byWord[w]) {
+        byWord[w] = [];
+        order.push(w);
+      }
+      byWord[w].push(cue);
+    }
+    const nullGroup = byWord[""] ?? [];
+    delete byWord[""];
+    const result: WordGroup[] = [];
+    if (nullGroup.length) result.push({ word: "", cues: nullGroup });
+    for (const w of order) result.push({ word: w, cues: byWord[w] });
+    return result;
   }
 
   // Every service variant of whichever tile's open in the online preview --
@@ -456,24 +492,65 @@
 
             {#if isExpanded && cues.length > 0}
               <ul class="list nested-list">
-                {#each cues as cue (cue.index)}
-                  <li class="list-row cue-row static" class:cue-past={!cue.enabled}>
-                    <button type="button" class="cue-edit-trigger" onclick={() => (editingCue = cue)}>
-                      <span class="cue-time">{fmtTime(cue.start)}–{fmtTime(cue.end)}</span>
-                      {#if isLanguageCue(cue) && cue.word}
-                        <!-- VidAngel-style: the actual recorded word, censored down to its first letter -- see censorWord. -->
-                        <span class="cue-pill" data-action={cue.action} aria-label={`${cue.action === "mute" ? "MUTE" : "SKIP"}: ${cue.word}`}
-                          >{censorWord(cue.word)}</span
-                        >
-                      {:else}
-                        <span class="cue-pill" data-action={cue.action}>{cue.action === "mute" ? "MUTE" : "SKIP"}</span>
+                {#each groupByWord(cues) as group (group.word)}
+                  {@const key = `${category}::${group.word}`}
+                  {@const isWordExpanded = expandedWords[key] ?? true}
+                  {#if group.word}
+                            <li>
+                              <div class="list-row word-row">
+                                <div style="flex:1; min-width:0">
+                                  <button
+                                    type="button"
+                                    class="disclosure"
+                                    class:expanded={isWordExpanded}
+                                    onclick={() => toggleWordExpanded(category, group.word)}
+                                    aria-label={`${isWordExpanded ? "Collapse" : "Expand"} ${group.word}`}
+                                  >
+                                    ›
+                                  </button>
+                                  <span class="word-pill" data-action={group.cues[0]?.action}>"{group.word}"</span>
+                                </div>
+                                <label class="switch">
+                                  <input
+                                    type="checkbox"
+                                    checked={filterState.wordEnabled[key] ?? true}
+                                    onchange={() => toggleWordEnabled(category, group.word)}
+                                  />
+                                  <span class="switch-track"><span class="switch-thumb"></span></span>
+                                </label>
+                              </div>
+                              {#if isWordExpanded}
+                                <ul class="list nested-list">
+                                  {#each group.cues as cue (cue.index)}
+                                    <li class="list-row cue-row static" class:cue-past={!cue.enabled}>
+                              <button type="button" class="cue-edit-trigger" onclick={() => (editingCue = cue)}>
+                                <span class="cue-time">{fmtTime(cue.start)}–{fmtTime(cue.end)}</span>
+                              </button>
+                              <label class="switch switch-sm">
+                                <input type="checkbox" checked={cue.enabled} onchange={() => toggleDetailCue(cue)} />
+                                <span class="switch-track"><span class="switch-thumb"></span></span>
+                              </label>
+                            </li>
+                          {/each}
+                        </ul>
                       {/if}
-                    </button>
-                    <label class="switch switch-sm">
-                      <input type="checkbox" checked={cue.enabled} onchange={() => toggleDetailCue(cue)} />
-                      <span class="switch-track"><span class="switch-thumb"></span></span>
-                    </label>
-                  </li>
+                    </li>
+                  {:else}
+                    {#each group.cues as cue (cue.index)}
+                      <li class="list-row cue-row static" class:cue-past={!cue.enabled}>
+                        <button type="button" class="cue-edit-trigger" onclick={() => (editingCue = cue)}>
+                          <span class="cue-time">{fmtTime(cue.start)}–{fmtTime(cue.end)}</span>
+                          <span class="cue-pill" data-action={cue.action}>
+                            {cue.action === "mute" ? "MUTE" : "SKIP"}
+                          </span>
+                        </button>
+                        <label class="switch switch-sm">
+                          <input type="checkbox" checked={cue.enabled} onchange={() => toggleDetailCue(cue)} />
+                          <span class="switch-track"><span class="switch-thumb"></span></span>
+                        </label>
+                      </li>
+                    {/each}
+                  {/if}
                 {/each}
               </ul>
             {/if}
@@ -577,17 +654,51 @@
 
             {#if isExpanded && cues.length > 0}
               <ul class="list nested-list">
-                {#each cues as cue (cue.index)}
-                  <li class="list-row cue-row static">
-                    <span class="cue-time">{fmtTime(cue.start)}–{fmtTime(cue.end)}</span>
-                    {#if isLanguageCue(cue) && cue.word}
-                      <span class="cue-pill" data-action={cue.action} aria-label={`${cue.action === "mute" ? "MUTE" : "SKIP"}: ${cue.word}`}
-                        >{censorWord(cue.word)}</span
-                      >
-                    {:else}
-                      <span class="cue-pill" data-action={cue.action}>{cue.action === "mute" ? "MUTE" : "SKIP"}</span>
-                    {/if}
-                  </li>
+                {#each groupByWord(cues) as group (group.word)}
+                  {@const key = `${category}::${group.word}`}
+                  {@const isWordExpanded = expandedWords[key] ?? true}
+                  {#if group.word}
+                    <li>
+                      <div class="list-row word-row">
+                        <div style="flex:1; min-width:0">
+                          <button
+                            type="button"
+                            class="disclosure"
+                            class:expanded={isWordExpanded}
+                            onclick={() => toggleWordExpanded(category, group.word)}
+                            aria-label={`${isWordExpanded ? "Collapse" : "Expand"} ${group.word}`}
+                          >
+                            ›
+                          </button>
+                          <span class="word-pill" data-action={group.cues[0]?.action}>"{group.word}"</span>
+                        </div>
+                        <label class="switch">
+                          <input
+                            type="checkbox"
+                            checked={filterState.wordEnabled[key] ?? true}
+                            onchange={() => toggleWordEnabled(category, group.word)}
+                          />
+                          <span class="switch-track"><span class="switch-thumb"></span></span>
+                        </label>
+                      </div>
+                      {#if isWordExpanded}
+                        <ul class="list nested-list">
+                          {#each group.cues as cue (cue.index)}
+                            <li class="list-row cue-row static">
+                              <span class="cue-time">{fmtTime(cue.start)}–{fmtTime(cue.end)}</span>
+                            </li>
+                          {/each}
+                        </ul>
+                      {/if}
+                    </li>
+                  {:else}
+                    {#each group.cues as cue (cue.index)}
+                      <li class="list-row cue-row static">
+                        <span class="cue-time">{fmtTime(cue.start)}–{fmtTime(cue.end)}</span>
+                        <span class="cue-pill" data-action={cue.action}>{cue.action === "mute" ? "MUTE" : "SKIP"}</span>
+                      </li>
+                    {/each}
+                  {/if}
                 {/each}
               </ul>
             {/if}

@@ -110,6 +110,10 @@ export const filterState = $state({
   // temporary auto-publish step), and the sheet needs its own "Adding…"
   // state independent of those.
   addCueBusy: false,
+
+  // Per-word enable/disable tracking (client-side only, mirrors
+  // categoryEnabled), keyed `${category}::${word}` -- absent means enabled.
+  wordEnabled: {} as Record<string, boolean>,
 });
 
 invoke<boolean>("supports_folder_import")
@@ -439,6 +443,34 @@ export async function toggleDetailCategory(category: string) {
   }
 }
 
+// Enables or disables every cue in a word group.  Client-side tracking
+// mirrors categoryEnabled; toggling just calls through to
+// set_filter_cue_enabled for each cue, then refreshes.
+export async function toggleWordEnabled(category: string, word: string) {
+  const cues = filterState.detail?.cues ?? filterState.onlinePreview?.cues ?? [];
+  const matching = cues.filter((c) => c.word === word && c.category === category);
+  if (matching.length === 0) return;
+  // Absent means enabled -- same default the switch renders with
+  // (`wordEnabled[key] ?? true`), otherwise the first click is a no-op.
+  const next = !(filterState.wordEnabled[`${category}::${word}`] ?? true);
+  filterState.detailError = "";
+  try {
+    await Promise.all(
+      matching.map((c) => invoke("set_filter_cue_enabled", {
+        title: filterState.detail!.title,
+        service: filterState.detail!.service,
+        index: c.index,
+        enabled: next,
+      })),
+    );
+    filterState.wordEnabled = { ...filterState.wordEnabled, [`${category}::${word}`]: next };
+    await refreshDetail();
+    await refreshPlayback();
+  } catch (e) {
+    filterState.detailError = String(e);
+  }
+}
+
 // Unlike categoryEnabled, per-cue enabled state isn't tracked separately
 // client-side -- `detail.cues[i].enabled` already comes back fresh from the
 // backend on every refresh, so that's the single source of truth; toggling
@@ -571,6 +603,14 @@ async function refreshDetail() {
     filterState.detail = fresh;
     filterState.filterEnabled = fresh.enabled;
     filterState.categoryEnabled = Object.fromEntries(fresh.categories.map((c) => [c, !fresh.disabled_categories.includes(c)]));
+    // Initialize wordEnabled for every category (all true by default), but
+    // preserve any word-level overrides that were already set to false.
+    for (const category of fresh.categories) {
+      const key = `${category}::*`;
+      if (!(key in filterState.wordEnabled)) {
+        filterState.wordEnabled[key] = true;
+      }
+    }
   } catch (e) {
     filterState.detailError = String(e);
   }

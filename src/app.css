@@ -685,6 +685,33 @@ button.list-row:active:not(:disabled) {
   padding-left: 0;
 }
 
+/* Word group row inside a category: pill + disclosure chevron */
+/* Word group row inside a category: chevron + pill */
+.word-row {
+  gap: 11px;
+  align-items: center;
+  justify-content: flex-start;
+}
+
+.word-pill {
+  flex: 0;
+  padding: 4px 8px;
+  border-radius: var(--r-sm);
+  font-family: var(--mono);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: #fff;
+  background: var(--skip);
+  text-align: center;
+  white-space: nowrap;
+}
+
+.word-pill[data-action="mute"] {
+  background: var(--mute);
+}
+
+/* Switch ─────────────────────────────────────────────── */
 .disclosure {
   all: unset;
   width: 1.4em;
