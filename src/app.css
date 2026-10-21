@@ -391,18 +391,25 @@ body {
   pointer-events: none;
 }
 
-/* The screen actually being dragged: absolutely positioned over
-   `.edge-back-layer` (pinned top/left/right, natural height) so it visibly
-   covers the grid at rest without stretching to match its height, and so
-   swiping it doesn't add to `.edge-back-layer`'s own layout height. Same
-   opaque background as `.content`'s so there's no seam between the two
-   layers before a drag starts moving anything. `min-height: 100%` keeps a
-   short front screen (e.g. a title with no cues yet, so no category list)
-   from ending partway down and leaving the grid peeking out below it. */
+/* The screen actually being dragged: absolutely positioned exactly over
+   `.edge-back-layer` (same pinned box) so it covers the grid at rest
+   without adding to `.edge-back-layer`'s own layout height. Same opaque
+   background as `.content`'s so there's no seam between the two layers
+   before a drag starts moving anything.
+
+   It scrolls itself rather than overflowing into `.content`: a detail
+   screen is usually taller than the viewport, and if it spilled over,
+   `.content` would scroll instead -- carrying the pinned grid underneath
+   up and out of view with it, so an edge-swipe from anywhere but the very
+   top revealed blank canvas instead of the screen being returned to.
+   Bottom padding matches `.library-body .stack`'s, for the same reason
+   (see `.content.self-scroll`). */
 .edge-front-layer {
   position: absolute;
-  inset: 0 0 auto 0;
-  min-height: 100%;
+  inset: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: 24px;
   background: var(--bg);
   transition: transform 0.28s cubic-bezier(0.32, 0.72, 0, 1);
 }
