@@ -248,8 +248,14 @@ export function edgeSwipeBack(node: HTMLElement, onBack: () => void) {
           f.classList.remove("edge-dragging");
           b?.classList.remove("edge-dragging");
         });
-      } else {
-        b?.style.removeProperty("--edge-back-dim");
+      } else if (b) {
+        // Sprang back: the back layer just slid to its tucked-away parallax
+        // offset alongside the front -- reset it instantly to rest so it
+        // isn't left shifted/dimmed underneath.
+        b.classList.add("edge-dragging");
+        b.style.transform = "";
+        b.style.removeProperty("--edge-back-dim");
+        requestAnimationFrame(() => b.classList.remove("edge-dragging"));
       }
     };
     f.addEventListener("transitionend", onTransitionEnd);

@@ -254,9 +254,15 @@ body {
    shrinks that pinned box, leaving a dead gap of blank padding between the
    grid and the tabbar rather than any real clearance. Dropped back down to
    the bare top/bottom padding here; `.library-body .stack` carries its own
-   bottom padding instead, where it actually scrolls past the last row. */
+   bottom padding instead, where it actually scrolls past the last row.
+
+   The gutters themselves move down onto `.edge-back-layer`/`.edge-front-layer`
+   (see below) rather than staying on `.content`: otherwise the front layer
+   only covers `.content`'s content-box, and an edge-swipe shows the grid
+   and the drag shadow through the 20px side / 4px top+bottom padding strips
+   around it. */
 .content.with-tabbar.self-scroll {
-  padding-bottom: 4px;
+  padding: 0;
 }
 
 /* Now Playing (OpenControlsPage): a fixed transport screen, not a list --
@@ -321,6 +327,7 @@ body {
      with no scroll container) take their natural height out of this fixed
      total; `.library-body` absorbs whatever's left via its own flex:1. */
   height: 100%;
+  padding: 4px 20px; /* `.content`'s gutters -- see `.content.self-scroll` */
 }
 
 /* Takes whatever height is left under the search field + scope tabs
@@ -409,9 +416,17 @@ body {
   inset: 0;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
-  padding-bottom: 24px;
+  padding: 4px 20px 24px; /* `.content`'s gutters -- see `.content.self-scroll` */
   background: var(--bg);
   transition: transform 0.28s cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+/* `.screen` is a flex column, and now that this box has a fixed height its
+   children would shrink to fit it rather than overflow -- `.list`'s
+   `overflow: hidden` drops its min-height to 0, so the category list just
+   squashed (clipping its rows) and there was never anything to scroll. */
+.edge-front-layer > * {
+  flex-shrink: 0;
 }
 
 .edge-front-layer.edge-dragging {
