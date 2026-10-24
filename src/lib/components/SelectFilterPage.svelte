@@ -226,7 +226,9 @@
     delete byWord[""];
     const result: WordGroup[] = [];
     if (nullGroup.length) result.push({ word: "", cues: nullGroup });
-    for (const w of order) result.push({ word: w, cues: byWord[w] });
+    for (const w of order) {
+      if (w !== "") result.push({ word: w, cues: byWord[w] });
+    }
     return result;
   }
 
@@ -279,6 +281,12 @@
     {#if gridSource === "local"}
       {#if filterState.tilesError}
         <p class="banner error">{filterState.tilesError}</p>
+      {/if}
+      <!-- openTitle/selectTile report failures into detailError, but the
+           detail view's own banner never renders when opening failed --
+           without this, a failed tap on a tile just silently did nothing. -->
+      {#if filterState.detailError && !filterState.detail}
+        <p class="banner error">{filterState.detailError}</p>
       {/if}
 
       {#if filterState.tilesLoading && filterState.tiles.length === 0}
