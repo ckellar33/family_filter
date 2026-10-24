@@ -18,24 +18,18 @@ import { open, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { session } from "$lib/state/session.svelte";
 import { filterState, deleteFilterFile } from "$lib/state/filter.svelte";
 import { slugifyTitle } from "$lib/format";
+import { CATEGORY_GROUPS } from "$lib/categories";
 import type { CreationCue, CueMarkResult, DraftSummary, LanguageKindDef } from "$lib/types";
 
-// What a skip cue can be *about*. Fixed list rather than the old
-// user-extensible one: the label sheet is a grid of chips, and a category
-// that only exists on one machine can't be shared with the filter file.
-// Stored lowercase, matching the category strings already written by
-// earlier versions and by the sample filter files.
-export const SKIP_CATEGORIES: string[] = [
-  "violence",
-  "gore",
-  "nudity",
-  "intimacy",
-  "drugs & alcohol",
-  "frightening",
-  "crude humor",
-  "peril",
-  "credits",
-];
+// What a skip cue can be *about* -- every non-language category in
+// categories.ts. Fixed list rather than user-extensible: the label sheet is
+// a grid of chips, and a category that only exists on one machine can't be
+// shared with the filter file. Stored lowercase, matching the category
+// strings already written by earlier versions and by the sample filter
+// files.
+export const SKIP_CATEGORIES: string[] = CATEGORY_GROUPS.flatMap((g) => g.items)
+  .filter((i) => i.action === "skip")
+  .map((i) => i.key);
 
 // Mute *is* language -- the question a mute mark asks is which kind, since
 // each kind carries its own word list and families differ in whether they
@@ -55,6 +49,26 @@ export const LANGUAGE_KINDS: LanguageKindDef[] = [
     label: "Blasphemy",
     censor: true,
     words: ["god", "god damn", "jesus", "jesus christ", "oh my god"],
+  },
+  {
+    category: "language-crude",
+    label: "Crude language",
+    censor: true,
+    words: ["crap", "piss", "sucks"],
+  },
+  {
+    category: "language-sexual",
+    label: "Sexual language",
+    censor: true,
+    words: ["sexy", "horny"],
+  },
+  {
+    // No suggested words: this kind is typed in per cue rather than picked
+    // from a canned list.
+    category: "language-slurs",
+    label: "Slurs & insults",
+    censor: true,
+    words: [],
   },
   {
     // Not censored: the point of flagging "stupid" or "shut up" is that a
