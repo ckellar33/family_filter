@@ -109,6 +109,7 @@ pub fn run() {
             creation::creation_end_skip_mark,
             creation::creation_cancel_skip_mark,
             creation::creation_update_cue,
+            creation::creation_set_cue_label,
             creation::creation_delete_cue,
             creation::creation_list_cues,
             creation::creation_set_service,
