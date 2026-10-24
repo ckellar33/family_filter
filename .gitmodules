@@ -1,3 +1,4 @@
 [submodule "libs"]
 	path = libs
 	url = ../appletv-libs
+	branch = main
