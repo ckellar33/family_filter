@@ -295,7 +295,11 @@ pub type CueKey = (String, String, usize);
 /// Home"), while filter files are written without -- an exact comparison
 /// would otherwise never match.
 pub(crate) fn normalize_title(t: &str) -> String {
-    t.chars().filter(|c| !matches!(c, '™' | '®' | '©')).collect::<String>().trim().to_lowercase()
+    t.chars()
+        .filter(|c| !matches!(c, '™' | '®' | '©'))
+        .collect::<String>()
+        .trim()
+        .to_lowercase()
 }
 
 /// Same normalization as `normalize_title`, kept as its own function (rather
@@ -308,7 +312,7 @@ pub(crate) fn normalize_service(s: &str) -> String {
 impl MediaEntry {
     /// Sorts `cues` by start and re-validates every invariant load-time
     /// parsing already enforces (finite/non-negative start, end > start,
-    /// non-empty category, no overlap within this entry) -- shared by
+    /// non-empty category) -- shared by
     /// `FilterList::parse_and_validate` and the creation-mode mutation
     /// methods below (`FilterList::add_cue`/`update_cue`), so both paths can
     /// never drift apart on what counts as a valid cue list.
@@ -318,13 +322,12 @@ impl MediaEntry {
                 .partial_cmp(&b.start)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
-        let mut prev_end: Option<f64> = None;
         for cue in &self.cues {
             if !(cue.start.is_finite() && cue.end.is_finite()) {
                 bail!(
                     "{:?} ({:?}) has a non-finite cue start/end",
                     self.title,
-                    self.service
+                    self.service,
                 );
             }
             if cue.start < 0.0 || cue.end <= cue.start {
@@ -333,27 +336,16 @@ impl MediaEntry {
                     self.title,
                     self.service,
                     cue.start,
-                    cue.end
+                    cue.end,
                 );
             }
             if cue.category.trim().is_empty() {
                 bail!(
                     "{:?} ({:?}) has a cue with an empty category",
                     self.title,
-                    self.service
+                    self.service,
                 );
             }
-            if let Some(prev_end) = prev_end {
-                if cue.start < prev_end {
-                    bail!(
-                        "{:?} ({:?}) has overlapping cues around {}",
-                        self.title,
-                        self.service,
-                        cue.start
-                    );
-                }
-            }
-            prev_end = Some(cue.end);
         }
         Ok(())
     }
@@ -567,15 +559,13 @@ impl FilterList {
     }
 
     /// Adds one cue under `(title, service)` (creating the entry if this is
-    /// its first cue), then re-sorts and re-validates that entry -- same
-    /// invariants `parse_and_validate` enforces at load time, via
-    /// `sort_and_validate`. On failure (e.g. the new cue overlaps an
-    /// existing one), the entry's cues are restored to their pre-call state
-    /// so a rejected mark never leaves partial data behind. Returns the new
-    /// cue's index after sorting -- looked up by `start` alone, which
-    /// validation guarantees is unique within an entry (two cues sharing a
-    /// start would always overlap, since both include that point and
-    /// neither has zero length).
+    /// its first cue), then re-sorts and re-validates that entry. On
+    /// failure, the entry's cues are restored to their pre-call state so a
+    /// rejected mark never leaves partial data behind. Returns the new cue's
+    /// index after sorting -- looked up by `start` alone.
+    ///
+    /// Its cues may overlap; different categories/words can legitimately fire
+    /// at the same time.
     pub fn add_cue(&mut self, title: &str, service: &str, cue: Cue) -> Result<usize> {
         let start = cue.start;
         let entry = self.entry_mut(title, service);
@@ -1058,7 +1048,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_overlapping_cues() {
+    fn parses_overlapping_cues() {
         let json = r#"{
             "media": [
                 { "title": "X", "cues": [
@@ -1067,7 +1057,8 @@ mod tests {
                 ] }
             ]
         }"#;
-        assert!(FilterList::parse_and_validate(json).is_err());
+        let list = FilterList::parse_and_validate(json).unwrap();
+        assert_eq!(list.media[0].cues.len(), 2);
     }
 
     #[test]
@@ -1080,6 +1071,20 @@ mod tests {
             ]
         }"#;
         assert!(FilterList::parse_and_validate(json).is_err());
+    }
+
+    #[test]
+    fn allows_same_start_timestamp_across_cues() {
+        let json = r#"{
+            "media": [
+                { "title": "X", "cues": [
+                    { "start": 10.0, "end": 20.0, "action": "mute", "category": "language" },
+                    { "start": 10.0, "end": 15.0, "action": "skip", "category": "gore" }
+                ] }
+            ]
+        }"#;
+        let list = FilterList::parse_and_validate(json).unwrap();
+        assert_eq!(list.media[0].cues.len(), 2);
     }
 
     #[test]
@@ -1181,7 +1186,9 @@ mod tests {
 
     #[test]
     fn find_entry_for_playback_ignores_trademark_symbols() {
-        let list = FilterList { media: vec![entry("Spider-Man: Far From Home", "Disney+", vec![])] };
+        let list = FilterList {
+            media: vec![entry("Spider-Man: Far From Home", "Disney+", vec![])],
+        };
         let found = list.find_entry_for_playback("Spider-Man™: Far From Home", Some("Disney+"));
         assert!(found.is_some());
     }
@@ -1966,16 +1973,18 @@ mod tests {
     }
 
     #[test]
-    fn add_cue_rejects_overlap_and_leaves_entry_unchanged() {
+    fn add_cue_accepts_overlap() {
         let mut list = sample_list();
         let before = list.find_entry("Some Movie", "").unwrap().cues.clone();
-        let err = list.add_cue(
-            "Some Movie",
-            "",
-            cue(15.0, 22.0, CueAction::Mute, "language"),
-        );
-        assert!(err.is_err());
-        assert_eq!(list.find_entry("Some Movie", "").unwrap().cues, before);
+        let index = list
+            .add_cue(
+                "Some Movie",
+                "",
+                cue(15.0, 22.0, CueAction::Mute, "language"),
+            )
+            .unwrap();
+        assert_eq!(index, 1); // sorted into the middle
+        assert_eq!(list.media[0].cues.len(), 3);
     }
 
     #[test]
@@ -2007,12 +2016,13 @@ mod tests {
     }
 
     #[test]
-    fn update_cue_rejects_new_overlap_and_leaves_original_times_unchanged() {
+    fn update_cue_accepts_new_overlap() {
         let mut list = sample_list();
-        let before = list.find_entry("Some Movie", "").unwrap().cues.clone();
-        let err = list.update_cue("Some Movie", "", 1, 15.0, 22.0, None); // would overlap the mute cue
-        assert!(err.is_err());
-        assert_eq!(list.find_entry("Some Movie", "").unwrap().cues, before);
+        // Overlapping update is now allowed; the cue just gets re-sorted.
+        list.update_cue("Some Movie", "", 1, 15.0, 22.0, None)
+            .unwrap();
+        let cues = &list.find_entry("Some Movie", "").unwrap().cues;
+        assert_eq!(cues.len(), 2);
     }
 
     #[test]
