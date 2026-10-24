@@ -60,9 +60,12 @@
   // notion of which entry it's for.
   let showAddCue = $state(false);
 
-  async function saveNewCue(cue: { start: number; end: number; action: "mute" | "skip"; category: string; word: string | null; note: string | null }) {
+  // Resolves to an error message, or null on success. The sheet stays open
+  // on success -- it's used to back-fill several cues in a row and closes
+  // itself via its own Done button.
+  async function saveNewCue(cue: { start: number; end: number; action: "mute" | "skip"; category: string; word: string | null; note: string | null }): Promise<string | null> {
     await addDetailCue(cue);
-    if (!filterState.detailError) showAddCue = false;
+    return filterState.detailError || null;
   }
 
   $effect(() => {

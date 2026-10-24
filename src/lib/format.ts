@@ -77,3 +77,13 @@ export function parseTime(text: string): number | null {
   }
   return Number(m[1]) * 60 + Number(m[2]);
 }
+
+// Zero-padded HH:MM:SS -- the Add cue sheet's time wheel and its Start/Stop
+// readouts, where fixed width matters more than fmtTime's shorter m:ss.
+export function fmtClock(seconds: number): string {
+  const total = Math.max(0, Math.round(seconds));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  return [h, m, s].map((n) => n.toString().padStart(2, "0")).join(":");
+}
