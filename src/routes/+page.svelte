@@ -168,7 +168,8 @@
   });
 
   // Re-checks whether a filter is available for whatever's playing now
-  // (Open Controls' "tap to enable" banner) whenever the title, the app
+  // (auto-armed once per title, else Open Controls' "tap to enable"
+  // banner) whenever the title, the app
   // it's playing in, or the enabled state changes -- kept here rather than
   // in OpenControlsPage so it keeps working even while looking at a
   // different tab, same reasoning as the playback poll above.

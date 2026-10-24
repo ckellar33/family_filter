@@ -140,7 +140,7 @@
 
     {#if filterState.availableHint}
       <button type="button" class="banner-link" onclick={onEnableFilter}>
-        A filter is available for "{filterState.availableHint.title}" on {filterState.availableHint.service} — tap to enable
+        A filter is available for "{filterState.availableHint.title}" on {filterState.availableHint.service || "any service"} — tap to enable
       </button>
     {/if}
 

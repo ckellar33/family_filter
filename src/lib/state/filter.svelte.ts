@@ -616,32 +616,70 @@ async function refreshDetail() {
   }
 }
 
-// Checks whether a filter is available for whatever's playing right now but
-// not currently enabled -- called from +page.svelte whenever the playing
-// title/app changes, powering Open Controls' "a filter is available, tap to
-// enable" banner. Deliberately only ever matches the *exact* service that's
-// playing (never a same-title entry tagged for a different service) --
-// suggesting a filter whose cue times were recorded against a different
-// platform's cut risks muting/skipping at the wrong moments, which is worse
-// than not suggesting one at all.
+// Which (title, file, service) checkAvailableForPlayback last auto-armed --
+// so it arms each newly playing title once, and a manual "off" while that
+// same title is still playing sticks instead of being re-armed on the next
+// check (the banner is offered instead).
+let autoArmedKey: string | null = null;
+
+// Checks whether a filter in the on-device library matches whatever's
+// playing right now and, if it isn't already active, loads and arms it --
+// called from +page.svelte whenever the playing title/app or the enabled
+// state changes. Matches the playing app's exact service first, then a
+// generic (service-less) entry, the same precedence the backend's
+// `FilterList::find_entry_for_playback` applies once loaded; a same-title
+// entry tagged for a *different* service is never used, since its cue times
+// were recorded against another platform's cut. Falls back to Open
+// Controls' "tap to enable" banner only if the user turned the filter back
+// off for this title.
 export async function checkAvailableForPlayback() {
   const p = session.playback;
-  if (!p?.title || !p.app_name) {
+  if (!p?.title) {
     filterState.availableHint = null;
     return;
   }
-  // Already matched and turned on -- nothing to nag about.
+  // Already matched and turned on -- nothing to do.
   if (p.filter_match && filterState.filterEnabled) {
     filterState.availableHint = null;
     return;
   }
   try {
     const options = await invoke<ServiceOption[]>("list_services_for_title", { title: p.title });
-    const exact = options.find((o) => o.service.toLowerCase() === p.app_name!.toLowerCase());
-    filterState.availableHint = exact ? { ...exact, title: p.title } : null;
+    const app = p.app_name?.toLowerCase();
+    const match =
+      (app ? options.find((o) => o.service.toLowerCase() === app) : undefined) ??
+      options.find((o) => o.service.trim() === "");
+    if (!match) {
+      filterState.availableHint = null;
+      return;
+    }
+
+    const key = `${p.title.trim().toLowerCase()}|${match.path}|${match.service.toLowerCase()}`;
+    if (autoArmedKey === key) {
+      filterState.availableHint = { ...match, title: p.title };
+      return;
+    }
+    autoArmedKey = key;
+    await autoEnable(match.path, p.title, match.service);
+    filterState.availableHint = null;
   } catch {
     // Best-effort -- a failed lookup just means no banner, not an error
     // worth surfacing over Open Controls' now-playing card.
     filterState.availableHint = null;
   }
+}
+
+// Loads `path` as the active list and arms it, without opening the Filters
+// tab's detail view the way selectTile does -- this runs in the background
+// off a playback change, so it shouldn't navigate anything. A detail view
+// left open for a different file would be stale once the active list
+// changes, so that's closed.
+async function autoEnable(path: string, title: string, service: string) {
+  const detail = await invoke<FilterEntryDetail>("select_filter_tile", { path, title, service });
+  if (filterState.selectedPath && filterState.selectedPath !== path) closeDetail();
+  filterState.categoryEnabled = Object.fromEntries(detail.categories.map((c) => [c, !detail.disabled_categories.includes(c)]));
+  filterState.filterSummary = { path, media_count: 0, categories: detail.categories, enabled: true };
+  await invoke("set_filter_enabled", { enabled: true });
+  filterState.filterEnabled = true;
+  await refreshPlayback();
 }
