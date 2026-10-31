@@ -61,6 +61,11 @@ create table if not exists public.online_filters (
     unique (normalized_title, service)
 );
 
+-- Reviewer-set "cue list checked against a full viewing" flag -- the app's
+-- gold star (see online::list_online_filters, which ORs it with the
+-- `media` JSON's own `confirmed`). Nullable: null means not confirmed.
+alter table public.online_filters add column if not exists confirmed boolean;
+
 create index if not exists online_filters_status_idx on public.online_filters (status);
 
 -- Row Level Security: only 'approved' rows are ever visible, and only for

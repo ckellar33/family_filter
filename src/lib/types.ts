@@ -177,6 +177,8 @@ export interface FilterTile {
   poster: string | null;
   // How many cues the entry behind this tile carries -- the grid's badge.
   cue_count: number;
+  // Any service variant marked `confirmed` -- gold star next to the title.
+  confirmed: boolean;
 }
 
 // What tapping a tile (after resolving which service, see ServiceOption)
@@ -189,6 +191,8 @@ export interface FilterEntryDetail {
   // an assumption; see control::FilterEntryDetail's doc comment.
   disabled_categories: string[];
   cues: Cue[];
+  // This (title, service) entry is marked `confirmed`.
+  confirmed: boolean;
   // Master auto-filter toggle's actual current state -- mirror this rather
   // than assuming it just got turned off by opening this detail view.
   enabled: boolean;
@@ -199,6 +203,8 @@ export interface FilterEntryDetail {
 export interface ServiceOption {
   service: string;
   path: string;
+  // This variant is marked `confirmed` -- gold star on its service button.
+  confirmed: boolean;
 }
 
 // One tile in the Select Filter screen's "Online" grid -- see
@@ -213,12 +219,15 @@ export interface OnlineFilterTile {
   title: string;
   poster: string | null;
   cue_count: number;
+  // Any service variant marked `confirmed` -- gold star next to the title.
+  confirmed: boolean;
   // Each element is one service variant's raw MediaEntry JSON -- opaque
   // (round-tripped straight back to downloadOnlineFilter/
   // preview_online_entry, not otherwise parsed here) except `service`,
   // which the in-preview service switcher (see openOnlinePreview) reads
   // client-side to list the available variants without a network round trip.
-  media: { service?: string }[];
+  // `confirmed` is normalized to a real bool by list_online_filters.
+  media: { service?: string; confirmed?: boolean }[];
 }
 
 // A read-only look at one OnlineFilterTile.media element -- see
@@ -230,4 +239,6 @@ export interface OnlinePreviewDetail {
   service: string;
   categories: string[];
   cues: Cue[];
+  // This entry is marked `confirmed`.
+  confirmed: boolean;
 }

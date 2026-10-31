@@ -127,6 +127,28 @@ pub struct MediaEntry {
     pub service: String,
     #[serde(default)]
     pub cues: Vec<Cue>,
+    /// Whether this entry's cue list has been checked against a full
+    /// viewing -- the Select Filter grid shows a gold star on its tile.
+    /// Tolerant of `"true"`/`"yes"` strings as well as a real JSON bool
+    /// (see `deserialize_loose_bool`), since hand-edited files and online
+    /// rows aren't always strict about it. `false` for anything else,
+    /// including files written before this field existed, and left out of
+    /// the serialized JSON in that case so they stay byte-for-byte as before.
+    #[serde(default, deserialize_with = "deserialize_loose_bool", skip_serializing_if = "std::ops::Not::not")]
+    pub confirmed: bool,
+}
+
+/// Accepts a JSON bool, a `"true"`/`"yes"`/`"1"` string (case-insensitive),
+/// a number (non-zero is `true`), or `null` (`false`) -- see
+/// `MediaEntry::confirmed`.
+fn deserialize_loose_bool<'de, D: serde::Deserializer<'de>>(deserializer: D) -> std::result::Result<bool, D::Error> {
+    use serde::Deserialize;
+    Ok(match serde_json::Value::deserialize(deserializer)? {
+        serde_json::Value::Bool(b) => b,
+        serde_json::Value::String(s) => matches!(s.trim().to_ascii_lowercase().as_str(), "true" | "yes" | "1"),
+        serde_json::Value::Number(n) => n.as_f64().is_some_and(|n| n != 0.0),
+        _ => false,
+    })
 }
 
 #[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
@@ -509,6 +531,7 @@ impl FilterList {
                 title: title.to_string(),
                 service: service.to_string(),
                 cues: Vec::new(),
+                confirmed: false,
             });
         }
         self.find_entry_mut(title, service)
@@ -993,6 +1016,7 @@ mod tests {
             title: title.to_string(),
             service: service.to_string(),
             cues,
+            confirmed: false,
         }
     }
 
@@ -2159,5 +2183,23 @@ mod tests {
             10.0
         );
         fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn confirmed_parses_loosely_and_defaults_false() {
+        let base = |c: serde_json::Value| {
+            let mut v = serde_json::json!({ "title": "T", "cues": [] });
+            if !c.is_null() {
+                v["confirmed"] = c;
+            }
+            media_entry_from_value(v).unwrap().confirmed
+        };
+        assert!(base(serde_json::json!(true)));
+        assert!(base(serde_json::json!("true")));
+        assert!(base(serde_json::json!("Yes")));
+        assert!(base(serde_json::json!(1)));
+        assert!(!base(serde_json::json!(false)));
+        assert!(!base(serde_json::json!("no")));
+        assert!(!base(serde_json::Value::Null));
     }
 }

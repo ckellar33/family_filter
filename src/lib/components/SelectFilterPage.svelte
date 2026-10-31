@@ -238,7 +238,9 @@
   // Every service variant of whichever tile's open in the online preview --
   // the preview's own "switch service" control, read straight off the
   // already-fetched tile rather than a round trip (see openOnlinePreview).
-  let previewServices = $derived((filterState.previewTile?.media ?? []).map((m) => m.service ?? ""));
+  let previewServices = $derived(
+    (filterState.previewTile?.media ?? []).map((m) => ({ service: m.service ?? "", confirmed: m.confirmed === true })),
+  );
 
   // Matches "language" and any "language-*" subcategory (e.g.
   // language-profanity) -- these are the only cues with a `word` worth
@@ -327,7 +329,7 @@
                    nesting a second interactive element inside that button
                    wouldn't be valid HTML. -->
               <div class="poster-tile-wrap">
-                <PosterTile title={tile.title} poster={tile.poster} cueCount={tile.cue_count} onclick={() => openTitle(tile.title)} />
+                <PosterTile title={tile.title} poster={tile.poster} cueCount={tile.cue_count} confirmed={tile.confirmed} onclick={() => openTitle(tile.title)} />
                 <button
                   type="button"
                   class="poster-delete"
@@ -373,6 +375,7 @@
                 title={tile.title}
                 poster={tile.poster}
                 cueCount={tile.cue_count}
+                confirmed={tile.confirmed}
                 onclick={() => openOnlinePreview(tile)}
               />
             {/each}
@@ -409,9 +412,12 @@
       </div>
     </div>
 
-    {#if filterState.serviceOptions.length > 1}
-      <p class="section-header">Service — platforms cut this title differently</p>
-      <div class="category-buttons">
+    <!-- Always shown, even for a single service: it's where the confirmed
+         star lives. Falls back to the open entry itself if serviceOptions
+         hasn't been populated (e.g. a detail opened via selectTile directly). -->
+    <p class="section-header">Service — platforms cut this title differently</p>
+    <div class="category-buttons">
+      {#if filterState.serviceOptions.length > 0}
         {#each filterState.serviceOptions as option (option.service)}
           <button
             type="button"
@@ -420,11 +426,15 @@
             style="min-height:46px"
             onclick={() => selectTile(option.path, detail.title, option.service)}
           >
-            {option.service || "Generic"}
+            {#if option.confirmed}<span class="poster-confirmed" title="Confirmed" aria-label="Confirmed">★</span>{/if}{option.service || "Generic"}
           </button>
         {/each}
-      </div>
-    {/if}
+      {:else}
+        <button type="button" class="category-btn selected" style="min-height:46px">
+          {#if detail.confirmed}<span class="poster-confirmed" title="Confirmed" aria-label="Confirmed">★</span>{/if}{detail.service || "Generic"}
+        </button>
+      {/if}
+    </div>
 
     <!-- Master switch, promoted out of the list into its own card: it's the
          one control on this screen that decides whether anything happens at
@@ -601,22 +611,22 @@
       </div>
     </div>
 
-    {#if previewServices.length > 1}
-      <p class="section-header">Service — platforms cut this title differently</p>
-      <div class="category-buttons">
-        {#each previewServices as service (service)}
-          <button
-            type="button"
-            class="category-btn"
-            class:selected={service.toLowerCase() === preview.service.toLowerCase()}
-            style="min-height:46px"
-            onclick={() => switchOnlinePreviewService(service)}
-          >
-            {service || "Generic"}
-          </button>
-        {/each}
-      </div>
-    {/if}
+    <!-- Always shown, even for a single service: it's where the confirmed
+         star lives. -->
+    <p class="section-header">Service — platforms cut this title differently</p>
+    <div class="category-buttons">
+      {#each previewServices as option (option.service)}
+        <button
+          type="button"
+          class="category-btn"
+          class:selected={option.service.toLowerCase() === preview.service.toLowerCase()}
+          style="min-height:46px"
+          onclick={() => switchOnlinePreviewService(option.service)}
+        >
+          {#if option.confirmed}<span class="poster-confirmed" title="Confirmed" aria-label="Confirmed">★</span>{/if}{option.service || "Generic"}
+        </button>
+      {/each}
+    </div>
 
     {#if filterState.previewTile}
       <div class="stack">

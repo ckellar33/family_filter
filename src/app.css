@@ -1375,6 +1375,12 @@ code {
   -webkit-box-orient: vertical;
 }
 
+/* Gold star before a tile title whose filter is marked `confirmed`. */
+.poster-confirmed {
+  color: #f5c518;
+  margin-right: 4px;
+}
+
 /* cue-count badge on a tile: <span class="poster-badge">3 CUES</span> */
 .poster-badge {
   position: absolute;

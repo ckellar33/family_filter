@@ -150,6 +150,9 @@ pub struct OnlineFilterTile {
     /// "whichever the dedupe kept" simplicity `list_filter_tiles`'s own
     /// cue-count badge already accepts for a multi-service local file.
     pub cue_count: usize,
+    /// Whether any service variant of this title is marked `confirmed`
+    /// (see `filter::MediaEntry::confirmed`) -- the tile's gold star.
+    pub confirmed: bool,
     pub media: Vec<serde_json::Value>,
 }
 
@@ -165,6 +168,8 @@ pub struct OnlinePreviewDetail {
     pub service: String,
     pub categories: Vec<String>,
     pub cues: Vec<crate::control::CueStatus>,
+    /// This entry's `MediaEntry::confirmed` -- the preview header's gold star.
+    pub confirmed: bool,
 }
 
 /// Builds `OnlinePreviewDetail` straight from one `OnlineFilterTile.media`
@@ -202,7 +207,7 @@ pub fn preview_online_entry(media: serde_json::Value) -> Result<OnlinePreviewDet
         })
         .collect();
 
-    Ok(OnlinePreviewDetail { title: entry.title, service: entry.service, categories, cues })
+    Ok(OnlinePreviewDetail { title: entry.title, service: entry.service, categories, cues, confirmed: entry.confirmed })
 }
 
 /// Every approved entry in the online library, grouped into one tile per
@@ -223,7 +228,7 @@ pub async fn list_online_filters(app: AppHandle) -> Result<Vec<OnlineFilterTile>
     // published, regardless of which of the two service *text* values
     // happens to sort first alphabetically.
     let rows = client
-        .query("select title, service, media from public.online_filters order by title asc, updated_at desc", &[])
+        .query("select title, service, media, confirmed from public.online_filters order by title asc, updated_at desc", &[])
         .await
         .map_err(|e| format!("couldn't read the online filter library: {e}"))?;
 
@@ -248,7 +253,24 @@ pub async fn list_online_filters(app: AppHandle) -> Result<Vec<OnlineFilterTile>
     let mut seen_services: HashSet<(String, String)> = HashSet::new();
     for row in rows {
         let title: String = row.get(0);
-        let media: serde_json::Value = row.get(2);
+        let service: String = row.get(1);
+        let mut media: serde_json::Value = row.get(2);
+        // Nullable `confirmed` column (see db/schema.sql) -- the reviewer-
+        // set flag, merged into `media.confirmed` below.
+        let column_confirmed: Option<bool> = row.get(3);
+
+        // Older rows carry their service only in the `service` column, with
+        // `media.service` missing or "" -- backfill it so the preview's
+        // service switcher, the dedup below and `download_online_filter`
+        // all see the real service instead of "Generic" (and instead of the
+        // dedup mistaking it for a sibling generic row and dropping it).
+        let media_service_empty = media.get("service").and_then(|s| s.as_str()).is_none_or(|s| s.trim().is_empty());
+        if media_service_empty
+            && !service.trim().is_empty()
+            && let Some(obj) = media.as_object_mut()
+        {
+            obj.insert("service".to_string(), serde_json::Value::String(service));
+        }
 
         // A row whose `media` this build's MediaEntry can't parse (e.g.
         // published by a newer app version with a field this one doesn't
@@ -263,6 +285,15 @@ pub async fn list_online_filters(app: AppHandle) -> Result<Vec<OnlineFilterTile>
         let Ok(entry) = filter::media_entry_from_value(media.clone()) else {
             continue;
         };
+        // Confirmed if either the `confirmed` column or the JSON's own
+        // (loosely-written: "yes", 1, ...) field says so, written back as a
+        // real bool -- the preview's service buttons read it straight off
+        // this raw JSON client-side, and `download_online_filter` saves it
+        // into the local file along with everything else.
+        let confirmed = entry.confirmed || column_confirmed.unwrap_or(false);
+        if let Some(obj) = media.as_object_mut() {
+            obj.insert("confirmed".to_string(), serde_json::Value::Bool(confirmed));
+        }
 
         let key = filter::normalize_title(&title);
         if !seen_services.insert((key.clone(), filter::normalize_service(&entry.service))) {
@@ -278,13 +309,12 @@ pub async fn list_online_filters(app: AppHandle) -> Result<Vec<OnlineFilterTile>
     let mut tiles = Vec::new();
     for key in order {
         let (title, media) = groups.remove(&key).expect("just inserted");
-        let cue_count = media
-            .first()
-            .and_then(|m| filter::media_entry_from_value(m.clone()).ok())
-            .map(|e| e.cues.len())
-            .unwrap_or(0);
+        // `media` already has the column's `confirmed` merged in (above).
+        let entries: Vec<_> = media.iter().filter_map(|m| filter::media_entry_from_value(m.clone()).ok()).collect();
+        let cue_count = entries.first().map(|e| e.cues.len()).unwrap_or(0);
+        let confirmed = entries.iter().any(|e| e.confirmed);
         let poster = metadata::poster_data_uri(&app, &title).await;
-        tiles.push(OnlineFilterTile { title, poster, cue_count, media });
+        tiles.push(OnlineFilterTile { title, poster, cue_count, confirmed, media });
     }
     Ok(tiles)
 }

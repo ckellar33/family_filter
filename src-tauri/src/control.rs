@@ -716,6 +716,9 @@ pub struct FilterTile {
     /// this is the count for the entry `select_filter_tile` opens by
     /// default, i.e. the one the dedupe below kept.
     pub cue_count: usize,
+    /// Whether any service variant of this title is marked `confirmed`
+    /// (see `MediaEntry::confirmed`) -- the tile's gold star.
+    pub confirmed: bool,
 }
 
 /// Every title across every filter file the library knows about, for the
@@ -737,6 +740,14 @@ pub async fn list_filter_tiles(app: AppHandle) -> Result<Vec<FilterTile>, String
         let path_str = path.to_string_lossy().into_owned();
         for entry in &list.media {
             if !seen.insert(filter::normalize_title(&entry.title)) {
+                // Another service variant of an already-listed title still
+                // lights the star if it's the confirmed one.
+                if entry.confirmed {
+                    let key = filter::normalize_title(&entry.title);
+                    if let Some(tile) = tiles.iter_mut().find(|t: &&mut FilterTile| filter::normalize_title(&t.title) == key) {
+                        tile.confirmed = true;
+                    }
+                }
                 continue;
             }
             let poster = metadata::poster_data_uri(&app, &entry.title).await;
@@ -745,6 +756,7 @@ pub async fn list_filter_tiles(app: AppHandle) -> Result<Vec<FilterTile>, String
                 path: path_str.clone(),
                 poster,
                 cue_count: entry.cues.len(),
+                confirmed: entry.confirmed,
             });
         }
     }
@@ -766,6 +778,9 @@ pub struct FilterEntryDetail {
     /// user had actually disabled.
     pub disabled_categories: Vec<String>,
     pub cues: Vec<CueStatus>,
+    /// This (title, service) entry's `MediaEntry::confirmed` -- the
+    /// detail header's gold star.
+    pub confirmed: bool,
     /// Master auto-filter toggle's *actual* current state -- lets the
     /// frontend mirror it exactly rather than assuming `false`, which used
     /// to make the master switch flash "off" every time a tile's detail was
@@ -843,6 +858,7 @@ pub async fn select_filter_tile(
         .collect();
     let resolved_title = entry.title.clone();
     let resolved_service = entry.service.clone();
+    let confirmed = entry.confirmed;
     let disabled_categories: Vec<String> = categories
         .iter()
         .filter(|c| guard.disabled_categories.contains(*c))
@@ -856,6 +872,7 @@ pub async fn select_filter_tile(
         categories,
         disabled_categories,
         cues,
+        confirmed,
         enabled,
     })
 }
@@ -913,6 +930,9 @@ pub async fn delete_filter_file(
 pub struct ServiceOption {
     pub service: String,
     pub path: String,
+    /// This variant's `MediaEntry::confirmed` -- the gold star on its
+    /// service button.
+    pub confirmed: bool,
 }
 
 /// Every distinct service variant registered for `title`, across every
@@ -937,6 +957,7 @@ pub fn list_services_for_title(title: String) -> Vec<ServiceOption> {
                 out.push(ServiceOption {
                     service: entry.service.clone(),
                     path: path_str.clone(),
+                    confirmed: entry.confirmed,
                 });
             }
         }

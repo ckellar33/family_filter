@@ -3,8 +3,15 @@
     title,
     poster,
     cueCount = null,
+    confirmed = false,
     onclick,
-  }: { title: string; poster: string | null; cueCount?: number | null; onclick: () => void } = $props();
+  }: {
+    title: string;
+    poster: string | null;
+    cueCount?: number | null;
+    confirmed?: boolean;
+    onclick: () => void;
+  } = $props();
 </script>
 
 <button type="button" class="poster-tile" {onclick}>
@@ -20,5 +27,7 @@
       <span class="poster-badge">{cueCount} {cueCount === 1 ? "CUE" : "CUES"}</span>
     {/if}
   </span>
-  <span class="poster-tile-title">{title}</span>
+  <span class="poster-tile-title">
+    {#if confirmed}<span class="poster-confirmed" title="Confirmed" aria-label="Confirmed">★</span>{/if}{title}
+  </span>
 </button>
