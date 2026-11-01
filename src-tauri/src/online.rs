@@ -210,28 +210,13 @@ pub fn preview_online_entry(media: serde_json::Value) -> Result<OnlinePreviewDet
     Ok(OnlinePreviewDetail { title: entry.title, service: entry.service, categories, cues, confirmed: entry.confirmed })
 }
 
-/// Every approved entry in the online library, grouped into one tile per
-/// title, for the Select Filter screen's "Online" grid -- same poster-
-/// lookup treatment `control::list_filter_tiles` gives local tiles (cached
-/// TMDB search, see `metadata::poster_data_uri`), since the database itself
-/// never stores cover art.
-#[tauri::command]
-pub async fn list_online_filters(app: AppHandle) -> Result<Vec<OnlineFilterTile>, String> {
-    let client = connect().await?;
-    // No `where status = 'approved'` here -- `filter_reader`'s Row Level
-    // Security policy (db/schema.sql) already limits every query it can
-    // possibly run to those rows, so this asks for everything it's allowed
-    // to see. Ordered `updated_at desc` *within* a title (not by `service`
-    // text -- deliberately not the same ordering as before) so that when
-    // the dedup below finds two rows colliding on effective service, the
-    // first one it sees -- the one it keeps -- is always the most recently
-    // published, regardless of which of the two service *text* values
-    // happens to sort first alphabetically.
-    let rows = client
-        .query("select title, service, media, confirmed from public.online_filters order by title asc, updated_at desc", &[])
-        .await
-        .map_err(|e| format!("couldn't read the online filter library: {e}"))?;
-
+/// The grouping/dedup half of `list_online_filters`, split out so it can be
+/// tested without a database: one `(title, media variants)` group per
+/// normalized title, in first-seen order. Each row is `(title, service
+/// column, media JSON, confirmed column)` -- the nullable `confirmed`
+/// column (see db/schema.sql) is the reviewer-set flag, merged into
+/// `media.confirmed` below.
+fn group_online_rows(rows: Vec<(String, String, serde_json::Value, Option<bool>)>) -> Vec<(String, Vec<serde_json::Value>)> {
     // Groups every service variant under its normalized title -- same
     // dedup key `control::list_filter_tiles` uses -- while remembering
     // first-seen order so the grid doesn't jump around release to release.
@@ -251,25 +236,24 @@ pub async fn list_online_filters(app: AppHandle) -> Result<Vec<OnlineFilterTile>
     // the two versions doesn't show up", not "this title can't be
     // downloaded at all".
     let mut seen_services: HashSet<(String, String)> = HashSet::new();
-    for row in rows {
-        let title: String = row.get(0);
-        let service: String = row.get(1);
-        let mut media: serde_json::Value = row.get(2);
-        // Nullable `confirmed` column (see db/schema.sql) -- the reviewer-
-        // set flag, merged into `media.confirmed` below.
-        let column_confirmed: Option<bool> = row.get(3);
+    for (title, service, mut media, column_confirmed) in rows {
 
         // Older rows carry their service only in the `service` column, with
         // `media.service` missing or "" -- backfill it so the preview's
         // service switcher, the dedup below and `download_online_filter`
         // all see the real service instead of "Generic" (and instead of the
         // dedup mistaking it for a sibling generic row and dropping it).
-        let media_service_empty = media.get("service").and_then(|s| s.as_str()).is_none_or(|s| s.trim().is_empty());
-        if media_service_empty
-            && !service.trim().is_empty()
-            && let Some(obj) = media.as_object_mut()
-        {
-            obj.insert("service".to_string(), serde_json::Value::String(service));
+        // Same for `title`: some rows' `media` is just `{"cues": [...]}`,
+        // which `MediaEntry` (title required) can't parse, so the whole
+        // variant was silently skipped below.
+        if let Some(obj) = media.as_object_mut() {
+            let is_blank = |v: Option<&serde_json::Value>| v.and_then(|v| v.as_str()).is_none_or(|s| s.trim().is_empty());
+            if is_blank(obj.get("title")) {
+                obj.insert("title".to_string(), serde_json::Value::String(title.clone()));
+            }
+            if is_blank(obj.get("service")) && !service.trim().is_empty() {
+                obj.insert("service".to_string(), serde_json::Value::String(service));
+            }
         }
 
         // A row whose `media` this build's MediaEntry can't parse (e.g.
@@ -306,10 +290,40 @@ pub async fn list_online_filters(app: AppHandle) -> Result<Vec<OnlineFilterTile>
         groups.entry(key).or_insert_with(|| (title, Vec::new())).1.push(media);
     }
 
+    order
+        .into_iter()
+        .map(|key| groups.remove(&key).expect("just inserted"))
+        .collect()
+}
+
+/// Every approved entry in the online library, grouped into one tile per
+/// title, for the Select Filter screen's "Online" grid -- same poster-
+/// lookup treatment `control::list_filter_tiles` gives local tiles (cached
+/// TMDB search, see `metadata::poster_data_uri`), since the database itself
+/// never stores cover art.
+#[tauri::command]
+pub async fn list_online_filters(app: AppHandle) -> Result<Vec<OnlineFilterTile>, String> {
+    let client = connect().await?;
+    // No `where status = 'approved'` here -- `filter_reader`'s Row Level
+    // Security policy (db/schema.sql) already limits every query it can
+    // possibly run to those rows, so this asks for everything it's allowed
+    // to see. Ordered `updated_at desc` *within* a title (not by `service`
+    // text -- deliberately not the same ordering as before) so that when
+    // the dedup below finds two rows colliding on effective service, the
+    // first one it sees -- the one it keeps -- is always the most recently
+    // published, regardless of which of the two service *text* values
+    // happens to sort first alphabetically.
+    let rows = client
+        .query("select title, service, media, confirmed from public.online_filters order by title asc, updated_at desc", &[])
+        .await
+        .map_err(|e| format!("couldn't read the online filter library: {e}"))?;
+
+    let rows = rows.into_iter().map(|row| (row.get(0), row.get(1), row.get(2), row.get(3))).collect();
+
     let mut tiles = Vec::new();
-    for key in order {
-        let (title, media) = groups.remove(&key).expect("just inserted");
-        // `media` already has the column's `confirmed` merged in (above).
+    for (title, media) in group_online_rows(rows) {
+        // `media` already has the column's `confirmed` merged in (see
+        // `group_online_rows`).
         let entries: Vec<_> = media.iter().filter_map(|m| filter::media_entry_from_value(m.clone()).ok()).collect();
         let cue_count = entries.first().map(|e| e.cues.len()).unwrap_or(0);
         let confirmed = entries.iter().any(|e| e.confirmed);
@@ -387,4 +401,30 @@ pub async fn publish_media_entry(entry: &MediaEntry) -> Result<(), String> {
         .await
         .map_err(|e| format!("couldn't publish to the online filter library: {e}"))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn group_online_rows_backfills_title_and_service_from_columns() {
+        let cues = serde_json::json!([{ "start": "00:00:01.00", "end": "00:00:02.00", "action": "mute", "category": "language" }]);
+        let rows = vec![
+            ("Spider-Man: Far From Home".to_string(), "Prime Video".to_string(), serde_json::json!({ "cues": cues }), Some(true)),
+            ("Spider-man: Far from home".to_string(), "".to_string(), serde_json::json!({ "title": "Spider-man: Far from home", "service": "", "cues": cues }), None),
+            ("Spider-man: Far from home".to_string(), "Disney+".to_string(), serde_json::json!({ "cues": cues }), Some(true)),
+        ];
+        let groups = group_online_rows(rows);
+        assert_eq!(groups.len(), 1);
+        let media = &groups[0].1;
+        assert_eq!(media.len(), 3);
+        let confirmed: Vec<_> = media
+            .iter()
+            .filter(|m| m["confirmed"] == serde_json::json!(true))
+            .map(|m| m["service"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(confirmed, ["Prime Video", "Disney+"]);
+        assert!(media.iter().all(|m| filter::media_entry_from_value(m.clone()).is_ok()));
+    }
 }
