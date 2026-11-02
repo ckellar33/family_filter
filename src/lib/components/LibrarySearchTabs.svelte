@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { refreshOnline } from "$lib/state/filter.svelte";
   // Search + scope-tabs header for SelectFilterPage's browse screen, split
   // out so the "what am I browsing" controls stay separate from whatever
   // grid/content is actually shown underneath them. Has no opinion on what
@@ -14,6 +15,15 @@
     localCount: number;
     onlineCount: number;
   } = $props();
+
+  // TODO: Make a onClick function here to refresh the online contents, when clicking on the "online" tab.
+  function onClickTab(source: "local" | "online") {
+    if (gridSource === "online") {
+      refreshOnline();
+    }
+
+    gridSource = source;
+  }
 </script>
 
 <div class="search-field">
@@ -25,11 +35,11 @@
 </div>
 
 <div class="scope-tabs">
-  <button type="button" class="scope-tab" class:selected={gridSource === "local"} onclick={() => (gridSource = "local")}>
+  <button type="button" class="scope-tab" class:selected={gridSource === "local"} onclick={() => onClickTab("local")}>
     <span class="scope-label">On this device <span class="scope-count">{localCount}</span></span>
     <span class="scope-rule"></span>
   </button>
-  <button type="button" class="scope-tab" class:selected={gridSource === "online"} onclick={() => (gridSource = "online")}>
+  <button type="button" class="scope-tab" class:selected={gridSource === "online"} onclick={() => onClickTab("online")}>
     <span class="scope-label">Online{#if onlineCount > 0}<span class="scope-count">{onlineCount}</span>{/if}</span>
     <span class="scope-rule"></span>
   </button>

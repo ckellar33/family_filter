@@ -9,6 +9,7 @@
   import {
     filterState,
     loadTiles,
+    refreshOnline,
     loadOnlineTiles,
     openOnlinePreview,
     switchOnlinePreviewService,
@@ -70,6 +71,7 @@
 
   $effect(() => {
     loadTiles();
+    refreshOnline();
   });
 
   // Which grid is showing when nothing's open in detail: the local library

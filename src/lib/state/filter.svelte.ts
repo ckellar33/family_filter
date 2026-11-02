@@ -228,6 +228,17 @@ export async function loadOnlineTiles() {
   }
 }
 
+// Resets the online grid state and re-fetches from the shared library.
+// Called on mount of SelectFilterPage so reopening the page always
+// pulls fresh data rather than showing a stale cached list.
+export async function refreshOnline() {
+  filterState.onlineTiles = [];
+  filterState.onlineTilesLoading = false;
+  filterState.onlineTilesError = "";
+  filterState.onlineTilesEverLoaded = false;
+  await loadOnlineTiles();
+}
+
 // What tapping an online tile does: opens a read-only preview (see
 // preview_online_entry) rather than downloading anything -- browsing the
 // shared library shouldn't, by itself, write to disk or add a tile to My
