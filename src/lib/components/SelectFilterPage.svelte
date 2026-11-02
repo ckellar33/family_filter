@@ -81,6 +81,38 @@
   // itself isn't re-loaded on every visit either).
   let gridSource = $state<"local" | "online">("local");
 
+  // Pull-to-refresh: only triggers when pulling down from the top of the scroll.
+  let refreshing = $state(false);
+  let pullStartY: number | null = null;
+
+  async function startPull(e: PointerEvent) {
+    const el = (e.target as HTMLElement)?.closest(".stack") as HTMLElement | null;
+    if (el && el.scrollTop > 0) return;
+    pullStartY = e.clientY;
+  }
+
+  async function endPull(e: PointerEvent) {
+    if (pullStartY === null) return;
+    const pullDistance = e.clientY - pullStartY;
+    pullStartY = null;
+    if (pullDistance >= 80 && !refreshing) {
+      performPullRefresh();
+    }
+  }
+
+  async function performPullRefresh() {
+    refreshing = true;
+    try {
+      if (gridSource === "online") {
+        await refreshOnline();
+      } else {
+        await loadTiles();
+      }
+    } finally {
+      refreshing = false;
+    }
+  }
+
   // The online preview's own "Add to My Filters" button: downloads (see
   // downloadOnlineFilter's doc comment for why that alone doesn't open
   // anything), then switches to "On this device" so the new tile is right
@@ -284,7 +316,13 @@
          thing that actually scrolls -- so a long poster grid scrolls in
          place without dragging the header along with it, and a short
          EmptyState never gets a scrollbar it doesn't need. -->
-    <div class="library-body">
+    <div class="library-body" role="region" onpointerdown={startPull} onpointerup={endPull}>
+      <!-- Pull-to-refresh spinner -->
+      <div class="pull-refresh" style:opacity={refreshing ? 1 : 0}>
+        <span class="pull-spinner"></span>
+        <span class="pull-text">Refreshing</span>
+      </div>
+      <!-- My Filters (this device's local library) -->
     {#if gridSource === "local"}
       {#if filterState.tilesError}
         <p class="banner error">{filterState.tilesError}</p>

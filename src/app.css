@@ -337,6 +337,7 @@ body {
    and just sit still, short enough to never need it. The `.stack` below
    is the one that actually scrolls. */
 .library-body {
+  position: relative;
   flex: 1;
   min-height: 0;
   display: flex;
@@ -357,6 +358,7 @@ body {
   /* Breathing room past the last poster row once scrolled all the way down
      -- see `.content.self-scroll` for why this lives here instead of on
      `.content` itself, the way every other screen's does. */
+  padding-top: 36px;
   padding-bottom: 24px;
 }
 
@@ -2381,4 +2383,39 @@ code {
 
 .scope-tab.selected .scope-rule {
   background: var(--accent);
+}
+
+/* Pull to refresh on the poster grid. */
+.pull-refresh {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 36px;
+  flex-shrink: 0;
+  z-index: 1;
+}
+
+@keyframes pull-spinner-spin {
+  to { transform: rotate(360deg); }
+}
+
+.pull-refresh .pull-spinner {
+  width: 18px;
+  height: 18px;
+  border: 2px solid var(--tertiary-label);
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: pull-spinner-spin 0.7s linear infinite;
+}
+
+.pull-refresh .pull-text {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--tertiary-label);
+  user-select: none;
 }
