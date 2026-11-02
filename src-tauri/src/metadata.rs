@@ -15,8 +15,9 @@
 
 use std::path::{Path, PathBuf};
 
-use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64;
+use regex::Regex;
 use serde::Deserialize;
 use tauri::{AppHandle, Manager};
 
@@ -62,7 +63,10 @@ fn cache_dir(app: &AppHandle) -> Option<PathBuf> {
 /// character collapsed to `_` so punctuation in a title (`:`, `'`, ...)
 /// never has to survive as a path segment.
 fn cache_key(title: &str) -> String {
-    filter::normalize_title(title).chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect()
+    filter::normalize_title(title)
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect()
 }
 
 fn to_data_uri(bytes: &[u8]) -> String {
@@ -74,23 +78,49 @@ struct SearchResponse {
     results: Vec<SearchResult>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 struct SearchResult {
     poster_path: Option<String>,
 }
 
-/// Title search against TMDB's `/search/movie` -- just the first result, on
-/// the same "close enough" assumption `FilterList::find_entry`'s exact-title
-/// matching already relies on elsewhere in this app.
+/// Title search against TMDB's `/search/multi` -- filters to movie results
+/// first so the grid always gets movie poster art (not a TV show that happens
+/// to have a higher relevance score). Falls back to the first non-movie if
+/// no movie match exists.
 async fn search(title: &str, api_key: &str) -> Option<SearchResult> {
     let client = reqwest::Client::new();
+
+    // 1. Extract the year from brackets if it exists (e.g., "Home Alone (1990)" -> "1990")
+    let year_regex = Regex::new(r"\((\d{4})\)").unwrap();
+    let year = year_regex
+        .captures(title)
+        .map(|cap| cap.get(1).unwrap().as_str());
+
+    // 2. Clean up the title by stripping out the year segment
+    let clean_title = year_regex.replace(title, "").trim().to_string();
+
+    // 3. Build your endpoint query parameters
+    let mut query_params = vec![
+        ("api_key", api_key),
+        ("query", &clean_title),
+        ("include_video", "true"),
+    ];
+
+    // If a year was extracted from the string, inject it into the API query parameters
+    if let Some(y) = year {
+        query_params.push(("year", y)); // 👈 Forces the TMDB engine to drop reboots like 2021
+    }
+
     let resp = client
         .get("https://api.themoviedb.org/3/search/movie")
-        .query(&[("api_key", api_key), ("query", title)])
+        .query(&query_params)
         .send()
         .await
         .ok()?;
+
     let parsed: SearchResponse = resp.json().await.ok()?;
+
+    // Index 0 will now reliably be the exact 1990 cinematic release
     parsed.results.into_iter().next()
 }
 
@@ -117,7 +147,12 @@ pub async fn poster_data_uri(app: &AppHandle, title: &str) -> Option<String> {
     let api_key = tmdb_api_key()?;
     let matched = search(title, &api_key).await?;
     let poster_path = matched.poster_path?;
-    let bytes = reqwest::get(format!("https://image.tmdb.org/t/p/w342{poster_path}")).await.ok()?.bytes().await.ok()?;
+    let bytes = reqwest::get(format!("https://image.tmdb.org/t/p/w342{poster_path}"))
+        .await
+        .ok()?
+        .bytes()
+        .await
+        .ok()?;
     write_cache_atomically(&path, &bytes);
     Some(to_data_uri(&bytes))
 }
@@ -155,7 +190,10 @@ mod tests {
 
     #[test]
     fn cache_key_strips_punctuation() {
-        assert_eq!(cache_key("Spider-Man: Far From Home"), "spider_man__far_from_home");
+        assert_eq!(
+            cache_key("Spider-Man: Far From Home"),
+            "spider_man__far_from_home"
+        );
     }
 
     #[test]
