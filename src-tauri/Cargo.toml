@@ -60,6 +60,7 @@ webpki-roots = "0.26"
 # macOS-only SCDynamicStoreCopyComputerName symbol, missing from iOS's
 # SystemConfiguration.framework, which fails the iOS link.
 whoami = { version = "2", features = ["force-stub"] }
+regex = "1.13.1"
 
 # tao 0.35.3 (transitive, via tauri-runtime-wry) has two iOS bugs plus one
 # gap we hit once the app adopted the scene lifecycle:
