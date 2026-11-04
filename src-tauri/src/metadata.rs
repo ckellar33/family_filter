@@ -61,9 +61,14 @@ fn cache_dir(app: &AppHandle) -> Option<PathBuf> {
 /// Filesystem-safe cache key for a title -- normalized the same way
 /// `filter::normalize_title` does for lookup, then every non-alphanumeric
 /// character collapsed to `_` so punctuation in a title (`:`, `'`, ...)
-/// never has to survive as a path segment.
+/// never has to survive as a path segment.  Also strips a `(YYYY)` year
+/// segment the same way `search` does, so a title stored with or without
+/// the year produces the same cache key and poster lookup.
 fn cache_key(title: &str) -> String {
-    filter::normalize_title(title)
+    // Strip `(YYYY)` before normalization, matching what `search` sends to TMDB.
+    let year_re = Regex::new(r"\(\d{4}\)").unwrap();
+    let stripped = year_re.replace(title, "");
+    filter::normalize_title(stripped.trim())
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
         .collect()
@@ -199,6 +204,15 @@ mod tests {
     #[test]
     fn cache_key_is_stable_across_case_and_whitespace() {
         assert_eq!(cache_key("  Star Wars "), cache_key("STAR WARS"));
+    }
+
+    #[test]
+    fn cache_key_strips_year_from_title() {
+        // A `(YYYY)` year segment is stripped the same way `search` sends to
+        // TMDB, so a title stored with or without the year produces the same
+        // cache key and poster lookup.
+        assert_eq!(cache_key("Home Alone (1990)"), cache_key("Home Alone"));
+        assert_eq!(cache_key("Spider-Man (2002)"), cache_key("Spider-Man"));
     }
 
     #[test]
