@@ -351,14 +351,16 @@ body {
    search field/scope tabs along with it. EmptyState never mounts inside
    this -- see `.library-body` above -- so it's never subject to this. */
 .library-body .stack {
+  position: relative;
   flex: 1;
   min-height: 0;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
-  /* Breathing room past the last poster row once scrolled all the way down
-     -- see `.content.self-scroll` for why this lives here instead of on
-     `.content` itself, the way every other screen's does. */
+  overscroll-behavior-y: contain;
   padding-top: 36px;
+/* Breathing room past the last poster row once scrolled all the way down
+   -- see `.content.self-scroll` for why this lives here instead of on
+   `.content` itself, the way every other screen's does. */
   padding-bottom: 24px;
 }
 
@@ -2385,19 +2387,32 @@ code {
   background: var(--accent);
 }
 
-/* Pull to refresh on the poster grid. */
+/* Pull to refresh on the poster grid. `--pull` is set on the `.stack`
+   itself (see SelectFilterPage) so both the indicator and the content can
+   read it. The indicator sits absolutely in the gap the content's
+   translateY opens up above the grid (plus the stack's 36px top padding). */
 .pull-refresh {
   position: absolute;
   top: 0;
   left: 0;
   right: 0;
+  height: calc(36px + var(--pull, 0px));
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
-  height: 36px;
-  flex-shrink: 0;
-  z-index: 1;
+  pointer-events: none;
+}
+
+.ptr__content {
+  transform: translateY(var(--pull, 0px));
+  transition: transform 0.2s ease;
+}
+
+/* 1:1 finger tracking while dragging; the transition only plays for the
+   snap-back / settle. */
+.stack.pulling .ptr__content {
+  transition: none;
 }
 
 @keyframes pull-spinner-spin {
@@ -2411,6 +2426,11 @@ code {
   border-right-color: transparent;
   border-radius: 50%;
   animation: pull-spinner-spin 0.7s linear infinite;
+  animation-play-state: paused;
+}
+
+.pull-refresh .pull-spinner.spinning {
+  animation-play-state: running;
 }
 
 .pull-refresh .pull-text {

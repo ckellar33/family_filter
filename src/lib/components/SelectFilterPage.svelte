@@ -81,35 +81,90 @@
   // itself isn't re-loaded on every visit either).
   let gridSource = $state<"local" | "online">("local");
 
-  // Pull-to-refresh: only triggers when pulling down from the top of the scroll.
+  // Pull-to-refresh on the poster grids (both the local and Online tab share
+  // this -- only one `.stack` is ever mounted at a time).
+  //
+  // Touch events rather than pointer events, on purpose: the moment the
+  // browser decides a touch is a scroll/pan it fires `pointercancel` and
+  // stops sending `pointermove`/`pointerup`, so a pointer-based version
+  // never sees the end of the drag. `touchmove` has to be registered
+  // non-passive for `preventDefault()` to stop the native rubber-band, and
+  // Svelte 5's `ontouchmove` attribute is always passive -- hence the action
+  // with a manual addEventListener.
+  const PULL_THRESHOLD = 56; // px of *visual* travel needed to trigger
+  const PULL_MAX = 96; // px the grid can be dragged down
+  const PULL_HOLD = 44; // px the grid rests at while refreshing
+  const PULL_RESISTANCE = 0.55; // finger travel -> visual travel
+
   let refreshing = $state(false);
-  let pullStartY: number | null = null;
+  let pulling = $state(false);
+  let pullOffset = $state(0);
 
-  async function startPull(e: PointerEvent) {
-    const el = (e.target as HTMLElement)?.closest(".stack") as HTMLElement | null;
-    if (el && el.scrollTop > 0) return;
-    pullStartY = e.clientY;
-  }
+  function pullable(node: HTMLElement) {
+    let startY: number | null = null;
 
-  async function endPull(e: PointerEvent) {
-    if (pullStartY === null) return;
-    const pullDistance = e.clientY - pullStartY;
-    pullStartY = null;
-    if (pullDistance >= 80 && !refreshing) {
-      performPullRefresh();
+    function onStart(e: TouchEvent) {
+      // Only arm when the grid is scrolled to the very top.
+      startY = !refreshing && e.touches.length === 1 && node.scrollTop <= 0 ? e.touches[0].clientY : null;
     }
+
+    function onMove(e: TouchEvent) {
+      if (startY === null) return;
+      // Scrolled down mid-gesture -> it's an ordinary scroll, not a pull.
+      if (node.scrollTop > 0) {
+        startY = null;
+        return;
+      }
+      const dy = e.touches[0].clientY - startY;
+      if (dy <= 0) {
+        if (pulling) pullOffset = 0;
+        return;
+      }
+      if (e.cancelable) e.preventDefault();
+      pulling = true;
+      pullOffset = Math.min(dy * PULL_RESISTANCE, PULL_MAX);
+    }
+
+    function onEnd(e: TouchEvent) {
+      if (startY === null && !pulling) return;
+      const shouldRefresh = e.type === "touchend" && pulling && pullOffset >= PULL_THRESHOLD;
+      startY = null;
+      pulling = false;
+      if (shouldRefresh) {
+        void performPullRefresh();
+      } else {
+        pullOffset = 0;
+      }
+    }
+
+    node.addEventListener("touchstart", onStart, { passive: true });
+    node.addEventListener("touchmove", onMove, { passive: false });
+    node.addEventListener("touchend", onEnd);
+    node.addEventListener("touchcancel", onEnd);
+    return {
+      destroy() {
+        node.removeEventListener("touchstart", onStart);
+        node.removeEventListener("touchmove", onMove);
+        node.removeEventListener("touchend", onEnd);
+        node.removeEventListener("touchcancel", onEnd);
+      },
+    };
   }
 
   async function performPullRefresh() {
+    if (refreshing) return;
     refreshing = true;
+    pullOffset = PULL_HOLD;
     try {
       if (gridSource === "online") {
         await refreshOnline();
+        await loadOnlineTiles();
       } else {
         await loadTiles();
       }
     } finally {
       refreshing = false;
+      pullOffset = 0;
     }
   }
 
@@ -316,12 +371,7 @@
          thing that actually scrolls -- so a long poster grid scrolls in
          place without dragging the header along with it, and a short
          EmptyState never gets a scrollbar it doesn't need. -->
-    <div class="library-body" role="region" onpointerdown={startPull} onpointerup={endPull}>
-      <!-- Pull-to-refresh spinner -->
-      <div class="pull-refresh" style:opacity={refreshing ? 1 : 0}>
-        <span class="pull-spinner"></span>
-        <span class="pull-text">Refreshing</span>
-      </div>
+    <div class="library-body" role="region">
       <!-- My Filters (this device's local library) -->
     {#if gridSource === "local"}
       {#if filterState.tilesError}
@@ -344,7 +394,16 @@
           onTertiary={filterState.folderImportSupported ? addFilterDirectory : undefined}
         />
       {:else}
-        <div class="stack">
+        <div class="stack" class:pulling role="region" use:pullable style="--pull: {pullOffset}px">
+          {#if pulling || refreshing}
+            <div class="pull-refresh">
+              <span class="pull-spinner" class:spinning={refreshing}></span>
+              <span class="pull-text">
+                {refreshing ? "Refreshing…" : pullOffset >= PULL_THRESHOLD ? "Release to refresh" : "Pull to refresh"}
+              </span>
+            </div>
+          {/if}
+          <div class="ptr__content" style="display: flex; flex-direction: column">
           <div style="display:flex; gap:9px">
             <button class="btn-secondary" style="min-height:46px" onclick={addFilterFiles}>Add file…</button>
             {#if filterState.folderImportSupported}
@@ -359,7 +418,7 @@
             {/if}
           </p>
           {#if shownTiles.length === 0}
-            <p class="hint centered">No titles on this device match “{query.trim()}” — try Online.</p>
+            <p class="hint centered">No titles on this device match "{query.trim()}" — try Online.</p>
           {/if}
           <div class="poster-grid">
             {#each shownTiles as tile (tile.title)}
@@ -381,6 +440,7 @@
               </div>
             {/each}
           </div>
+          </div>
         </div>
       {/if}
     {:else}
@@ -397,7 +457,16 @@
       {:else if filterState.onlineTiles.length === 0 && !filterState.onlineTilesError}
         <p class="hint centered">Nothing in the online library yet.</p>
       {:else}
-        <div class="stack">
+        <div class="stack" class:pulling role="region" use:pullable style="--pull: {pullOffset}px">
+          {#if pulling || refreshing}
+            <div class="pull-refresh">
+              <span class="pull-spinner" class:spinning={refreshing}></span>
+              <span class="pull-text">
+                {refreshing ? "Refreshing…" : pullOffset >= PULL_THRESHOLD ? "Release to refresh" : "Pull to refresh"}
+              </span>
+            </div>
+          {/if}
+          <div class="ptr__content" style="display: flex; flex-direction: column">
           <p class="footnote">
             {#if query.trim() !== ""}
               {shownOnlineTiles.length} of {filterState.onlineTiles.length} match — tap one to preview it
@@ -407,7 +476,7 @@
             {/if}
           </p>
           {#if shownOnlineTiles.length === 0}
-            <p class="hint centered">Nothing in the online library matches “{query.trim()}”.</p>
+            <p class="hint centered">Nothing in the online library matches "{query.trim()}".</p>
           {/if}
           <div class="poster-grid">
             {#each shownOnlineTiles as tile (tile.title)}
@@ -419,6 +488,7 @@
                 onclick={() => openOnlinePreview(tile)}
               />
             {/each}
+          </div>
           </div>
         </div>
       {/if}
