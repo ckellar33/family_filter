@@ -24,7 +24,7 @@
       {:else if devicesOpen}
 -->
 <script lang="ts">
-  let { onDone, minDuration = 7800 }: { onDone?: () => void; minDuration?: number } = $props();
+  let { onDone, minDuration = 5000 }: { onDone?: () => void; minDuration?: number } = $props();
 
   const GLYPHS = ["!", "@", "#", "$", "%", "&", "*"];
 
@@ -143,7 +143,7 @@
     color: #2e6041;
     opacity: 0;
     transform: translate(var(--dx), var(--dy)) rotate(var(--rot)) scale(0.82);
-    animation: mote-in 1100ms cubic-bezier(0.22, 0.61, 0.36, 1) forwards;
+    animation: mote-in 600ms cubic-bezier(0.22, 0.61, 0.36, 1) forwards;
   }
 
   @keyframes mote-in {
@@ -173,7 +173,7 @@
     color: #fff;
     opacity: 0;
     transform: translateY(14px);
-    animation: rise 850ms cubic-bezier(0.22, 0.61, 0.36, 1) forwards;
+    animation: rise 350ms cubic-bezier(0.22, 0.61, 0.36, 1) forwards;
   }
   .one { animation-delay: 2700ms; }
   .two { animation-delay: 2920ms; }
@@ -205,7 +205,7 @@
     font-family: var(--ui, Figtree, system-ui, sans-serif);
     font-size: 15px;
     line-height: 1.65;
-    animation-delay: 4600ms;
+    animation-delay: 3000ms;
   }
 
   .ref {
@@ -215,7 +215,7 @@
     line-height: 1.4;
     letter-spacing: 0.14em;
     text-transform: uppercase;
-    animation-delay: 5000ms;
+    animation-delay: 3200ms;
   }
 
   @keyframes rise {
