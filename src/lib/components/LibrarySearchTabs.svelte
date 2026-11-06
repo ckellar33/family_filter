@@ -16,13 +16,11 @@
     onlineCount: number;
   } = $props();
 
-  // TODO: Make a onClick function here to refresh the online contents, when clicking on the "online" tab.
   function onClickTab(source: "local" | "online") {
+    gridSource = source;
     if (gridSource === "online") {
       refreshOnline();
     }
-
-    gridSource = source;
   }
 </script>
 

@@ -74,13 +74,6 @@
     refreshOnline();
   });
 
-  // Which grid is showing when nothing's open in detail: the local library
-  // (default) or the shared online one. Only ever fetched once each is
-  // first switched to -- switching back to a grid already loaded just shows
-  // what's already there rather than re-fetching (matches how `tiles`
-  // itself isn't re-loaded on every visit either).
-  let gridSource = $state<"local" | "online">("local");
-
   // Pull-to-refresh on the poster grids (both the local and Online tab share
   // this -- only one `.stack` is ever mounted at a time).
   //
@@ -157,7 +150,7 @@
     refreshing = true;
     pullOffset = PULL_HOLD;
     try {
-      if (gridSource === "online") {
+      if (filterState.gridSource === "online") {
         await refreshOnline();
         await loadOnlineTiles();
       } else {
@@ -177,7 +170,7 @@
     const tile = filterState.previewTile;
     if (!tile) return;
     await downloadOnlineFilter(tile);
-    gridSource = "local";
+    filterState.gridSource = "local";
   }
 
   // The online preview's own "+ Add cue" button: unlike addPreviewToMyFilters
@@ -221,7 +214,7 @@
   let shownOnlineTiles = $derived(filterState.onlineTiles.filter((t) => matches(t.title)));
 
   $effect(() => {
-    if (gridSource === "online" && filterState.onlineTiles.length === 0 && !filterState.onlineTilesLoading) {
+    if (filterState.gridSource === "online" && filterState.onlineTiles.length === 0 && !filterState.onlineTilesLoading) {
       loadOnlineTiles();
     }
   });
@@ -363,7 +356,7 @@
          Handled by its own component (query/gridSource live here and are
          passed down bound) so this screen's job is just deciding what
          content to show for the resulting scope -- not how you pick it. -->
-    <LibrarySearchTabs bind:query bind:gridSource localCount={filterState.tiles.length} onlineCount={filterState.onlineTiles.length} />
+    <LibrarySearchTabs bind:query bind:gridSource={filterState.gridSource} localCount={filterState.tiles.length} onlineCount={filterState.onlineTiles.length} />
 
     <!-- Takes whatever height the search field + scope tabs above leave
          over, but isn't itself a scroll container: EmptyState/loading/error
@@ -374,7 +367,7 @@
          EmptyState never gets a scrollbar it doesn't need. -->
     <div class="library-body" role="region">
       <!-- My Filters (this device's local library) -->
-    {#if gridSource === "local"}
+    {#if filterState.gridSource === "local"}
       {#if filterState.tilesError}
         <p class="banner error">{filterState.tilesError}</p>
       {/if}

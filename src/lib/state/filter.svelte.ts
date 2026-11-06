@@ -11,6 +11,7 @@ import { session, refreshPlayback } from "$lib/state/session.svelte";
 import type { Cue, FilterEntryDetail, FilterSummary, FilterTile, OnlineFilterTile, OnlinePreviewDetail, ServiceOption } from "$lib/types";
 
 export const filterState = $state({
+  gridSource: "local" as "local" | "online",
   // Auto-filter mode: a loaded cue file (filterSummary), the master on/off
   // toggle, and per-category on/off state keyed by category name -- absent
   // from the map (or true) means enabled, matching the backend's
