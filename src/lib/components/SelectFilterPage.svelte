@@ -95,10 +95,11 @@
   const PULL_MAX = 96; // px the grid can be dragged down
   const PULL_HOLD = 44; // px the grid rests at while refreshing
   const PULL_RESISTANCE = 0.55; // finger travel -> visual travel
+  const PULL_OFFSET_REST = -40;
 
   let refreshing = $state(false);
   let pulling = $state(false);
-  let pullOffset = $state(0);
+  let pullOffset = $state(PULL_OFFSET_REST);
 
   function pullable(node: HTMLElement) {
     let startY: number | null = null;
@@ -117,7 +118,7 @@
       }
       const dy = e.touches[0].clientY - startY;
       if (dy <= 0) {
-        if (pulling) pullOffset = 0;
+        if (pulling) pullOffset = PULL_OFFSET_REST;
         return;
       }
       if (e.cancelable) e.preventDefault();
@@ -133,7 +134,7 @@
       if (shouldRefresh) {
         void performPullRefresh();
       } else {
-        pullOffset = 0;
+        pullOffset = PULL_OFFSET_REST;
       }
     }
 
@@ -164,7 +165,7 @@
       }
     } finally {
       refreshing = false;
-      pullOffset = 0;
+      pullOffset = PULL_OFFSET_REST;
     }
   }
 
