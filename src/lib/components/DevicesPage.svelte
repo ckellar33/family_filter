@@ -22,6 +22,7 @@
     renameDevice,
     deleteDevice,
     startPairingWizard,
+    cancelPin
    } from "$lib/state/session.svelte";
   import type { Protocol, Step } from "$lib/types";
   import PinKeypad from "$lib/components/PinKeypad.svelte";
