@@ -426,6 +426,13 @@ export function advance() {
   session.step = STEPS[i + 1];
 }
 
+export function cancelPin() {
+  session.pairing = false;
+  session.awaitingPinFor = null;
+  session.pin = "";
+  scan(session.step as Protocol);
+}
+
 export function skipStep() {
   session.error = "";
   advance();

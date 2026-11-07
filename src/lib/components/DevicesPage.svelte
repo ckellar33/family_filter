@@ -185,6 +185,9 @@
     {#if isProtocol(session.step)}
       {#if session.awaitingPinFor === session.step}
         <PinKeypad bind:value={session.pin} onSubmit={submitPin} />
+        <button class="btn-secondary" onclick={() => cancelPin() }>
+          Cancel Pairing
+        </button>
       {:else}
         {#if session.error}
           <p class="banner error">
