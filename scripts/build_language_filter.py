@@ -650,13 +650,21 @@ def _cue_dict(c: Cue) -> dict:
     return d
 
 
-def write_filter_file(output_path: Path, title: str, service: str, cues: list[Cue]) -> None:
+def write_filter_file(
+    output_path: Path,
+    title: str,
+    service: str,
+    cues: list[Cue],
+    release_year: int | None,
+) -> None:
     entry = {
         "title": title,
         "cues": [_cue_dict(c) for c in cues],
     }
     if service:
         entry["service"] = service
+    if release_year is not None:
+        entry["release_year"] = release_year
 
     doc = {"media": [entry]}
 
@@ -755,7 +763,7 @@ def _run_single(
     if args.no_words:
         for cue in cues:
             cue.word = ""
-    write_filter_file(args.output, args.title, args.service, cues)
+    write_filter_file(args.output, args.title, args.service, cues, args.year)
     return 0
 
 
