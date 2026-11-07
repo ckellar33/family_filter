@@ -223,11 +223,9 @@
           <button class="btn-secondary" onclick={() => scan(session.step as Protocol)} disabled={session.scanning || session.pairing}>
             {session.scanning ? "Scanning…" : "Scan again"}
           </button>
-          {#if session.step !== "companion"}
             <button class="btn-secondary" style="background: var(--grouped-bg); border-color: transparent" onclick={skipStep} disabled={session.pairing}>
               Skip this one
             </button>
-          {/if}
         </div>
       {/if}
     {:else if session.step === "save"}
