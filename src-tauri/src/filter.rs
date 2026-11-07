@@ -134,18 +134,28 @@ pub struct MediaEntry {
     /// rows aren't always strict about it. `false` for anything else,
     /// including files written before this field existed, and left out of
     /// the serialized JSON in that case so they stay byte-for-byte as before.
-    #[serde(default, deserialize_with = "deserialize_loose_bool", skip_serializing_if = "std::ops::Not::not")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_loose_bool",
+        skip_serializing_if = "std::ops::Not::not"
+    )]
     pub confirmed: bool,
+    #[serde(default)]
+    pub release_year: String,
 }
 
 /// Accepts a JSON bool, a `"true"`/`"yes"`/`"1"` string (case-insensitive),
 /// a number (non-zero is `true`), or `null` (`false`) -- see
 /// `MediaEntry::confirmed`.
-fn deserialize_loose_bool<'de, D: serde::Deserializer<'de>>(deserializer: D) -> std::result::Result<bool, D::Error> {
+fn deserialize_loose_bool<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<bool, D::Error> {
     use serde::Deserialize;
     Ok(match serde_json::Value::deserialize(deserializer)? {
         serde_json::Value::Bool(b) => b,
-        serde_json::Value::String(s) => matches!(s.trim().to_ascii_lowercase().as_str(), "true" | "yes" | "1"),
+        serde_json::Value::String(s) => {
+            matches!(s.trim().to_ascii_lowercase().as_str(), "true" | "yes" | "1")
+        }
         serde_json::Value::Number(n) => n.as_f64().is_some_and(|n| n != 0.0),
         _ => false,
     })
@@ -532,6 +542,7 @@ impl FilterList {
                 service: service.to_string(),
                 cues: Vec::new(),
                 confirmed: false,
+                release_year: String::new(),
             });
         }
         self.find_entry_mut(title, service)
@@ -1017,6 +1028,7 @@ mod tests {
             service: service.to_string(),
             cues,
             confirmed: false,
+            release_year: String::new(),
         }
     }
 

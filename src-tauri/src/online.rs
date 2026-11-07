@@ -111,11 +111,14 @@ fn editor_connection_string() -> String {
 async fn open_connection(connection_string: &str) -> Result<Client, String> {
     let mut roots = RootCertStore::empty();
     roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-    let tls_config = ClientConfig::builder().with_root_certificates(roots).with_no_client_auth();
+    let tls_config = ClientConfig::builder()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
     let tls = MakeRustlsConnect::new(tls_config);
 
-    let (client, connection) =
-        tokio_postgres::connect(connection_string, tls).await.map_err(|e| format!("couldn't reach the online filter library: {e}"))?;
+    let (client, connection) = tokio_postgres::connect(connection_string, tls)
+        .await
+        .map_err(|e| format!("couldn't reach the online filter library: {e}"))?;
     tokio::spawn(async move {
         if let Err(e) = connection.await {
             eprintln!("[online] connection error: {e}");
@@ -207,21 +210,30 @@ pub fn preview_online_entry(media: serde_json::Value) -> Result<OnlinePreviewDet
         })
         .collect();
 
-    Ok(OnlinePreviewDetail { title: entry.title, service: entry.service, categories, cues, confirmed: entry.confirmed })
+    Ok(OnlinePreviewDetail {
+        title: entry.title,
+        service: entry.service,
+        categories,
+        cues,
+        confirmed: entry.confirmed,
+    })
 }
 
 /// The grouping/dedup half of `list_online_filters`, split out so it can be
 /// tested without a database: one `(title, media variants)` group per
 /// normalized title, in first-seen order. Each row is `(title, service
-/// column, media JSON, confirmed column)` -- the nullable `confirmed`
-/// column (see db/schema.sql) is the reviewer-set flag, merged into
-/// `media.confirmed` below.
-fn group_online_rows(rows: Vec<(String, String, serde_json::Value, Option<bool>)>) -> Vec<(String, Vec<serde_json::Value>)> {
+/// column, media JSON, confirmed column, release_year column)` -- the
+/// nullable `confirmed` column (see db/schema.sql) is the reviewer-set flag,
+/// merged into `media.confirmed` below.
+fn group_online_rows(
+    rows: Vec<(String, String, serde_json::Value, Option<bool>, String)>,
+) -> Vec<(String, Vec<serde_json::Value>, String)> {
     // Groups every service variant under its normalized title -- same
     // dedup key `control::list_filter_tiles` uses -- while remembering
     // first-seen order so the grid doesn't jump around release to release.
     let mut order: Vec<String> = Vec::new();
-    let mut groups: std::collections::HashMap<String, (String, Vec<serde_json::Value>)> = std::collections::HashMap::new();
+    let mut groups: std::collections::HashMap<String, (String, Vec<serde_json::Value>, String)> =
+        std::collections::HashMap::new();
     // Which (normalized title, normalized *effective* service) pairs have
     // already been kept -- guards against two rows whose `service` text
     // column differs (so Postgres sees them as distinct, unique-constraint-
@@ -236,8 +248,7 @@ fn group_online_rows(rows: Vec<(String, String, serde_json::Value, Option<bool>)
     // the two versions doesn't show up", not "this title can't be
     // downloaded at all".
     let mut seen_services: HashSet<(String, String)> = HashSet::new();
-    for (title, service, mut media, column_confirmed) in rows {
-
+    for (title, service, mut media, column_confirmed, release_year) in rows {
         // Older rows carry their service only in the `service` column, with
         // `media.service` missing or "" -- backfill it so the preview's
         // service switcher, the dedup below and `download_online_filter`
@@ -247,12 +258,24 @@ fn group_online_rows(rows: Vec<(String, String, serde_json::Value, Option<bool>)
         // which `MediaEntry` (title required) can't parse, so the whole
         // variant was silently skipped below.
         if let Some(obj) = media.as_object_mut() {
-            let is_blank = |v: Option<&serde_json::Value>| v.and_then(|v| v.as_str()).is_none_or(|s| s.trim().is_empty());
+            let is_blank = |v: Option<&serde_json::Value>| {
+                v.and_then(|v| v.as_str())
+                    .is_none_or(|s| s.trim().is_empty())
+            };
             if is_blank(obj.get("title")) {
-                obj.insert("title".to_string(), serde_json::Value::String(title.clone()));
+                obj.insert(
+                    "title".to_string(),
+                    serde_json::Value::String(title.clone()),
+                );
             }
             if is_blank(obj.get("service")) && !service.trim().is_empty() {
                 obj.insert("service".to_string(), serde_json::Value::String(service));
+            }
+            if is_blank(obj.get("release_year")) && !release_year.is_empty() {
+                obj.insert(
+                    "release_year".to_string(),
+                    serde_json::Value::String(release_year.clone()),
+                );
             }
         }
 
@@ -287,7 +310,11 @@ fn group_online_rows(rows: Vec<(String, String, serde_json::Value, Option<bool>)
         if !groups.contains_key(&key) {
             order.push(key.clone());
         }
-        groups.entry(key).or_insert_with(|| (title, Vec::new())).1.push(media);
+        groups
+            .entry(key)
+            .or_insert_with(|| (title, Vec::new(), release_year))
+            .1
+            .push(media);
     }
 
     order
@@ -314,21 +341,44 @@ pub async fn list_online_filters(app: AppHandle) -> Result<Vec<OnlineFilterTile>
     // published, regardless of which of the two service *text* values
     // happens to sort first alphabetically.
     let rows = client
-        .query("select title, service, media, confirmed from public.online_filters order by title asc, updated_at desc", &[])
+        .query("select title, service, media, confirmed, release_year from public.online_filters order by title asc, updated_at desc", &[])
         .await
         .map_err(|e| format!("couldn't read the online filter library: {e}"))?;
 
-    let rows = rows.into_iter().map(|row| (row.get(0), row.get(1), row.get(2), row.get(3))).collect();
+    let rows = rows
+        .into_iter()
+        .map(|row| {
+            (
+                row.get::<_, String>(0),
+                row.get::<_, String>(1),
+                row.get::<_, serde_json::Value>(2),
+                row.get::<_, Option<bool>>(3),
+                // Fallible: if the DB hasn't been migrated yet the column
+                // may not exist, so use `try_get` and default to empty
+                // string (the same `#[serde(default)]` value on MediaEntry).
+                row.try_get::<_, String>(4).unwrap_or_default(),
+            )
+        })
+        .collect();
 
     let mut tiles = Vec::new();
-    for (title, media) in group_online_rows(rows) {
+    for (title, media, release_year) in group_online_rows(rows) {
         // `media` already has the column's `confirmed` merged in (see
         // `group_online_rows`).
-        let entries: Vec<_> = media.iter().filter_map(|m| filter::media_entry_from_value(m.clone()).ok()).collect();
+        let entries: Vec<_> = media
+            .iter()
+            .filter_map(|m| filter::media_entry_from_value(m.clone()).ok())
+            .collect();
         let cue_count = entries.first().map(|e| e.cues.len()).unwrap_or(0);
         let confirmed = entries.iter().any(|e| e.confirmed);
-        let poster = metadata::poster_data_uri(&app, &title).await;
-        tiles.push(OnlineFilterTile { title, poster, cue_count, confirmed, media });
+        let poster = metadata::poster_data_uri(&app, &title, Some(&release_year)).await;
+        tiles.push(OnlineFilterTile {
+            title,
+            poster,
+            cue_count,
+            confirmed,
+            media,
+        });
     }
     Ok(tiles)
 }
@@ -356,7 +406,10 @@ pub fn download_online_filter(title: String, media: Vec<serde_json::Value>) -> R
         Ok(list) => list,
         Err(e) => {
             let _ = std::fs::remove_file(&path);
-            return Err(format!("{title} isn't a valid filter entry: {}", describe(&e)));
+            return Err(format!(
+                "{title} isn't a valid filter entry: {}",
+                describe(&e)
+            ));
         }
     };
     // Re-save through `FilterList::save` rather than trusting the row's
@@ -369,7 +422,10 @@ pub fn download_online_filter(title: String, media: Vec<serde_json::Value>) -> R
     // format the row had, same as before this existed -- not worth failing
     // the whole download over.
     if let Err(e) = list.save(&path) {
-        eprintln!("[online] failed to normalize downloaded filter {}: {e}", path.display());
+        eprintln!(
+            "[online] failed to normalize downloaded filter {}: {e}",
+            path.display()
+        );
     }
 
     library::register_filter_path(&path).map_err(|e| describe(&e))
@@ -392,11 +448,11 @@ pub async fn publish_media_entry(entry: &MediaEntry) -> Result<(), String> {
     let client = connect_editor().await?;
     client
         .execute(
-            "insert into public.online_filters (title, normalized_title, service, media, status) \
-             values ($1, $2, $3, $4, 'approved') \
+            "insert into public.online_filters (title, normalized_title, service, media, release_year, status) \
+             values ($1, $2, $3, $4, $5, 'approved') \
              on conflict (normalized_title, service) do update \
-                 set title = excluded.title, media = excluded.media, status = 'approved', updated_at = now()",
-            &[&entry.title, &normalized_title, &entry.service, &media],
+                 set title = excluded.title, media = excluded.media, release_year = excluded.release_year, status = 'approved', updated_at = now()",
+            &[&entry.title, &normalized_title, &entry.service, &media, &entry.release_year],
         )
         .await
         .map_err(|e| format!("couldn't publish to the online filter library: {e}"))?;
@@ -411,9 +467,27 @@ mod tests {
     fn group_online_rows_backfills_title_and_service_from_columns() {
         let cues = serde_json::json!([{ "start": "00:00:01.00", "end": "00:00:02.00", "action": "mute", "category": "language" }]);
         let rows = vec![
-            ("Spider-Man: Far From Home".to_string(), "Prime Video".to_string(), serde_json::json!({ "cues": cues }), Some(true)),
-            ("Spider-man: Far from home".to_string(), "".to_string(), serde_json::json!({ "title": "Spider-man: Far from home", "service": "", "cues": cues }), None),
-            ("Spider-man: Far from home".to_string(), "Disney+".to_string(), serde_json::json!({ "cues": cues }), Some(true)),
+            (
+                "Spider-Man: Far From Home".to_string(),
+                "Prime Video".to_string(),
+                serde_json::json!({ "cues": cues }),
+                Some(true),
+                String::default(),
+            ),
+            (
+                "Spider-man: Far from home".to_string(),
+                "".to_string(),
+                serde_json::json!({ "title": "Spider-man: Far from home", "service": "", "cues": cues }),
+                None,
+                String::default(),
+            ),
+            (
+                "Spider-man: Far from home".to_string(),
+                "Disney+".to_string(),
+                serde_json::json!({ "cues": cues }),
+                Some(true),
+                String::default(),
+            ),
         ];
         let groups = group_online_rows(rows);
         assert_eq!(groups.len(), 1);
@@ -425,6 +499,10 @@ mod tests {
             .map(|m| m["service"].as_str().unwrap().to_string())
             .collect();
         assert_eq!(confirmed, ["Prime Video", "Disney+"]);
-        assert!(media.iter().all(|m| filter::media_entry_from_value(m.clone()).is_ok()));
+        assert!(
+            media
+                .iter()
+                .all(|m| filter::media_entry_from_value(m.clone()).is_ok())
+        );
     }
 }

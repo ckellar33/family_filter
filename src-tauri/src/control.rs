@@ -744,13 +744,18 @@ pub async fn list_filter_tiles(app: AppHandle) -> Result<Vec<FilterTile>, String
                 // lights the star if it's the confirmed one.
                 if entry.confirmed {
                     let key = filter::normalize_title(&entry.title);
-                    if let Some(tile) = tiles.iter_mut().find(|t: &&mut FilterTile| filter::normalize_title(&t.title) == key) {
+                    if let Some(tile) = tiles
+                        .iter_mut()
+                        .find(|t: &&mut FilterTile| filter::normalize_title(&t.title) == key)
+                    {
                         tile.confirmed = true;
                     }
                 }
                 continue;
             }
-            let poster = metadata::poster_data_uri(&app, &entry.title).await;
+            let poster =
+                metadata::poster_data_uri(&app, &entry.title, Some(entry.release_year.as_str()))
+                    .await;
             tiles.push(FilterTile {
                 title: entry.title.clone(),
                 path: path_str.clone(),

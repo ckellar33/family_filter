@@ -17,7 +17,6 @@ use std::path::{Path, PathBuf};
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
-use regex::Regex;
 use serde::Deserialize;
 use tauri::{AppHandle, Manager};
 
@@ -60,18 +59,30 @@ fn cache_dir(app: &AppHandle) -> Option<PathBuf> {
 
 /// Filesystem-safe cache key for a title -- normalized the same way
 /// `filter::normalize_title` does for lookup, then every non-alphanumeric
-/// character collapsed to `_` so punctuation in a title (`:`, `'`, ...)
-/// never has to survive as a path segment.  Also strips a `(YYYY)` year
-/// segment the same way `search` does, so a title stored with or without
-/// the year produces the same cache key and poster lookup.
-fn cache_key(title: &str) -> String {
-    // Strip `(YYYY)` before normalization, matching what `search` sends to TMDB.
-    let year_re = Regex::new(r"\(\d{4}\)").unwrap();
-    let stripped = year_re.replace(title, "");
-    filter::normalize_title(stripped.trim())
+/// character collapsed to `_` so punctuation in a title (`:`, `'`, ...) never
+/// has to survive as a path segment. When `release_year` is provided it's
+/// appended to the filename so year-specific lookups get their own cache
+/// entry instead of colliding with title-only lookups.
+fn cache_key(title: &str, release_year: Option<&str>) -> String {
+    let normalized = filter::normalize_title(title)
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-        .collect()
+        .collect::<String>();
+
+    match release_year {
+        Some(y) if !y.is_empty() => {
+            // Avoid duplicating the year if it's already in the normalized title
+            // (e.g. "home_alone_(1990)" already contains "_1990_"
+            let already_has_year =
+                normalized.contains(&format!("_{}", y)) || normalized.ends_with(&format!("_{}", y));
+            if already_has_year {
+                normalized
+            } else {
+                format!("{}_{}", normalized, y)
+            }
+        }
+        _ => normalized,
+    }
 }
 
 fn to_data_uri(bytes: &[u8]) -> String {
@@ -92,28 +103,20 @@ struct SearchResult {
 /// first so the grid always gets movie poster art (not a TV show that happens
 /// to have a higher relevance score). Falls back to the first non-movie if
 /// no movie match exists.
-async fn search(title: &str, api_key: &str) -> Option<SearchResult> {
+async fn search(title: &str, release_year: Option<&str>, api_key: &str) -> Option<SearchResult> {
     let client = reqwest::Client::new();
 
-    // 1. Extract the year from brackets if it exists (e.g., "Home Alone (1990)" -> "1990")
-    let year_regex = Regex::new(r"\((\d{4})\)").unwrap();
-    let year = year_regex
-        .captures(title)
-        .map(|cap| cap.get(1).unwrap().as_str());
-
-    // 2. Clean up the title by stripping out the year segment
-    let clean_title = year_regex.replace(title, "").trim().to_string();
-
-    // 3. Build your endpoint query parameters
     let mut query_params = vec![
         ("api_key", api_key),
-        ("query", &clean_title),
+        ("query", title),
         ("include_video", "true"),
     ];
 
-    // If a year was extracted from the string, inject it into the API query parameters
-    if let Some(y) = year {
-        query_params.push(("year", y)); // 👈 Forces the TMDB engine to drop reboots like 2021
+    // Inject the release year if provided and non-empty
+    if let Some(y) = release_year {
+        if !y.is_empty() {
+            query_params.push(("year", y));
+        }
     }
 
     let resp = client
@@ -125,16 +128,26 @@ async fn search(title: &str, api_key: &str) -> Option<SearchResult> {
 
     let parsed: SearchResponse = resp.json().await.ok()?;
 
-    // Index 0 will now reliably be the exact 1990 cinematic release
+    // Index 0 will now reliably be the exact cinematic release
     parsed.results.into_iter().next()
 }
 
 /// Poster art for `title`, as a `data:` URI ready for an `<img src>` --
 /// checked against the on-disk cache first so the grid's common case (every
 /// title already looked up once) never touches the network.
-pub async fn poster_data_uri(app: &AppHandle, title: &str) -> Option<String> {
+pub async fn poster_data_uri(
+    app: &AppHandle,
+    title: &str,
+    release_year: Option<&str>,
+) -> Option<String> {
+    // Normalize empty strings to None so they don't pollute the cache key
+    // or the TMDB query. Both callers (`control::list_filter_tiles` and
+    // `online::list_online_filters`) pass `Some(entry.release_year)` which
+    // may be empty when the field was never written to disk / the DB.
+    let release_year = release_year.filter(|s| !s.is_empty());
+
     let dir = cache_dir(app)?;
-    let path = dir.join(format!("{}.jpg", cache_key(title)));
+    let path = dir.join(format!("{}.jpg", cache_key(title, release_year)));
     if let Ok(bytes) = std::fs::read(&path) {
         if is_probably_valid_jpeg(&bytes) {
             return Some(to_data_uri(&bytes));
@@ -150,7 +163,7 @@ pub async fn poster_data_uri(app: &AppHandle, title: &str) -> Option<String> {
     }
 
     let api_key = tmdb_api_key()?;
-    let matched = search(title, &api_key).await?;
+    let matched = search(title, release_year, &api_key).await?;
     let poster_path = matched.poster_path?;
     let bytes = reqwest::get(format!("https://image.tmdb.org/t/p/w342{poster_path}"))
         .await
@@ -196,23 +209,33 @@ mod tests {
     #[test]
     fn cache_key_strips_punctuation() {
         assert_eq!(
-            cache_key("Spider-Man: Far From Home"),
+            cache_key("Spider-Man: Far From Home", None),
             "spider_man__far_from_home"
         );
     }
 
     #[test]
     fn cache_key_is_stable_across_case_and_whitespace() {
-        assert_eq!(cache_key("  Star Wars "), cache_key("STAR WARS"));
+        assert_eq!(
+            cache_key("  Star Wars ", None),
+            cache_key("STAR WARS", None)
+        );
     }
 
     #[test]
-    fn cache_key_strips_year_from_title() {
-        // A `(YYYY)` year segment is stripped the same way `search` sends to
-        // TMDB, so a title stored with or without the year produces the same
-        // cache key and poster lookup.
-        assert_eq!(cache_key("Home Alone (1990)"), cache_key("Home Alone"));
-        assert_eq!(cache_key("Spider-Man (2002)"), cache_key("Spider-Man"));
+    fn cache_key_includes_year() {
+        // Year is stored as a separate field; cache key uses the year for the filename.
+        assert_eq!(cache_key("Home Alone", Some("1990")), "home_alone_1990");
+    }
+
+    #[test]
+    fn cache_key_avoids_year_duplication() {
+        // When the title already embeds the year (e.g. "Home Alone (1990)"),
+        // the year should not be appended twice.
+        assert_eq!(
+            cache_key("Home Alone (1990)", Some("1990")),
+            "home_alone__1990_"
+        );
     }
 
     #[test]

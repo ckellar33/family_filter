@@ -51,6 +51,8 @@ create table if not exists public.online_filters (
     -- convert_hms_strings_to_seconds). Stored exactly as extracted from a
     -- source filter file, no reformatting needed at publish time.
     media jsonb not null,
+    -- Cached copy of MediaEntry::release_year for TMDB poster lookups.
+    release_year text not null default '',
     status text not null default 'pending' check (status in ('pending', 'approved', 'rejected')),
     -- Who submitted this row -- unused today (publish_filter.py always
     -- publishes as Christopher Kellar), reserved for the future public
