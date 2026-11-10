@@ -257,19 +257,24 @@
     </div>
   {:else if creationState.draft}
     {@const draft = creationState.draft}
-    <div class="draft-card">
-      <div style="flex:1; min-width:0">
-        <p class="caption">Recording into a new filter</p>
-        <p class="title truncate">{session.playback?.title ?? draft.path}</p>
-        <p class="path">
-          {#if session.playback?.title}
-            {currentService() || "Generic"} · {fmtTime(livePosition() ?? 0)}
-          {:else}
-            {draft.media_count} title{draft.media_count === 1 ? "" : "s"} · nothing playing
-          {/if}
-        </p>
-      </div>
-      <span class="shield" data-state={armed ? "on" : "off"}>{armed ? "ARMED" : "DRAFT"}</span>
+    <div class="screen">
+        <div class="screen-edge">
+            <button type="button" class="back-link" onclick={resetCreation}>‹ Back</button>
+        </div>
+        <div class="draft-card">
+          <div style="flex:1; min-width:0">
+            <p class="caption">Recording into a new filter</p>
+            <p class="title truncate">{session.playback?.title ?? "Unknown"}</p>
+            <p class="path">
+              {#if session.playback?.title}
+                {currentService() || "Generic"} · {fmtTime(livePosition() ?? 0)}
+              {:else}
+                {draft.media_count} title{draft.media_count === 1 ? "" : "s"} · nothing playing
+              {/if}
+            </p>
+          </div>
+          <span class="shield" data-state={armed ? "on" : "off"}>{armed ? "ARMED" : "DRAFT"}</span>
+        </div>
     </div>
 
     {#if session.playback?.title && !currentService()}
