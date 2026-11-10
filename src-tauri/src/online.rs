@@ -62,8 +62,7 @@ use crate::{library, metadata};
 /// `scripts/publish_filter.py`'s (private, owner-role) connection string
 /// does, just as the read-only role `db/schema.sql` creates instead of the
 /// database owner.
-const READER_CONNECTION_STRING: &str =
-    "postgresql://filter_reader:oe0uk8jGoD1ZBVDb7XFDsT8xVYfG1F1S@ep-little-hall-b5r1zosv-pooler.c-7.us-east-2.aws.neon.tech/neondb?sslmode=require";
+const READER_CONNECTION_STRING: &str = "postgresql://filter_reader:oe0uk8jGoD1ZBVDb7XFDsT8xVYfG1F1S@ep-little-hall-b5r1zosv-pooler.c-7.us-east-2.aws.neon.tech/neondb?sslmode=require";
 
 /// Same "drop a file next to the binary" override `metadata::tmdb_api_key`
 /// uses -- lets this be pointed at a different branch/project (e.g. a
@@ -86,8 +85,7 @@ fn reader_connection_string() -> String {
 /// way" story `READER_CONNECTION_STRING` gets. Must match the password set
 /// on the `filter_editor` role in `db/schema.sql` when that script is run
 /// against the live database.
-const EDITOR_CONNECTION_STRING: &str =
-    "postgresql://filter_editor:qpQECm0ZInwFNSfhvSBLaMBs6fFYZfcb@ep-little-hall-b5r1zosv-pooler.c-7.us-east-2.aws.neon.tech/neondb?sslmode=require";
+const EDITOR_CONNECTION_STRING: &str = "postgresql://filter_editor:qpQECm0ZInwFNSfhvSBLaMBs6fFYZfcb@ep-little-hall-b5r1zosv-pooler.c-7.us-east-2.aws.neon.tech/neondb?sslmode=require";
 
 /// Same override mechanism as `READER_URL_STORE`, for the editor role.
 const EDITOR_URL_STORE: &str = "neon_editor_url.store";

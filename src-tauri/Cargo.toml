@@ -61,6 +61,8 @@ webpki-roots = "0.26"
 # SystemConfiguration.framework, which fails the iOS link.
 whoami = { version = "2", features = ["force-stub"] }
 regex = "1.13.1"
+# Zip support for SubDL subtitle downloads (SubDL typically returns .zip files).
+zip = "2"
 
 # tao 0.35.3 (transitive, via tauri-runtime-wry) has two iOS bugs plus one
 # gap we hit once the app adopted the scene lifecycle:
@@ -119,4 +121,3 @@ swift-rs = { git = "https://github.com/Brendonovich/swift-rs", rev = "3788d3d2ba
 # passing an explicit -isysroot for iOS/iOS Simulator.
 # See vendor/bonjour-sys-0.3.1/build.rs.
 bonjour-sys = { path = "vendor/bonjour-sys-0.3.1" }
-

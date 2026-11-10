@@ -38,7 +38,7 @@
   import AddCueSheet from "$lib/components/AddCueSheet.svelte";
   import LibrarySearchTabs from "$lib/components/LibrarySearchTabs.svelte";
 
-  let { onRecordInstead }: { onRecordInstead: () => void } = $props();
+  let { onRecordInstead, onQuaternary }: { onRecordInstead: () => void; onQuaternary?: () => void } = $props();
 
   // Which cue the editor sheet is open on, if any -- tapping a cue's time
   // (rather than its enabled switch) opens this, same trigger
@@ -386,6 +386,7 @@
           onPrimary={addFilterFiles}
           onSecondary={onRecordInstead}
           onTertiary={filterState.folderImportSupported ? addFilterDirectory : undefined}
+          onQuaternary={onQuaternary}
         />
       {:else}
         <div class="stack" class:pulling role="region" use:pullable style="--pull: {pullOffset}px">

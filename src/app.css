@@ -2439,3 +2439,40 @@ code {
   color: var(--tertiary-label);
   user-select: none;
 }
+
+/* Auto-generate flow (CreateFilterPage) */
+.generate-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.screen-title {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--label);
+}
+
+.success-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 16px;
+  border-radius: var(--r-md);
+  background: var(--accent-soft);
+  border: 1px solid var(--accent);
+}
+
+.success-card .success-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--label);
+}
+
+.success-card .success-detail {
+  margin: 0;
+  font-size: 14px;
+  color: var(--secondary-label);
+}

@@ -348,7 +348,7 @@ impl MediaEntry {
     /// `FilterList::parse_and_validate` and the creation-mode mutation
     /// methods below (`FilterList::add_cue`/`update_cue`), so both paths can
     /// never drift apart on what counts as a valid cue list.
-    fn sort_and_validate(&mut self) -> Result<()> {
+    pub(crate) fn sort_and_validate(&mut self) -> Result<()> {
         self.cues.sort_by(|a, b| {
             a.start
                 .partial_cmp(&b.start)

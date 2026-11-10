@@ -2,6 +2,7 @@ mod clock_sync;
 mod control;
 mod creation;
 mod filter;
+mod language_filter;
 mod library;
 mod live_activity;
 mod metadata;
@@ -113,6 +114,13 @@ pub fn run() {
             creation::creation_delete_cue,
             creation::creation_list_cues,
             creation::creation_set_service,
+            language_filter::preview_subdl_results,
+            language_filter::download_subtitles,
+            language_filter::scan_subtitles,
+            language_filter::build_filter_from_subdl,
+            language_filter::build_filter_from_srt,
+            language_filter::build_and_save_filter,
+            language_filter::build_and_add_filter,
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")

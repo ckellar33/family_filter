@@ -22,7 +22,7 @@ use anyhow::{Context, Result};
 /// Subdirectory of the app data dir (see `paths::data_dir`) that
 /// `import_picked_path` copies iOS-picked filter files into, and
 /// `fresh_local_path` hands out new paths under.
-const IMPORTED_FILTERS_DIR: &str = "filters";
+pub const IMPORTED_FILTERS_DIR: &str = "filters";
 
 /// Copies a filter file the user just picked via `@tauri-apps/plugin-dialog`
 /// into the app's own durable storage on iOS, returning the copy's path for
@@ -59,7 +59,10 @@ pub fn import_picked_path(path: &Path) -> Result<PathBuf> {
         return Ok(path.to_path_buf());
     }
 
-    let name = path.file_name().map(PathBuf::from).unwrap_or_else(|| PathBuf::from("filter.json"));
+    let name = path
+        .file_name()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("filter.json"));
     let mut dest = dir.join(&name);
     // Same source file re-imported (e.g. re-picked after being edited
     // outside the app) should just overwrite its own previous copy rather
@@ -69,12 +72,17 @@ pub fn import_picked_path(path: &Path) -> Result<PathBuf> {
     if dest.exists() {
         let (existing, incoming) = (fs::read(&dest), fs::read(path));
         if !matches!((&existing, &incoming), (Ok(a), Ok(b)) if a == b) {
-            let unique = format!("{}-{}", appletv::random_pairing_id(), name.to_string_lossy());
+            let unique = format!(
+                "{}-{}",
+                appletv::random_pairing_id(),
+                name.to_string_lossy()
+            );
             dest = dir.join(unique);
         }
     }
 
-    fs::copy(path, &dest).with_context(|| format!("failed to import {} into app storage", path.display()))?;
+    fs::copy(path, &dest)
+        .with_context(|| format!("failed to import {} into app storage", path.display()))?;
     Ok(dest)
 }
 
@@ -96,10 +104,17 @@ pub fn fresh_local_path(suggested_name: &str) -> Result<PathBuf> {
     let dir = crate::paths::data_dir().join(IMPORTED_FILTERS_DIR);
     fs::create_dir_all(&dir).context("failed to create imported-filters directory")?;
 
-    let name = Path::new(suggested_name).file_name().map(PathBuf::from).unwrap_or_else(|| PathBuf::from("filter.json"));
+    let name = Path::new(suggested_name)
+        .file_name()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("filter.json"));
     let mut dest = dir.join(&name);
     if dest.exists() {
-        dest = dir.join(format!("{}-{}", appletv::random_pairing_id(), name.to_string_lossy()));
+        dest = dir.join(format!(
+            "{}-{}",
+            appletv::random_pairing_id(),
+            name.to_string_lossy()
+        ));
     }
     Ok(dest)
 }
@@ -155,8 +170,12 @@ pub fn list_library_paths() -> Vec<PathBuf> {
 }
 
 fn save(paths: &[PathBuf]) -> Result<()> {
-    let strings: Vec<String> = paths.iter().map(|p| p.to_string_lossy().into_owned()).collect();
-    let json = serde_json::to_string_pretty(&strings).context("failed to serialize filter library")?;
+    let strings: Vec<String> = paths
+        .iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
+    let json =
+        serde_json::to_string_pretty(&strings).context("failed to serialize filter library")?;
     let dir = crate::paths::data_dir();
     fs::create_dir_all(&dir).context("failed to create app data directory")?;
     fs::write(dir.join(FILTER_LIBRARY_STORE), json).context("failed to write filter_library.store")
@@ -184,7 +203,10 @@ mod tests {
         reset();
         register_filter_path(Path::new("a.json")).unwrap();
         register_filter_path(Path::new("b.json")).unwrap();
-        assert_eq!(list_library_paths(), vec![PathBuf::from("a.json"), PathBuf::from("b.json")]);
+        assert_eq!(
+            list_library_paths(),
+            vec![PathBuf::from("a.json"), PathBuf::from("b.json")]
+        );
         reset();
     }
 

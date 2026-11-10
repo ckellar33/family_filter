@@ -294,7 +294,7 @@
       {:else if activeTab === "controls"}
         <OpenControlsPage onEnableFilter={enableAvailableFilter} onOpenDevices={openDevices} />
       {:else if activeTab === "select-filter"}
-        <SelectFilterPage onRecordInstead={() => { activeTab = "create-filter"; }} />
+        <SelectFilterPage onRecordInstead={() => { activeTab = "create-filter"; }} onQuaternary={() => { activeTab = "create-filter"; }} />
       {:else}
         <CreateFilterPage />
       {/if}

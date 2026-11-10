@@ -16,7 +16,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { session } from "$lib/state/session.svelte";
-import { filterState, deleteFilterFile } from "$lib/state/filter.svelte";
+import { filterState, deleteFilterFile, loadTiles, selectTile } from "$lib/state/filter.svelte";
 import { slugifyTitle } from "$lib/format";
 import { CATEGORY_GROUPS } from "$lib/categories";
 import type { CreationCue, CueMarkResult, DraftSummary, LanguageKindDef } from "$lib/types";
@@ -125,6 +125,15 @@ export const creationState = $state({
   // not the service itself, which is derived live from whatever's playing
   // (see currentService below), just this form's own input value.
   renameServiceInput: "",
+
+  // Auto-generate flow: "Build a language filter from subtitles" — the
+  // title, API key, year, generated file path, and busy/error state.
+  generateTitle: "",
+  generateApikey: "",
+  generateYear: "",
+  generatePath: "",
+  generateBusy: false,
+  generateError: "",
 });
 
 // Which service's entry cue marks are currently landing in -- whatever app
@@ -398,4 +407,63 @@ export async function deleteDraft() {
   } finally {
     creationState.busy = false;
   }
+}
+
+// Build and add a language filter from SubDL subtitles. Downloads captions,
+// scans for profanity/blasphemy, writes the JSON file, and registers it in
+// the local filter library. On success the filter appears in the Select
+// Filter grid; on failure the error is shown so the user can retry.
+export async function buildAndAddFilter(): Promise<string | undefined> {
+  const title = creationState.generateTitle.trim();
+  const apikey = creationState.generateApikey.trim();
+  const yearStr = creationState.generateYear.trim();
+  const year = yearStr ? Number(yearStr) : null;
+  if (!title) {
+    creationState.generateError = "Enter a movie or show title";
+    return;
+  }
+  if (!apikey) {
+    creationState.generateError = "Enter your SubDL API key";
+    return;
+  }
+
+  creationState.generateBusy = true;
+  creationState.generateError = "";
+
+  try {
+    const path = await invoke<string>("build_and_add_filter", {
+      title,
+      service: "",
+      year: year || null,
+      apiKey: apikey,
+      language: "English",
+      wordlistPath: null,
+      releaseFilter: null,
+      minSeverity: "mild",
+      action: "mute",
+      pad: 0.5,
+      mergeGap: 3.0,
+      noWords: false,
+    });
+
+    creationState.generatePath = path;
+    // Navigate the user to the filter they just created
+    filterState.detailError = "";
+    await selectTile(path, title, "");
+    await loadTiles();
+    return path;
+  } catch (e) {
+    creationState.generateError = String(e);
+  } finally {
+    creationState.generateBusy = false;
+  }
+}
+
+// Reset the auto-generate form to its initial (empty) state.
+export function resetGenerate() {
+  creationState.generateTitle = "";
+  creationState.generateApikey = "";
+  creationState.generateYear = "";
+  creationState.generatePath = "";
+  creationState.generateError = "";
 }

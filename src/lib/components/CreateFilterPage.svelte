@@ -31,6 +31,8 @@
     languageKindFor,
     MUTE_MARK_SECS,
     UNLABELED_SKIP,
+    buildAndAddFilter,
+    resetGenerate,
   } from "$lib/state/creation.svelte";
   import { filterState } from "$lib/state/filter.svelte";
   import { fmtTime, censorWord } from "$lib/format";
@@ -122,6 +124,9 @@
   let armed = $derived(creationState.draft != null && filterState.filterSummary?.path === creationState.draft.path);
   let canMark = $derived(!!session.playback?.title && !creationState.busy);
 
+  // Auto-generate flow: whether the "Build from subtitles" form is open.
+  let showGenerate = $state(false);
+
   // Split into two rails, VidAngel-style: an unlabeled mark is "waiting to
   // be tagged" no matter its action, and once labeled it moves into the
   // category tree below (mirrors SelectFilterPage's grouped list) --
@@ -182,6 +187,24 @@
       deleteDraft();
     }
   }
+
+  // Open the auto-generate form.
+  function openGenerate() {
+    showGenerate = true;
+  }
+
+  // Close the auto-generate form without saving.
+  function closeGenerate() {
+    showGenerate = false;
+    resetGenerate();
+  }
+
+  // Handle the generate action button — calls buildAndAddFilter which
+  // downloads subtitles, builds the filter, saves it, and opens it.
+  async function handleGenerate() {
+    const result = await buildAndAddFilter();
+    if (result) showGenerate = false;
+  }
 </script>
 
 <section class="screen">
@@ -189,10 +212,48 @@
     <p class="banner error">{creationState.error}</p>
   {/if}
 
-  {#if creationState.stage === "idle"}
+  {#if creationState.stage === "idle" && !showGenerate}
     <p class="hint">Record cue timestamps live from what's currently playing. Nothing is armed until you say so.</p>
     <div class="stack">
       <button class="btn-primary" onclick={pickNewDraft}>Record a new filter file…</button>
+      <button class="btn-secondary" onclick={openGenerate}>Build from subtitles…</button>
+    </div>
+  {:else if showGenerate}
+    <div class="screen">
+      <div class="screen-edge">
+        <button type="button" class="back-link" onclick={closeGenerate}>‹ Back</button>
+      </div>
+      <h2 class="screen-title">Build from subtitles</h2>
+      <p class="hint">Download captions for this title and automatically generate a filter file.</p>
+
+      {#if creationState.generatePath}
+        <div class="success-card">
+          <p class="success-title">Filter generated</p>
+          <p class="success-detail">"{creationState.generateTitle}" — added to your local filters.</p>
+        </div>
+      {/if}
+
+      {#if creationState.generateError}
+        <p class="banner error">{creationState.generateError}</p>
+      {/if}
+
+      <div class="generate-form">
+        <div class="field-row">
+          <input class="field" placeholder="Movie or show title" bind:value={creationState.generateTitle} />
+        </div>
+        <div class="field-row">
+          <input class="field" placeholder="Year (optional)" bind:value={creationState.generateYear} />
+        </div>
+        <div class="field-row">
+          <input class="field" placeholder="SubDL API key" bind:value={creationState.generateApikey} />
+        </div>
+      </div>
+
+      <div class="stack">
+        <button class="btn-primary" onclick={handleGenerate} disabled={creationState.generateBusy || !creationState.generateTitle.trim() || !creationState.generateApikey.trim()}>
+          {creationState.generateBusy ? "Generating…" : "Generate filter"}
+        </button>
+      </div>
     </div>
   {:else if creationState.draft}
     {@const draft = creationState.draft}

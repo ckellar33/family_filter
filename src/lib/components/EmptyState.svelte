@@ -12,20 +12,19 @@
     onPrimary,
     onSecondary,
     onTertiary,
+    onQuaternary,
   }: {
     kind: Kind;
     detail?: string;
     onPrimary?: () => void;
     onSecondary?: () => void;
-    // Only wired up by no-filters right now (add a folder, alongside
-    // add-a-file/record-instead) -- optional so the other three kinds'
-    // two-button layout is unaffected.
     onTertiary?: () => void;
+    onQuaternary?: () => void;
   } = $props();
 
   const COPY: Record<
     Kind,
-    { icon: string; tone: string; title: string; body: string; detail: string; primary: string; secondary: string; tertiary?: string }
+    { icon: string; tone: string; title: string; body: string; detail: string; primary: string; secondary: string; tertiary?: string; quaternary?: string }
   > = {
     "no-device": {
       icon: "📺",
@@ -45,6 +44,7 @@
       primary: "Add a filter file…",
       secondary: "Record one instead",
       tertiary: "Add a folder instead",
+      quaternary: "Build from subtitles…",
     },
     lost: {
       icon: "⚡",
@@ -87,6 +87,9 @@
     <button type="button" class="link-btn" onclick={onSecondary}>{copy.secondary}</button>
     {#if copy.tertiary && onTertiary}
       <button type="button" class="link-btn" onclick={onTertiary}>{copy.tertiary}</button>
+    {/if}
+    {#if copy.quaternary && onQuaternary}
+      <button type="button" class="link-btn" onclick={onQuaternary}>{copy.quaternary}</button>
     {/if}
   </div>
 </section>
